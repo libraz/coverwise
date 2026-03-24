@@ -6,13 +6,13 @@
 #include <vector>
 
 #include "core/generator.h"
+#include "model/boundary.h"
 #include "model/parameter.h"
-#include "util/boundary.h"
 #include "validator/coverage_validator.h"
 
+using coverwise::model::BoundaryConfig;
+using coverwise::model::ExpandBoundaryValues;
 using coverwise::model::Parameter;
-using coverwise::util::BoundaryConfig;
-using coverwise::util::ExpandBoundaryValues;
 
 TEST(BoundaryTest, IntegerExpansion) {
   Parameter param("age", {});

@@ -204,6 +204,10 @@ export function analyzeCoverage(
 ): CoverageReport {
   const mod = getModule();
   const result = mod.analyzeCoverage(parameters, tests, strength ?? 2) as CoverageReport;
+  // When there are no tuples (e.g. fewer parameters than strength), coverage is vacuously 1.0.
+  if (result.totalTuples === 0) {
+    result.coverageRatio = 1.0;
+  }
   return result;
 }
 

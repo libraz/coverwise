@@ -318,6 +318,15 @@ val GenerateResultToJS(const coverwise::model::GenerateResult& result,
   }
   obj.set("warnings", warnings);
 
+  // classCoverage (if available)
+  if (result.has_class_coverage) {
+    val cc = val::object();
+    cc.set("totalClassTuples", result.class_coverage.total_class_tuples);
+    cc.set("coveredClassTuples", result.class_coverage.covered_class_tuples);
+    cc.set("classCoverageRatio", result.class_coverage.class_coverage_ratio);
+    obj.set("classCoverage", cc);
+  }
+
   return obj;
 }
 
@@ -378,6 +387,24 @@ val wasmGenerate(val input) {
   try {
     auto opts = ParseGenerateOptions(input);
     auto result = coverwise::core::Generate(opts);
+
+    // Compute equivalence class coverage (done here to avoid core/ -> validator/ dependency).
+    bool has_eq_classes = false;
+    for (const auto& p : opts.parameters) {
+      if (p.has_equivalence_classes()) {
+        has_eq_classes = true;
+        break;
+      }
+    }
+    if (has_eq_classes) {
+      auto class_report =
+          coverwise::validator::ComputeClassCoverage(opts.parameters, result.tests, opts.strength);
+      result.class_coverage.total_class_tuples = class_report.total_class_tuples;
+      result.class_coverage.covered_class_tuples = class_report.covered_class_tuples;
+      result.class_coverage.class_coverage_ratio = class_report.coverage_ratio;
+      result.has_class_coverage = true;
+    }
+
     return GenerateResultToJS(result, opts.parameters);
   } catch (const std::exception& e) {
     return MakeError(e.what());

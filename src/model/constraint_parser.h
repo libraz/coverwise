@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "model/constraint_ast.h"
+#include "model/error.h"
 #include "model/parameter.h"
-#include "model/test_case.h"
 
 namespace coverwise {
 namespace model {

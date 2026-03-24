@@ -26,7 +26,7 @@
 #include "core/generator.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
-#include "util/boundary.h"
+#include "model/boundary.h"
 #include "validator/coverage_validator.h"
 
 namespace {
@@ -528,7 +528,7 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
 /// For each parameter with "type" ("integer" or "float") and "range" ([min, max]),
 /// creates a BoundaryConfig. Optional "step" for float type.
 void ParseBoundaryConfigs(const JsonValue& json,
-                          std::map<std::string, coverwise::util::BoundaryConfig>& configs) {
+                          std::map<std::string, coverwise::model::BoundaryConfig>& configs) {
   if (json.type != JsonType::kArray) return;
   for (size_t i = 0; i < json.array_val.size(); ++i) {
     const auto& p = json.array_val[i];
@@ -546,15 +546,15 @@ void ParseBoundaryConfigs(const JsonValue& json,
       continue;
     }
 
-    coverwise::util::BoundaryConfig config;
+    coverwise::model::BoundaryConfig config;
     config.min_value = range_val.array_val[0].number_val;
     config.max_value = range_val.array_val[1].number_val;
 
     if (type_val.string_val == "integer") {
-      config.type = coverwise::util::BoundaryConfig::Type::kInteger;
+      config.type = coverwise::model::BoundaryConfig::Type::kInteger;
       config.step = 1.0;
     } else if (type_val.string_val == "float") {
-      config.type = coverwise::util::BoundaryConfig::Type::kFloat;
+      config.type = coverwise::model::BoundaryConfig::Type::kFloat;
       const auto& step_val = p["step"];
       if (step_val.type == JsonType::kNumber) {
         config.step = step_val.number_val;

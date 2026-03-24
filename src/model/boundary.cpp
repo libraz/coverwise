@@ -1,6 +1,6 @@
 /// @file boundary.cpp
 
-#include "util/boundary.h"
+#include "model/boundary.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,7 +11,7 @@
 #include <vector>
 
 namespace coverwise {
-namespace util {
+namespace model {
 
 namespace {
 
@@ -35,8 +35,8 @@ bool TryParseDouble(const std::string& s, double& out) {
 
 }  // namespace
 
-model::Parameter ExpandBoundaryValues(const model::Parameter& param,
-                                      const BoundaryConfig& config) {
+Parameter ExpandBoundaryValues(const Parameter& param,
+                               const BoundaryConfig& config) {
   // Generate boundary values.
   std::vector<double> boundary_nums;
   if (config.type == BoundaryConfig::Type::kInteger) {
@@ -92,9 +92,9 @@ model::Parameter ExpandBoundaryValues(const model::Parameter& param,
 
   // Build the result parameter. Preserve name, drop invalid/aliases since
   // boundary expansion changes the value set.
-  model::Parameter result(param.name, std::move(expanded_values));
+  Parameter result(param.name, std::move(expanded_values));
   return result;
 }
 
-}  // namespace util
+}  // namespace model
 }  // namespace coverwise

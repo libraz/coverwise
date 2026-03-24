@@ -8,47 +8,12 @@
 #include <tuple>
 #include <vector>
 
+#include "util/combinatorics.h"
+
 namespace coverwise {
 namespace validator {
 
 namespace {
-
-/// @brief Generate all C(n, k) combinations of indices [0, n) iteratively.
-///
-/// Each combination is a sorted vector of k indices.
-std::vector<std::vector<uint32_t>> GenerateCombinations(uint32_t n, uint32_t k) {
-  std::vector<std::vector<uint32_t>> result;
-  if (k == 0 || k > n) {
-    return result;
-  }
-
-  // Initialize first combination: [0, 1, ..., k-1]
-  std::vector<uint32_t> combo(k);
-  for (uint32_t i = 0; i < k; ++i) {
-    combo[i] = i;
-  }
-
-  while (true) {
-    result.push_back(combo);
-
-    // Find the rightmost element that can be incremented.
-    int i = static_cast<int>(k) - 1;
-    while (i >= 0 && combo[i] == n - k + static_cast<uint32_t>(i)) {
-      --i;
-    }
-    if (i < 0) {
-      break;
-    }
-
-    // Increment it and reset all elements to the right.
-    ++combo[i];
-    for (uint32_t j = static_cast<uint32_t>(i) + 1; j < k; ++j) {
-      combo[j] = combo[j - 1] + 1;
-    }
-  }
-
-  return result;
-}
 
 /// @brief Check if a test case covers a specific value tuple for given parameter indices.
 ///
@@ -80,7 +45,7 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
   }
 
   // Step 1: Generate all C(n, strength) combinations of parameter indices.
-  auto combinations = GenerateCombinations(n, strength);
+  auto combinations = util::GenerateCombinations(n, strength);
 
   for (const auto& combo : combinations) {
     // Step 2: Enumerate all value tuples (cartesian product) for this combination.
@@ -129,8 +94,10 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
     }
   }
 
-  // Compute coverage ratio.
-  if (report.total_tuples > 0) {
+  // Compute coverage ratio. When there are no tuples, coverage is vacuously 1.0.
+  if (report.total_tuples == 0) {
+    report.coverage_ratio = 1.0;
+  } else {
     report.coverage_ratio =
         static_cast<double>(report.covered_tuples) / static_cast<double>(report.total_tuples);
   }
@@ -166,7 +133,7 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
   uint32_t effective_strength = std::min(strength, class_n);
 
   // Generate all C(class_n, effective_strength) combinations of class-enabled parameters.
-  auto combinations = GenerateCombinations(class_n, effective_strength);
+  auto combinations = util::GenerateCombinations(class_n, effective_strength);
 
   // For each combination, enumerate all class tuples (cartesian product of unique classes).
   // Use a set of string tuples to track covered class combinations.

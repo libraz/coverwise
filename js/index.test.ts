@@ -130,8 +130,8 @@ describe('generate()', () => {
     });
     expect(result.coverage).toBe(1.0);
     expect(result.negativeTests).toBeDefined();
-    expect(result.negativeTests!.length).toBeGreaterThan(0);
-    for (const nt of result.negativeTests!) {
+    expect(result.negativeTests?.length).toBeGreaterThan(0);
+    for (const nt of result.negativeTests ?? []) {
       expect(nt.browser).toBe('ie6');
     }
   });
@@ -251,5 +251,155 @@ describe('estimateModel()', () => {
     });
     expect(stats.subModelCount).toBe(1);
     expect(stats.constraintCount).toBe(1);
+  });
+});
+
+describe('edge cases', () => {
+  it('empty parameters → coverage 1.0, no tests', () => {
+    const result = generate({ parameters: [] });
+    expect(result.coverage).toBe(1.0);
+    expect(result.tests).toHaveLength(0);
+    expect(result.stats.totalTuples).toBe(0);
+  });
+
+  it('single parameter → coverage 1.0 (no pairs)', () => {
+    const result = generate({
+      parameters: [{ name: 'os', values: ['win', 'mac', 'linux'] }],
+    });
+    expect(result.coverage).toBe(1.0);
+    expect(result.stats.totalTuples).toBe(0);
+  });
+
+  it('parameter with single value', () => {
+    const result = generate({
+      parameters: [
+        { name: 'os', values: ['win'] },
+        { name: 'browser', values: ['chrome', 'firefox'] },
+      ],
+    });
+    expect(result.coverage).toBe(1.0);
+    for (const test of result.tests) {
+      expect(test.os).toBe('win');
+    }
+  });
+
+  it('strength = 1 → each value appears at least once', () => {
+    const result = generate({
+      parameters: [
+        { name: 'a', values: ['1', '2', '3'] },
+        { name: 'b', values: ['x', 'y'] },
+      ],
+      strength: 1,
+    });
+    expect(result.coverage).toBe(1.0);
+    expect(result.stats.totalTuples).toBe(5); // 3 + 2
+  });
+
+  it('strength > param count → coverage 1.0, no tests', () => {
+    const result = generate({
+      parameters: [
+        { name: 'a', values: ['1', '2'] },
+        { name: 'b', values: ['1', '2'] },
+      ],
+      strength: 5,
+    });
+    expect(result.coverage).toBe(1.0);
+    expect(result.tests).toHaveLength(0);
+  });
+
+  it('maxTests = 1 → incomplete coverage', () => {
+    const result = generate({
+      parameters: [
+        { name: 'a', values: ['1', '2', '3'] },
+        { name: 'b', values: ['1', '2', '3'] },
+      ],
+      maxTests: 1,
+    });
+    expect(result.tests).toHaveLength(1);
+    expect(result.coverage).toBeLessThan(1.0);
+    expect(result.uncovered.length).toBeGreaterThan(0);
+  });
+
+  it('seed = 0 and omitted seed produce same result', () => {
+    const params = [
+      { name: 'a', values: ['1', '2'] },
+      { name: 'b', values: ['1', '2'] },
+    ];
+    const r1 = generate({ parameters: params, seed: 0 });
+    const r2 = generate({ parameters: params });
+    expect(r1.tests).toEqual(r2.tests);
+  });
+
+  it('state isolation: interleaved seeds produce correct results', () => {
+    const params = [
+      { name: 'a', values: ['1', '2', '3'] },
+      { name: 'b', values: ['1', '2', '3'] },
+    ];
+    const r1 = generate({ parameters: params, seed: 42 });
+    generate({ parameters: params, seed: 99 }); // different seed
+    const r3 = generate({ parameters: params, seed: 42 }); // same as r1
+    expect(r3.tests).toEqual(r1.tests);
+  });
+
+  it('seeds: [] and omitted seeds produce same result', () => {
+    const params = [
+      { name: 'a', values: ['1', '2'] },
+      { name: 'b', values: ['1', '2'] },
+    ];
+    const r1 = generate({ parameters: params, seed: 7, seeds: [] });
+    const r2 = generate({ parameters: params, seed: 7 });
+    expect(r1.tests).toEqual(r2.tests);
+  });
+});
+
+describe('analyzeCoverage() edge cases', () => {
+  it('empty tests → 0 coverage', () => {
+    const report = analyzeCoverage(
+      [
+        { name: 'a', values: ['1', '2'] },
+        { name: 'b', values: ['1', '2'] },
+      ],
+      [],
+    );
+    expect(report.coverageRatio).toBe(0.0);
+    expect(report.coveredTuples).toBe(0);
+    expect(report.totalTuples).toBe(4);
+    expect(report.uncovered.length).toBe(4);
+  });
+
+  it('single parameter → 0 tuples for pairwise', () => {
+    const report = analyzeCoverage([{ name: 'a', values: ['1', '2'] }], [{ a: '1' }]);
+    expect(report.totalTuples).toBe(0);
+    expect(report.coverageRatio).toBe(1.0);
+  });
+});
+
+describe('extendTests() edge cases', () => {
+  it('empty existing → equivalent to generate', () => {
+    const params = [
+      { name: 'a', values: ['1', '2'] },
+      { name: 'b', values: ['1', '2'] },
+    ];
+    const result = extendTests([], { parameters: params, seed: 0 });
+    const genResult = generate({ parameters: params, seed: 0 });
+    expect(result.coverage).toBe(1.0);
+    expect(result.tests).toEqual(genResult.tests);
+  });
+});
+
+describe('estimateModel() edge cases', () => {
+  it('0 parameters', () => {
+    const stats = estimateModel({ parameters: [] });
+    expect(stats.parameterCount).toBe(0);
+    expect(stats.totalValues).toBe(0);
+    expect(stats.totalTuples).toBe(0);
+  });
+
+  it('1 parameter → 0 tuples for pairwise', () => {
+    const stats = estimateModel({
+      parameters: [{ name: 'a', values: ['1', '2', '3'] }],
+    });
+    expect(stats.parameterCount).toBe(1);
+    expect(stats.totalTuples).toBe(0);
   });
 });

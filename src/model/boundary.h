@@ -1,8 +1,8 @@
 /// @file boundary.h
 /// @brief Boundary value expansion for numeric parameters.
 
-#ifndef COVERWISE_UTIL_BOUNDARY_H_
-#define COVERWISE_UTIL_BOUNDARY_H_
+#ifndef COVERWISE_MODEL_BOUNDARY_H_
+#define COVERWISE_MODEL_BOUNDARY_H_
 
 #include <string>
 #include <vector>
@@ -10,7 +10,7 @@
 #include "model/parameter.h"
 
 namespace coverwise {
-namespace util {
+namespace model {
 
 /// @brief Configuration for boundary value expansion of a numeric parameter.
 struct BoundaryConfig {
@@ -30,10 +30,10 @@ struct BoundaryConfig {
 /// @param param The original parameter.
 /// @param config The boundary configuration specifying the range.
 /// @return A new Parameter with expanded values.
-model::Parameter ExpandBoundaryValues(const model::Parameter& param,
-                                      const BoundaryConfig& config);
+Parameter ExpandBoundaryValues(const Parameter& param,
+                               const BoundaryConfig& config);
 
-}  // namespace util
+}  // namespace model
 }  // namespace coverwise
 
-#endif  // COVERWISE_UTIL_BOUNDARY_H_
+#endif  // COVERWISE_MODEL_BOUNDARY_H_

@@ -166,3 +166,16 @@ TEST(ConstraintValidatorTest, AllTestsViolate) {
   EXPECT_EQ(report.violating_indices[1], 1u);
   EXPECT_EQ(report.violating_indices[2], 2u);
 }
+
+// Edge: constraint with kUnknown result (partial assignment)
+TEST(ConstraintValidatorTest, PartialAssignmentNoViolation) {
+  // Test case with kUnassigned value
+  std::vector<TestCase> tests = {MakeTest({0, coverwise::model::kUnassigned})};
+  std::vector<Constraint> constraints;
+  // IF param0=0 THEN param1!=0
+  constraints.push_back(std::make_unique<ImpliesNode>(
+      std::make_unique<EqualsNode>(0, 0), std::make_unique<NotEqualsNode>(1, 0)));
+  auto report = ValidateConstraints(tests, constraints);
+  // kUnknown should NOT count as violation
+  EXPECT_EQ(report.violations, 0u);
+}

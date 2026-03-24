@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+#include <vector>
+
 #include "model/parameter.h"
 #include "model/test_case.h"
 
@@ -420,4 +423,131 @@ TEST(WeightConfigTest, EmptyReturnsTrueWhenNoEntries) {
 
   wc.entries["os"]["win"] = 1.0;
   EXPECT_FALSE(wc.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Generator edge cases
+// ---------------------------------------------------------------------------
+
+// Edge: empty parameters → coverage 1.0, 0 tests
+TEST(GeneratorEdgeCaseTest, EmptyParameters) {
+  GenerateOptions opts;
+  opts.strength = 2;
+  auto result = Generate(opts);
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(result.tests.empty());
+  EXPECT_EQ(result.stats.total_tuples, 0u);
+}
+
+// Edge: single parameter → no pairs, coverage 1.0
+TEST(GeneratorEdgeCaseTest, SingleParameter) {
+  GenerateOptions opts;
+  opts.parameters = {{"os", {"win", "mac", "linux"}, {}}};
+  opts.strength = 2;
+  auto result = Generate(opts);
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_EQ(result.stats.total_tuples, 0u);
+}
+
+// Edge: strength > param count → coverage 1.0
+TEST(GeneratorEdgeCaseTest, StrengthExceedsParamCount) {
+  GenerateOptions opts;
+  opts.parameters = {{"a", {"1", "2"}, {}}, {"b", {"1", "2"}, {}}};
+  opts.strength = 5;
+  auto result = Generate(opts);
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(result.tests.empty());
+}
+
+// Edge: strength = 1 → each value appears at least once
+TEST(GeneratorEdgeCaseTest, StrengthOne) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"a", {"1", "2", "3"}, {}},
+      {"b", {"x", "y"}, {}},
+  };
+  opts.strength = 1;
+  auto result = Generate(opts);
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  // All 5 values should be covered
+  EXPECT_EQ(result.stats.total_tuples, 5u);
+}
+
+// Edge: maxTests = 1
+TEST(GeneratorEdgeCaseTest, MaxTestsOne) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"a", {"1", "2", "3"}, {}},
+      {"b", {"1", "2", "3"}, {}},
+  };
+  opts.max_tests = 1;
+  auto result = Generate(opts);
+  EXPECT_EQ(result.tests.size(), 1u);
+  EXPECT_LT(result.coverage, 1.0);
+  EXPECT_FALSE(result.uncovered.empty());
+}
+
+// Edge: seeds fill max_tests → no additional tests generated
+TEST(GeneratorEdgeCaseTest, SeedsFillMaxTests) {
+  GenerateOptions opts;
+  opts.parameters = {{"a", {"1", "2"}, {}}, {"b", {"1", "2"}, {}}};
+  opts.seeds = {TestCase{{0, 0}}, TestCase{{1, 1}}};
+  opts.max_tests = 2;
+  auto result = Generate(opts);
+  EXPECT_EQ(result.tests.size(), 2u);
+}
+
+// Edge: parameter with single value
+TEST(GeneratorEdgeCaseTest, ParameterWithSingleValue) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win"}, {}},
+      {"browser", {"chrome", "firefox"}, {}},
+  };
+  auto result = Generate(opts);
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  // All tests must have os=win (index 0)
+  for (const auto& tc : result.tests) {
+    EXPECT_EQ(tc.values[0], 0u);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// EstimateModel edge cases
+// ---------------------------------------------------------------------------
+
+// Edge: EstimateModel with 0 parameters
+TEST(EstimateModelEdgeTest, ZeroParameters) {
+  GenerateOptions opts;
+  opts.strength = 2;
+  auto stats = EstimateModel(opts);
+  EXPECT_EQ(stats.parameter_count, 0u);
+  EXPECT_EQ(stats.total_values, 0u);
+  EXPECT_EQ(stats.total_tuples, 0u);
+}
+
+// Edge: EstimateModel with 1 parameter
+TEST(EstimateModelEdgeTest, SingleParameter) {
+  GenerateOptions opts;
+  opts.parameters = {{"os", {"win", "mac", "linux"}, {}}};
+  opts.strength = 2;
+  auto stats = EstimateModel(opts);
+  EXPECT_EQ(stats.parameter_count, 1u);
+  EXPECT_EQ(stats.total_tuples, 0u);  // C(1,2) = 0
+}
+
+// Edge: EstimateModel large values don't overflow
+TEST(EstimateModelEdgeTest, LargeValuesNoOverflow) {
+  GenerateOptions opts;
+  // 10 params × 100 values at strength 3 → 100^3 = 1M, should not overflow
+  for (int i = 0; i < 10; i++) {
+    std::vector<std::string> vals;
+    for (int j = 0; j < 100; j++) vals.push_back(std::to_string(j));
+    opts.parameters.push_back({"p" + std::to_string(i), std::move(vals), {}});
+  }
+  opts.strength = 3;
+  auto stats = EstimateModel(opts);
+  EXPECT_GT(stats.estimated_tests, 0u);
+  // Should not have wrapped around to a small number
+  EXPECT_GE(stats.estimated_tests, 1000u);
 }

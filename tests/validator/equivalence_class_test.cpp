@@ -134,11 +134,13 @@ TEST(EquivalenceClassTest, GeneratorIntegration) {
 
   auto result = Generate(opts);
 
-  EXPECT_TRUE(result.has_class_coverage);
-  EXPECT_EQ(result.class_coverage.total_class_tuples, 12u);
+  // Class coverage is no longer computed inside Generate() (to avoid core/ -> validator/
+  // dependency). Compute it explicitly here.
+  auto class_report = ComputeClassCoverage(opts.parameters, result.tests, opts.strength);
+  EXPECT_EQ(class_report.total_class_tuples, 12u);
   // Generation should cover all class combos since it generates all value pairs.
-  EXPECT_EQ(result.class_coverage.covered_class_tuples, 12u);
-  EXPECT_DOUBLE_EQ(result.class_coverage.class_coverage_ratio, 1.0);
+  EXPECT_EQ(class_report.covered_class_tuples, 12u);
+  EXPECT_DOUBLE_EQ(class_report.coverage_ratio, 1.0);
 }
 
 TEST(EquivalenceClassTest, GeneratorNoClasses) {
@@ -153,8 +155,10 @@ TEST(EquivalenceClassTest, GeneratorNoClasses) {
 
   auto result = Generate(opts);
 
-  EXPECT_FALSE(result.has_class_coverage);
-  EXPECT_EQ(result.class_coverage.total_class_tuples, 0u);
+  // Class coverage is no longer computed inside Generate(). Verify that ComputeClassCoverage
+  // returns zero tuples when no equivalence classes are defined.
+  auto class_report = ComputeClassCoverage(opts.parameters, result.tests, opts.strength);
+  EXPECT_EQ(class_report.total_class_tuples, 0u);
 }
 
 TEST(EquivalenceClassTest, MultipleValuesInSameClass) {

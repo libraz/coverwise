@@ -11,9 +11,7 @@
 #include "core/coverage_engine.h"
 #include "model/constraint_ast.h"
 #include "model/constraint_parser.h"
-#include "util/boundary.h"
 #include "util/rng.h"
-#include "validator/coverage_validator.h"
 
 namespace coverwise {
 namespace core {
@@ -79,14 +77,6 @@ bool HasInvalidValues(const std::vector<model::Parameter>& params) {
   return false;
 }
 
-/// @brief Check whether any parameter has equivalence classes.
-bool HasEquivalenceClasses(const std::vector<model::Parameter>& params) {
-  for (const auto& p : params) {
-    if (p.has_equivalence_classes()) return true;
-  }
-  return false;
-}
-
 /// @brief Build an allowed_values mask that only permits valid values.
 std::vector<std::vector<bool>> BuildValidOnlyMask(const std::vector<model::Parameter>& params) {
   std::vector<std::vector<bool>> mask(params.size());
@@ -137,53 +127,8 @@ void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t
     for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
       if (!params[pi].is_invalid(vi)) continue;
 
-      // Create a coverage engine for tuples involving this invalid value
-      // paired with valid values of other parameters.
-      auto [neg_cov, err] = CoverageEngine::Create(params, strength);
-      if (!err.ok()) continue;
-
-      // Exclude all tuples that don't involve param pi with value vi.
-      // Also exclude tuples that involve invalid values of other params.
-      // We achieve this by: (1) excluding invalid values, then (2) adding
-      // all tuples NOT involving pi=vi as "already covered".
-      //
-      // Simpler approach: use the coverage engine as-is and rely on the
-      // allowed_values mask to ensure only valid values (plus this one
-      // invalid value) are selected. Then just generate until coverage
-      // is complete or retries exhaust.
-      //
-      // But this means coverage includes tuples not involving the invalid value.
-      // Those would be covered quickly since only valid values are used for
-      // other params. The key insight: we want every valid value of every
-      // other param to appear alongside the invalid value. For pairwise,
-      // that means we need at least max(valid_count) test cases per invalid value.
-      //
-      // Instead, use a simpler direct approach: generate one test per invalid
-      // value, filling other params greedily with valid values to maximize
-      // diversity. For proper coverage, generate enough tests.
-
-      // Exclude tuples containing invalid values of OTHER params, and
-      // tuples not involving pi=vi (since we only care about coverage of
-      // the invalid value).
-      neg_cov.ExcludeInvalidValues();
-
-      // Now, un-exclude tuples involving pi=vi (they were excluded by
-      // ExcludeInvalidValues). We can't easily un-exclude, so let's use
-      // a different strategy.
-
-      // Actually, let's use the simplest correct approach:
-      // Build a dedicated coverage engine for just the pairs involving the
-      // invalid value. We create a subset engine for each other param
-      // paired with pi.
-
-      // Even simpler: for each invalid value, generate tests using the full
-      // engine with a negative mask, and track coverage locally.
-      // Since the full engine approach is complex, use the direct approach:
-
-      // For pairwise: for each other param, we need to cover all valid values
-      // of that param with pi=vi. Generate test cases greedily.
-
-      // Create a fresh engine and exclude everything except tuples involving pi.
+      // Create a coverage engine for generating tests that pair this invalid
+      // value with valid values of all other parameters.
       auto [fresh_cov, fresh_err] = CoverageEngine::Create(params, strength);
       if (!fresh_err.ok()) continue;
 
@@ -238,6 +183,17 @@ std::vector<std::vector<double>> ResolveWeights(const std::vector<model::Paramet
   return resolved;
 }
 
+/// @brief Apply boundary value expansion to parameters with boundary configs.
+void ApplyBoundaryExpansion(GenerateOptions& opts) {
+  if (opts.boundary_configs.empty()) return;
+  for (auto& param : opts.parameters) {
+    auto it = opts.boundary_configs.find(param.name);
+    if (it != opts.boundary_configs.end()) {
+      param = model::ExpandBoundaryValues(param, it->second);
+    }
+  }
+}
+
 }  // namespace
 
 model::GenerateResult Generate(const GenerateOptions& options) {
@@ -245,14 +201,7 @@ model::GenerateResult Generate(const GenerateOptions& options) {
 
   // Apply boundary value expansion to parameters that have boundary configs.
   GenerateOptions opts = options;
-  if (!opts.boundary_configs.empty()) {
-    for (auto& param : opts.parameters) {
-      auto it = opts.boundary_configs.find(param.name);
-      if (it != opts.boundary_configs.end()) {
-        param = util::ExpandBoundaryValues(param, it->second);
-      }
-    }
-  }
+  ApplyBoundaryExpansion(opts);
 
   bool has_invalid = HasInvalidValues(opts.parameters);
 
@@ -384,7 +333,10 @@ model::GenerateResult Generate(const GenerateOptions& options) {
     }
   }
 
-  // Report coverage as the minimum across all engines.
+  // Report coverage as the minimum across all engines (for pass/fail).
+  // Note: stats.total_tuples and stats.covered_tuples are SUMS across all
+  // engines, so stats.covered_tuples / stats.total_tuples may differ from
+  // result.coverage when sub-models are used. See GenerateResult docs.
   result.coverage = coverage.CoverageRatio();
   for (const auto& eng : sub_engines) {
     result.coverage = std::min(result.coverage, eng.CoverageRatio());
@@ -399,40 +351,28 @@ model::GenerateResult Generate(const GenerateOptions& options) {
   }
   result.stats.test_count = static_cast<uint32_t>(result.tests.size());
 
-  // Compute equivalence class coverage if any parameter has classes.
-  if (HasEquivalenceClasses(options.parameters)) {
-    auto class_report =
-        validator::ComputeClassCoverage(options.parameters, result.tests, options.strength);
-    result.class_coverage.total_class_tuples = class_report.total_class_tuples;
-    result.class_coverage.covered_class_tuples = class_report.covered_class_tuples;
-    result.class_coverage.class_coverage_ratio = class_report.coverage_ratio;
-    result.has_class_coverage = true;
-  }
-
   return result;
 }
 
 model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
-                             const GenerateOptions& options, ExtendMode /*mode*/) {
-  // For kStrict mode: treat existing as seeds, generate delta only
+                             const GenerateOptions& options, ExtendMode mode) {
   GenerateOptions opts = options;
   opts.seeds = existing;
 
-  // TODO: For kOptimize mode, allow reordering existing tests
+  if (mode == ExtendMode::kOptimize) {
+    // kOptimize is not yet implemented; fall back to kStrict behavior.
+    auto result = Generate(opts);
+    result.warnings.push_back("ExtendMode::kOptimize is not yet implemented; using kStrict mode");
+    return result;
+  }
+
   return Generate(opts);
 }
 
 ModelStats EstimateModel(const GenerateOptions& options) {
   // Apply boundary expansion for estimation.
   GenerateOptions opts = options;
-  if (!opts.boundary_configs.empty()) {
-    for (auto& param : opts.parameters) {
-      auto it = opts.boundary_configs.find(param.name);
-      if (it != opts.boundary_configs.end()) {
-        param = util::ExpandBoundaryValues(param, it->second);
-      }
-    }
-  }
+  ApplyBoundaryExpansion(opts);
 
   ModelStats stats;
   stats.parameter_count = static_cast<uint32_t>(opts.parameters.size());
@@ -469,19 +409,22 @@ ModelStats EstimateModel(const GenerateOptions& options) {
     }
     stats.estimated_tests = product;
   } else {
-    uint32_t estimate = 1;
+    uint64_t estimate = 1;
     for (uint32_t i = 0; i < stats.strength; ++i) {
       estimate *= max_values;
+      if (estimate > UINT32_MAX) break;
     }
     // Refine with log factor: roughly max_v^t * ceil(log2(n))
     uint32_t log_factor =
         static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(stats.parameter_count))));
     if (log_factor < 1) log_factor = 1;
-    stats.estimated_tests = estimate * log_factor;
+    estimate *= log_factor;
     // Cap at total_tuples (can't need more tests than tuples).
-    if (stats.total_tuples > 0 && stats.estimated_tests > stats.total_tuples) {
-      stats.estimated_tests = stats.total_tuples;
+    if (stats.total_tuples > 0 && estimate > stats.total_tuples) {
+      estimate = stats.total_tuples;
     }
+    stats.estimated_tests =
+        static_cast<uint32_t>(std::min(estimate, static_cast<uint64_t>(UINT32_MAX)));
   }
 
   return stats;

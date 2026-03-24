@@ -102,17 +102,25 @@ class CoverageEngine {
   /// Empty means identity mapping (all params, no subset).
   std::vector<uint32_t> param_subset_;
 
-  uint32_t TupleIndex(const std::vector<uint32_t>& param_indices,
-                      const std::vector<uint32_t>& value_indices) const;
-
   /// @brief Pre-computed C(n, t) parameter index combinations.
   /// When param_subset_ is set, these contain GLOBAL param indices.
   std::vector<std::vector<uint32_t>> param_combinations_;
   std::vector<uint32_t> combination_offsets_;
 
+  /// @brief param_to_combos_[p] = list of combination indices that include param p.
+  std::vector<std::vector<uint32_t>> param_to_combos_;
+
+  /// @brief param_position_in_combo_[p][k] = position of p within param_combinations_[param_to_combos_[p][k]].
+  std::vector<std::vector<uint32_t>> param_position_in_combo_;
+
+  /// @brief combo_multipliers_[ci][j] = product of value counts for positions j+1..t-1.
+  /// Used for additive mixed-radix encoding instead of iterative multiply-accumulate.
+  std::vector<std::vector<uint32_t>> combo_multipliers_;
+
   void InitCombinations();
   void InitCombinationsFromSubset();
-  uint32_t ComputeTotalTuples() const;
+  void BuildLookupTables();
+  uint32_t ComputeTotalTuples();
 };
 
 }  // namespace core

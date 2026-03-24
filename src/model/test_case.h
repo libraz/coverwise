@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include "model/error.h"
+
 namespace coverwise {
 namespace model {
 
@@ -53,33 +55,23 @@ struct Suggestion {
 };
 
 /// @brief Result of test generation.
+///
+/// Note on sub-model metrics: When sub-models are used, `coverage` reports
+/// the minimum coverage ratio across all engines (global + sub-models),
+/// while `stats.total_tuples` and `stats.covered_tuples` are the sum across
+/// all engines. Thus `stats.covered_tuples / stats.total_tuples` may differ
+/// from `coverage`. Use `coverage` for pass/fail decisions; use `stats` for
+/// understanding total workload.
 struct GenerateResult {
   std::vector<TestCase> tests;           ///< Positive tests (no invalid values)
   std::vector<TestCase> negative_tests;  ///< Negative tests (exactly 1 invalid value each)
-  double coverage = 0.0;
+  double coverage = 0.0;                 ///< Minimum coverage ratio across all engines
   std::vector<UncoveredTuple> uncovered;
   GenerateStats stats;
   std::vector<Suggestion> suggestions;
   std::vector<std::string> warnings;
   ClassCoverage class_coverage;         ///< Equivalence class coverage (if classes defined)
   bool has_class_coverage = false;      ///< True if any parameter has equivalence classes
-};
-
-/// @brief Structured error with context.
-struct Error {
-  enum class Code {
-    kOk = 0,
-    kConstraintError = 1,
-    kInsufficientCoverage = 2,
-    kInvalidInput = 3,
-    kTupleExplosion = 4,
-  };
-
-  Code code = Code::kOk;
-  std::string message;
-  std::string detail;
-
-  bool ok() const { return code == Code::kOk; }
 };
 
 }  // namespace model

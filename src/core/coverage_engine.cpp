@@ -3,15 +3,12 @@
 #include "core/coverage_engine.h"
 
 #include <algorithm>
-#include <limits>
 #include <vector>
+
+#include "util/combinatorics.h"
 
 namespace coverwise {
 namespace core {
-
-namespace {
-constexpr uint32_t kUnassigned = std::numeric_limits<uint32_t>::max();
-}  // namespace
 
 std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
     const std::vector<model::Parameter>& params, uint32_t strength) {
@@ -20,6 +17,7 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
   engine.strength_ = strength;
   engine.InitCombinations();
   engine.total_tuples_ = engine.ComputeTotalTuples();
+  engine.BuildLookupTables();
 
   if (engine.total_tuples_ > kMaxTuples) {
     model::Error err;
@@ -43,6 +41,7 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
   engine.param_subset_ = param_subset;
   engine.InitCombinationsFromSubset();
   engine.total_tuples_ = engine.ComputeTotalTuples();
+  engine.BuildLookupTables();
 
   if (engine.total_tuples_ > kMaxTuples) {
     model::Error err;
@@ -59,83 +58,63 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
 
 void CoverageEngine::InitCombinations() {
   uint32_t n = static_cast<uint32_t>(params_.size());
-  param_combinations_.clear();
-
-  // No combinations possible if fewer parameters than strength.
-  if (n < strength_ || strength_ == 0) {
-    return;
-  }
-
-  // Generate all C(n, strength_) combinations using iterative approach.
-  std::vector<uint32_t> indices(strength_);
-  for (uint32_t i = 0; i < strength_; ++i) {
-    indices[i] = i;
-  }
-
-  while (true) {
-    param_combinations_.push_back(indices);
-
-    // Find rightmost index that can be incremented.
-    int pos = static_cast<int>(strength_) - 1;
-    while (pos >= 0 && indices[pos] == n - strength_ + static_cast<uint32_t>(pos)) {
-      --pos;
-    }
-    if (pos < 0) break;
-
-    ++indices[pos];
-    for (uint32_t j = static_cast<uint32_t>(pos) + 1; j < strength_; ++j) {
-      indices[j] = indices[j - 1] + 1;
-    }
-  }
+  param_combinations_ = util::GenerateCombinations(n, strength_);
 }
 
 void CoverageEngine::InitCombinationsFromSubset() {
   uint32_t n = static_cast<uint32_t>(param_subset_.size());
+  auto local_combos = util::GenerateCombinations(n, strength_);
+
+  // Map local indices to global param indices.
   param_combinations_.clear();
-
-  if (n < strength_ || strength_ == 0) {
-    return;
-  }
-
-  // Generate all C(n, strength_) combinations of indices within the subset,
-  // but store the GLOBAL param indices so AddTestCase/ScoreValue work directly.
-  std::vector<uint32_t> local_indices(strength_);
-  for (uint32_t i = 0; i < strength_; ++i) {
-    local_indices[i] = i;
-  }
-
-  while (true) {
-    // Map local indices to global param indices.
+  param_combinations_.reserve(local_combos.size());
+  for (const auto& local : local_combos) {
     std::vector<uint32_t> global_combo(strength_);
     for (uint32_t i = 0; i < strength_; ++i) {
-      global_combo[i] = param_subset_[local_indices[i]];
+      global_combo[i] = param_subset_[local[i]];
     }
-    param_combinations_.push_back(global_combo);
+    param_combinations_.push_back(std::move(global_combo));
+  }
+}
 
-    // Find rightmost index that can be incremented.
-    int pos = static_cast<int>(strength_) - 1;
-    while (pos >= 0 && local_indices[pos] == n - strength_ + static_cast<uint32_t>(pos)) {
-      --pos;
+void CoverageEngine::BuildLookupTables() {
+  uint32_t num_params = static_cast<uint32_t>(params_.size());
+  uint32_t num_combos = static_cast<uint32_t>(param_combinations_.size());
+
+  // Build param-to-combinations index and position-in-combo lookup.
+  param_to_combos_.assign(num_params, {});
+  param_position_in_combo_.assign(num_params, {});
+
+  for (uint32_t ci = 0; ci < num_combos; ++ci) {
+    const auto& combo = param_combinations_[ci];
+    for (uint32_t j = 0; j < strength_; ++j) {
+      uint32_t pi = combo[j];
+      param_to_combos_[pi].push_back(ci);
+      param_position_in_combo_[pi].push_back(j);
     }
-    if (pos < 0) break;
+  }
 
-    ++local_indices[pos];
-    for (uint32_t j = static_cast<uint32_t>(pos) + 1; j < strength_; ++j) {
-      local_indices[j] = local_indices[j - 1] + 1;
+  // Build mixed-radix multipliers for each combination.
+  // combo_multipliers_[ci][j] = product of value counts for positions j+1..t-1.
+  combo_multipliers_.resize(num_combos);
+  for (uint32_t ci = 0; ci < num_combos; ++ci) {
+    const auto& combo = param_combinations_[ci];
+    auto& mults = combo_multipliers_[ci];
+    mults.resize(strength_);
+    mults[strength_ - 1] = 1;
+    for (int j = static_cast<int>(strength_) - 2; j >= 0; --j) {
+      mults[j] = mults[j + 1] * params_[combo[j + 1]].size();
     }
   }
 }
 
-uint32_t CoverageEngine::ComputeTotalTuples() const {
+uint32_t CoverageEngine::ComputeTotalTuples() {
   uint32_t total = 0;
-  // const_cast needed because ComputeTotalTuples is declared const in the
-  // header but must populate combination_offsets_. Called only during Create().
-  auto& offsets = const_cast<std::vector<uint32_t>&>(combination_offsets_);
-  offsets.clear();
-  offsets.reserve(param_combinations_.size());
+  combination_offsets_.clear();
+  combination_offsets_.reserve(param_combinations_.size());
 
   for (const auto& combo : param_combinations_) {
-    offsets.push_back(total);
+    combination_offsets_.push_back(total);
     uint32_t product = 1;
     for (uint32_t pi : combo) {
       product *= params_[pi].size();
@@ -145,36 +124,14 @@ uint32_t CoverageEngine::ComputeTotalTuples() const {
   return total;
 }
 
-uint32_t CoverageEngine::TupleIndex(const std::vector<uint32_t>& param_indices,
-                                    const std::vector<uint32_t>& value_indices) const {
-  // Find matching combination.
-  for (uint32_t i = 0; i < param_combinations_.size(); ++i) {
-    if (param_combinations_[i] == param_indices) {
-      // Mixed-radix encoding within this combination's block.
-      uint32_t local_index = 0;
-      for (uint32_t j = 0; j < param_indices.size(); ++j) {
-        local_index *= params_[param_indices[j]].size();
-        local_index += value_indices[j];
-      }
-      return combination_offsets_[i] + local_index;
-    }
-  }
-  // Should not reach here with valid input.
-  return 0;
-}
-
 void CoverageEngine::AddTestCase(const model::TestCase& test_case) {
-  std::vector<uint32_t> param_indices(strength_);
-  std::vector<uint32_t> value_indices(strength_);
-
   for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
     const auto& combo = param_combinations_[ci];
+    const auto& mults = combo_multipliers_[ci];
 
-    // Extract value indices for this combination.
     uint32_t local_index = 0;
     for (uint32_t j = 0; j < strength_; ++j) {
-      local_index *= params_[combo[j]].size();
-      local_index += test_case.values[combo[j]];
+      local_index += test_case.values[combo[j]] * mults[j];
     }
 
     covered_.Set(combination_offsets_[ci] + local_index);
@@ -184,43 +141,31 @@ void CoverageEngine::AddTestCase(const model::TestCase& test_case) {
 uint32_t CoverageEngine::ScoreValue(const model::TestCase& partial, uint32_t param_index,
                                     uint32_t value_index) const {
   uint32_t score = 0;
+  const auto& relevant_combos = param_to_combos_[param_index];
+  const auto& positions = param_position_in_combo_[param_index];
+  uint32_t num_relevant = static_cast<uint32_t>(relevant_combos.size());
 
-  for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
+  for (uint32_t k = 0; k < num_relevant; ++k) {
+    uint32_t ci = relevant_combos[k];
+    uint32_t pos = positions[k];
     const auto& combo = param_combinations_[ci];
+    const auto& mults = combo_multipliers_[ci];
 
-    // Check if this combination includes param_index.
-    bool includes_param = false;
-    for (uint32_t pi : combo) {
-      if (pi == param_index) {
-        includes_param = true;
-        break;
-      }
-    }
-    if (!includes_param) continue;
-
-    // Check that all other parameters in the combination are assigned.
+    // Check all other params are assigned and compute mixed-radix index.
     bool all_assigned = true;
-    for (uint32_t pi : combo) {
-      if (pi != param_index && partial.values[pi] == kUnassigned) {
+    uint32_t local_index = value_index * mults[pos];
+    for (uint32_t j = 0; j < strength_; ++j) {
+      if (j == pos) continue;
+      uint32_t v = partial.values[combo[j]];
+      if (v == model::kUnassigned) {
         all_assigned = false;
         break;
       }
+      local_index += v * mults[j];
     }
     if (!all_assigned) continue;
 
-    // Compute tuple index using mixed-radix encoding.
-    uint32_t local_index = 0;
-    for (uint32_t j = 0; j < strength_; ++j) {
-      local_index *= params_[combo[j]].size();
-      if (combo[j] == param_index) {
-        local_index += value_index;
-      } else {
-        local_index += partial.values[combo[j]];
-      }
-    }
-
-    uint32_t global_index = combination_offsets_[ci] + local_index;
-    if (!covered_.Test(global_index)) {
+    if (!covered_.Test(combination_offsets_[ci] + local_index)) {
       ++score;
     }
   }
@@ -233,15 +178,14 @@ uint32_t CoverageEngine::ScoreCandidate(const model::TestCase& candidate) const 
 
   for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
     const auto& combo = param_combinations_[ci];
+    const auto& mults = combo_multipliers_[ci];
 
     uint32_t local_index = 0;
     for (uint32_t j = 0; j < strength_; ++j) {
-      local_index *= params_[combo[j]].size();
-      local_index += candidate.values[combo[j]];
+      local_index += candidate.values[combo[j]] * mults[j];
     }
 
-    uint32_t global_index = combination_offsets_[ci] + local_index;
-    if (!covered_.Test(global_index)) {
+    if (!covered_.Test(combination_offsets_[ci] + local_index)) {
       ++score;
     }
   }
@@ -319,7 +263,7 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
       }
 
       // Build partial assignment with only this tuple's parameters set.
-      std::vector<uint32_t> assignment(num_params, kUnassigned);
+      std::vector<uint32_t> assignment(num_params, model::kUnassigned);
       for (uint32_t j = 0; j < combo.size(); ++j) {
         assignment[combo[j]] = value_indices[j];
       }

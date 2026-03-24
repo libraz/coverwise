@@ -3,7 +3,6 @@
 #include "algo/greedy.h"
 
 #include <algorithm>
-#include <limits>
 #include <numeric>
 #include <vector>
 
@@ -49,21 +48,28 @@ uint32_t BreakTieWithWeights(const std::vector<uint32_t>& best_values,
   return best_values[idx];
 }
 
-}  // namespace
-
-model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
-                                const core::CoverageEngine& coverage,
-                                const std::vector<model::Constraint>& constraints, util::Rng& rng,
-                                const std::vector<std::vector<bool>>& allowed_values,
-                                const std::vector<std::vector<double>>& weights) {
+/// @brief Core greedy construction loop parameterized by scoring and value filtering.
+///
+/// @param params Parameter definitions.
+/// @param constraints Active constraints for pruning.
+/// @param rng Random number generator.
+/// @param weights Weight configuration for tie-breaking.
+/// @param score_fn Function(const TestCase& partial, uint32_t pi, uint32_t vi) -> uint32_t
+/// @param is_allowed Function(uint32_t pi, uint32_t vi) -> bool
+/// @param fallback_fn Function(uint32_t pi) -> uint32_t  (fallback value when all pruned)
+template <typename ScoreFn, typename AllowedFn, typename FallbackFn>
+model::TestCase GreedyConstructImpl(const std::vector<model::Parameter>& params,
+                                    const std::vector<model::Constraint>& constraints,
+                                    util::Rng& rng,
+                                    const std::vector<std::vector<double>>& weights,
+                                    ScoreFn score_fn, AllowedFn is_allowed,
+                                    FallbackFn fallback_fn) {
   const auto num_params = static_cast<uint32_t>(params.size());
-  constexpr uint32_t kUnassigned = std::numeric_limits<uint32_t>::max();
 
-  // Start with empty (unassigned) test case
   model::TestCase tc;
-  tc.values.assign(num_params, kUnassigned);
+  tc.values.assign(num_params, model::kUnassigned);
 
-  // Create a random permutation of parameter indices (Fisher-Yates shuffle)
+  // Fisher-Yates shuffle for parameter order
   std::vector<uint32_t> order(num_params);
   std::iota(order.begin(), order.end(), 0);
   for (uint32_t i = num_params; i > 1; --i) {
@@ -71,16 +77,12 @@ model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
     std::swap(order[i - 1], order[j]);
   }
 
-  // For each parameter in the permuted order, pick the best value
   for (uint32_t pi : order) {
     uint32_t best_score = 0;
     std::vector<uint32_t> best_values;
 
     for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
-      // Skip values not in the allowed mask.
-      if (!allowed_values.empty() && !allowed_values[pi][vi]) {
-        continue;
-      }
+      if (!is_allowed(pi, vi)) continue;
 
       // Temporarily assign value for constraint evaluation
       tc.values[pi] = vi;
@@ -97,13 +99,11 @@ model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
       }
 
       // Reset before deciding
-      tc.values[pi] = kUnassigned;
+      tc.values[pi] = model::kUnassigned;
 
-      if (pruned) {
-        continue;
-      }
+      if (pruned) continue;
 
-      uint32_t score = coverage.ScoreValue(tc, pi, vi);
+      uint32_t score = score_fn(tc, pi, vi);
       if (best_values.empty() || score > best_score) {
         best_score = score;
         best_values.clear();
@@ -113,18 +113,8 @@ model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
       }
     }
 
-    // Pick the chosen value
     if (best_values.empty()) {
-      // Fallback: pick the first allowed value, or 0 if none.
-      tc.values[pi] = 0;
-      if (!allowed_values.empty()) {
-        for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
-          if (allowed_values[pi][vi]) {
-            tc.values[pi] = vi;
-            break;
-          }
-        }
-      }
+      tc.values[pi] = fallback_fn(pi);
     } else {
       tc.values[pi] = BreakTieWithWeights(best_values, weights, pi, rng);
     }
@@ -133,70 +123,44 @@ model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
   return tc;
 }
 
+}  // namespace
+
+model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
+                                const core::CoverageEngine& coverage,
+                                const std::vector<model::Constraint>& constraints, util::Rng& rng,
+                                const std::vector<std::vector<bool>>& allowed_values,
+                                const std::vector<std::vector<double>>& weights) {
+  auto score_fn = [&](const model::TestCase& partial, uint32_t pi, uint32_t vi) {
+    return coverage.ScoreValue(partial, pi, vi);
+  };
+  auto is_allowed = [&](uint32_t pi, uint32_t vi) {
+    return allowed_values.empty() || allowed_values[pi][vi];
+  };
+  auto fallback_fn = [&](uint32_t pi) -> uint32_t {
+    if (!allowed_values.empty()) {
+      for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
+        if (allowed_values[pi][vi]) return vi;
+      }
+    }
+    return 0;
+  };
+  return GreedyConstructImpl(params, constraints, rng, weights, score_fn, is_allowed, fallback_fn);
+}
+
 model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
                                 const std::vector<const core::CoverageEngine*>& engines,
                                 const std::vector<model::Constraint>& constraints, util::Rng& rng,
                                 const std::vector<std::vector<double>>& weights) {
-  const auto num_params = static_cast<uint32_t>(params.size());
-  constexpr uint32_t kUnassigned = std::numeric_limits<uint32_t>::max();
-
-  model::TestCase tc;
-  tc.values.assign(num_params, kUnassigned);
-
-  // Create a random permutation of parameter indices (Fisher-Yates shuffle)
-  std::vector<uint32_t> order(num_params);
-  std::iota(order.begin(), order.end(), 0);
-  for (uint32_t i = num_params; i > 1; --i) {
-    uint32_t j = rng.NextUint32(i);
-    std::swap(order[i - 1], order[j]);
-  }
-
-  // For each parameter in the permuted order, pick the best value
-  for (uint32_t pi : order) {
-    uint32_t best_score = 0;
-    std::vector<uint32_t> best_values;
-
-    for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
-      tc.values[pi] = vi;
-
-      bool pruned = false;
-      for (const auto& constraint : constraints) {
-        auto result = constraint->Evaluate(tc.values);
-        if (result == model::ConstraintResult::kFalse) {
-          pruned = true;
-          break;
-        }
-      }
-
-      tc.values[pi] = kUnassigned;
-
-      if (pruned) {
-        continue;
-      }
-
-      // Sum scores from all engines.
-      uint32_t score = 0;
-      for (const auto* engine : engines) {
-        score += engine->ScoreValue(tc, pi, vi);
-      }
-
-      if (best_values.empty() || score > best_score) {
-        best_score = score;
-        best_values.clear();
-        best_values.push_back(vi);
-      } else if (score == best_score) {
-        best_values.push_back(vi);
-      }
+  auto score_fn = [&](const model::TestCase& partial, uint32_t pi, uint32_t vi) -> uint32_t {
+    uint32_t score = 0;
+    for (const auto* engine : engines) {
+      score += engine->ScoreValue(partial, pi, vi);
     }
-
-    if (best_values.empty()) {
-      tc.values[pi] = 0;
-    } else {
-      tc.values[pi] = BreakTieWithWeights(best_values, weights, pi, rng);
-    }
-  }
-
-  return tc;
+    return score;
+  };
+  auto is_allowed = [](uint32_t /*pi*/, uint32_t /*vi*/) { return true; };
+  auto fallback_fn = [](uint32_t /*pi*/) -> uint32_t { return 0; };
+  return GreedyConstructImpl(params, constraints, rng, weights, score_fn, is_allowed, fallback_fn);
 }
 
 }  // namespace algo

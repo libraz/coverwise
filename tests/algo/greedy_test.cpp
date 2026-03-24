@@ -436,3 +436,32 @@ TEST(GreedyConstructTest, MultiEngineAllPrunedFallback) {
   // All pruned => fallback to 0.
   EXPECT_EQ(tc.values[0], 0u);
 }
+
+// ---------------------------------------------------------------------------
+// Additional edge cases
+// ---------------------------------------------------------------------------
+
+// Edge: single parameter, strength 2 → trivially complete, no pairs
+TEST(GreedyConstructTest, SingleParameterNoPairs) {
+  std::vector<Parameter> params = {{"A", {"0", "1", "2"}, {}}};
+  auto [engine, err] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(err.ok());
+  // Engine should be trivially complete (0 tuples)
+  EXPECT_TRUE(engine.IsComplete());
+}
+
+// Edge: all values have equal weight → uniform distribution
+TEST(GreedyConstructTest, EqualWeightsUniform) {
+  std::vector<Parameter> params = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  auto [engine, err] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(err.ok());
+  std::vector<std::vector<double>> weights = {{1.0, 1.0}, {1.0, 1.0}};
+  Rng rng(42);
+  std::vector<Constraint> constraints;
+  auto tc = GreedyConstruct(params, engine, constraints, rng, {}, weights);
+  // Should succeed without crash
+  EXPECT_EQ(tc.values.size(), 2u);
+}
