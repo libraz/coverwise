@@ -1,12 +1,9 @@
 #include <gtest/gtest.h>
 
-#include "core/generator.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
 #include "validator/coverage_validator.h"
 
-using coverwise::core::Generate;
-using coverwise::core::GenerateOptions;
 using coverwise::model::Parameter;
 using coverwise::model::TestCase;
 using coverwise::validator::ComputeClassCoverage;
@@ -119,46 +116,6 @@ TEST(EquivalenceClassTest, NoClasses) {
   EXPECT_EQ(report.total_class_tuples, 0u);
   EXPECT_EQ(report.covered_class_tuples, 0u);
   EXPECT_DOUBLE_EQ(report.coverage_ratio, 0.0);
-}
-
-TEST(EquivalenceClassTest, GeneratorIntegration) {
-  // Verify that Generate() populates class_coverage when classes are defined.
-  GenerateOptions opts;
-  opts.parameters = {
-      MakeClassParam("age", {"5", "15", "25", "35", "65"},
-                     {"child", "teen", "adult", "adult", "senior"}),
-      MakeClassParam("income", {"20k", "50k", "100k"}, {"low", "mid", "high"}),
-  };
-  opts.strength = 2;
-  opts.seed = 42;
-
-  auto result = Generate(opts);
-
-  // Class coverage is no longer computed inside Generate() (to avoid core/ -> validator/
-  // dependency). Compute it explicitly here.
-  auto class_report = ComputeClassCoverage(opts.parameters, result.tests, opts.strength);
-  EXPECT_EQ(class_report.total_class_tuples, 12u);
-  // Generation should cover all class combos since it generates all value pairs.
-  EXPECT_EQ(class_report.covered_class_tuples, 12u);
-  EXPECT_DOUBLE_EQ(class_report.coverage_ratio, 1.0);
-}
-
-TEST(EquivalenceClassTest, GeneratorNoClasses) {
-  // Without classes, has_class_coverage should be false.
-  GenerateOptions opts;
-  opts.parameters = {
-      {"A", {"0", "1"}, {}},
-      {"B", {"0", "1"}, {}},
-  };
-  opts.strength = 2;
-  opts.seed = 42;
-
-  auto result = Generate(opts);
-
-  // Class coverage is no longer computed inside Generate(). Verify that ComputeClassCoverage
-  // returns zero tuples when no equivalence classes are defined.
-  auto class_report = ComputeClassCoverage(opts.parameters, result.tests, opts.strength);
-  EXPECT_EQ(class_report.total_class_tuples, 0u);
 }
 
 TEST(EquivalenceClassTest, MultipleValuesInSameClass) {

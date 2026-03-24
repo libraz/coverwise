@@ -99,8 +99,8 @@ std::vector<coverwise::model::Parameter> ParseParameters(val js_params) {
 ///
 /// The JS test case is a map of param_name -> value_string. We resolve each
 /// value to its index using find_value_index.
-coverwise::model::TestCase ParseTestCase(
-    val js_test, const std::vector<coverwise::model::Parameter>& params) {
+coverwise::model::TestCase ParseTestCase(val js_test,
+                                         const std::vector<coverwise::model::Parameter>& params) {
   coverwise::model::TestCase tc;
   tc.values.resize(params.size(), coverwise::model::kUnassigned);
   for (uint32_t i = 0; i < params.size(); ++i) {
@@ -127,8 +127,8 @@ std::vector<coverwise::model::TestCase> ParseTestCases(
 /// @brief Parse weight configuration from JS object.
 ///
 /// Expected format: { "os": { "win": 2.0, "mac": 1.5 }, "browser": { ... } }
-coverwise::core::WeightConfig ParseWeights(val js_weights) {
-  coverwise::core::WeightConfig weights;
+coverwise::model::WeightConfig ParseWeights(val js_weights) {
+  coverwise::model::WeightConfig weights;
   if (js_weights.isUndefined() || js_weights.isNull()) return weights;
 
   val keys = val::global("Object").call<val>("keys", js_weights);
@@ -150,15 +150,15 @@ coverwise::core::WeightConfig ParseWeights(val js_weights) {
 /// @brief Parse sub-models from JS array.
 ///
 /// Expected format: [{ parameters: ["os", "browser"], strength: 3 }, ...]
-std::vector<coverwise::core::SubModel> ParseSubModels(val js_sub_models) {
-  std::vector<coverwise::core::SubModel> sub_models;
+std::vector<coverwise::model::SubModel> ParseSubModels(val js_sub_models) {
+  std::vector<coverwise::model::SubModel> sub_models;
   if (js_sub_models.isUndefined() || js_sub_models.isNull()) return sub_models;
 
   uint32_t count = js_sub_models["length"].as<uint32_t>();
   sub_models.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     val js_sm = js_sub_models[i];
-    coverwise::core::SubModel sm;
+    coverwise::model::SubModel sm;
     val js_names = js_sm["parameters"];
     uint32_t name_count = js_names["length"].as<uint32_t>();
     for (uint32_t j = 0; j < name_count; ++j) {
@@ -173,8 +173,8 @@ std::vector<coverwise::core::SubModel> ParseSubModels(val js_sub_models) {
 }
 
 /// @brief Parse the full GenerateOptions from a JS input object.
-coverwise::core::GenerateOptions ParseGenerateOptions(val input) {
-  coverwise::core::GenerateOptions opts;
+coverwise::model::GenerateOptions ParseGenerateOptions(val input) {
+  coverwise::model::GenerateOptions opts;
 
   // Parameters (required)
   opts.parameters = ParseParameters(input["parameters"]);
@@ -230,8 +230,7 @@ coverwise::core::GenerateOptions ParseGenerateOptions(val input) {
 ///
 /// Uses display_name() for alias rotation.
 val TestCaseToJS(const coverwise::model::TestCase& tc,
-                 const std::vector<coverwise::model::Parameter>& params,
-                 uint32_t rotation) {
+                 const std::vector<coverwise::model::Parameter>& params, uint32_t rotation) {
   val obj = val::object();
   for (uint32_t i = 0; i < params.size() && i < tc.values.size(); ++i) {
     if (tc.values[i] != coverwise::model::kUnassigned) {
@@ -279,8 +278,11 @@ val UncoveredToJS(const std::vector<coverwise::model::UncoveredTuple>& uncovered
 
 /// @brief Convert a GenerateResult to a JS object.
 val GenerateResultToJS(const coverwise::model::GenerateResult& result,
-                       const std::vector<coverwise::model::Parameter>& params) {
+                       const std::vector<coverwise::model::Parameter>& params, uint32_t strength) {
   val obj = val::object();
+
+  // strength
+  obj.set("strength", val(strength));
 
   // tests
   obj.set("tests", TestCasesToJS(result.tests, params));
@@ -319,11 +321,11 @@ val GenerateResultToJS(const coverwise::model::GenerateResult& result,
   obj.set("warnings", warnings);
 
   // classCoverage (if available)
-  if (result.has_class_coverage) {
+  if (result.class_coverage) {
     val cc = val::object();
-    cc.set("totalClassTuples", result.class_coverage.total_class_tuples);
-    cc.set("coveredClassTuples", result.class_coverage.covered_class_tuples);
-    cc.set("classCoverageRatio", result.class_coverage.class_coverage_ratio);
+    cc.set("totalClassTuples", result.class_coverage->total_class_tuples);
+    cc.set("coveredClassTuples", result.class_coverage->covered_class_tuples);
+    cc.set("classCoverageRatio", result.class_coverage->class_coverage_ratio);
     obj.set("classCoverage", cc);
   }
 
@@ -341,7 +343,7 @@ val CoverageReportToJS(const coverwise::validator::CoverageReport& report) {
 }
 
 /// @brief Convert ModelStats to a JS object.
-val ModelStatsToJS(const coverwise::core::ModelStats& stats) {
+val ModelStatsToJS(const coverwise::model::ModelStats& stats) {
   val obj = val::object();
   obj.set("parameterCount", stats.parameter_count);
   obj.set("totalValues", stats.total_values);
@@ -388,25 +390,13 @@ val wasmGenerate(val input) {
     auto opts = ParseGenerateOptions(input);
     auto result = coverwise::core::Generate(opts);
 
-    // Compute equivalence class coverage (done here to avoid core/ -> validator/ dependency).
-    bool has_eq_classes = false;
-    for (const auto& p : opts.parameters) {
-      if (p.has_equivalence_classes()) {
-        has_eq_classes = true;
-        break;
-      }
-    }
-    if (has_eq_classes) {
-      auto class_report =
-          coverwise::validator::ComputeClassCoverage(opts.parameters, result.tests, opts.strength);
-      result.class_coverage.total_class_tuples = class_report.total_class_tuples;
-      result.class_coverage.covered_class_tuples = class_report.covered_class_tuples;
-      result.class_coverage.class_coverage_ratio = class_report.coverage_ratio;
-      result.has_class_coverage = true;
-    }
+    // Annotate equivalence class coverage if any parameter has classes defined.
+    coverwise::validator::AnnotateClassCoverage(result, opts.parameters, opts.strength);
 
-    return GenerateResultToJS(result, opts.parameters);
+    return GenerateResultToJS(result, opts.parameters, opts.strength);
   } catch (const std::exception& e) {
+    // TODO: Map specific exception types to appropriate error codes once
+    // the C++ layer throws typed exceptions (e.g., ConstraintError).
     return MakeError(e.what());
   }
 }
@@ -438,8 +428,9 @@ val wasmExtendTests(val js_existing, val input) {
     auto opts = ParseGenerateOptions(input);
     auto existing = ParseTestCases(js_existing, opts.parameters);
     auto result = coverwise::core::Extend(existing, opts);
-    return GenerateResultToJS(result, opts.parameters);
+    return GenerateResultToJS(result, opts.parameters, opts.strength);
   } catch (const std::exception& e) {
+    // TODO: Map specific exception types to appropriate error codes.
     return MakeError(e.what());
   }
 }

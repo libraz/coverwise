@@ -10,14 +10,14 @@
 
 using coverwise::core::EstimateModel;
 using coverwise::core::Extend;
-using coverwise::core::ExtendMode;
 using coverwise::core::Generate;
-using coverwise::core::GenerateOptions;
-using coverwise::core::ModelStats;
-using coverwise::core::SubModel;
-using coverwise::core::WeightConfig;
+using coverwise::model::ExtendMode;
+using coverwise::model::GenerateOptions;
+using coverwise::model::ModelStats;
 using coverwise::model::Parameter;
+using coverwise::model::SubModel;
 using coverwise::model::TestCase;
+using coverwise::model::WeightConfig;
 
 // ---------------------------------------------------------------------------
 // Generate tests
@@ -256,12 +256,8 @@ TEST(GeneratorTest, NegativeTesting) {
 TEST(GeneratorTest, LargeModelFullCoverage) {
   GenerateOptions opts;
   opts.parameters = {
-      {"P1", {"a", "b", "c"}, {}},
-      {"P2", {"x", "y", "z"}, {}},
-      {"P3", {"1", "2", "3"}, {}},
-      {"P4", {"p", "q"}, {}},
-      {"P5", {"m", "n"}, {}},
-      {"P6", {"u", "v"}, {}},
+      {"P1", {"a", "b", "c"}, {}}, {"P2", {"x", "y", "z"}, {}}, {"P3", {"1", "2", "3"}, {}},
+      {"P4", {"p", "q"}, {}},      {"P5", {"m", "n"}, {}},      {"P6", {"u", "v"}, {}},
   };
   opts.strength = 2;
   opts.seed = 42;

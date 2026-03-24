@@ -290,6 +290,12 @@ class JsonWriter {
     }
   }
 
+  /// @brief Write a number with fixed decimal precision.
+  void WriteNumberFixed(double v, int precision) {
+    out_ << std::fixed << std::setprecision(precision) << v;
+    out_ << std::defaultfloat;
+  }
+
   void WriteString(const std::string& s) {
     out_ << '"';
     for (char c : s) {
@@ -711,15 +717,15 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
   w.EndObject();
 
   // classCoverage (only when equivalence classes are defined)
-  if (result.has_class_coverage) {
+  if (result.class_coverage) {
     w.Key("classCoverage");
     w.BeginObject();
     w.Key("totalClassTuples");
-    w.WriteNumber(static_cast<double>(result.class_coverage.total_class_tuples));
+    w.WriteNumber(static_cast<double>(result.class_coverage->total_class_tuples));
     w.Key("coveredClassTuples");
-    w.WriteNumber(static_cast<double>(result.class_coverage.covered_class_tuples));
+    w.WriteNumber(static_cast<double>(result.class_coverage->covered_class_tuples));
     w.Key("classCoverageRatio");
-    w.WriteNumber(result.class_coverage.class_coverage_ratio);
+    w.WriteNumber(result.class_coverage->class_coverage_ratio);
     w.EndObject();
   }
 
@@ -760,10 +766,7 @@ void WriteCoverageReport(const coverwise::validator::CoverageReport& report) {
   w.WriteNumber(static_cast<double>(report.covered_tuples));
 
   w.Key("coverageRatio");
-  // Write with 3 decimal places for ratio.
-  std::cout << std::fixed << std::setprecision(3) << report.coverage_ratio;
-  // Reset stream state after manual write.
-  std::cout << std::defaultfloat;
+  w.WriteNumberFixed(report.coverage_ratio, 3);
 
   w.Key("uncovered");
   w.BeginArray();
@@ -823,7 +826,7 @@ int RunGenerate(int argc, char* argv[]) {
 
   // Parse parameters.
   std::string error;
-  coverwise::core::GenerateOptions options;
+  coverwise::model::GenerateOptions options;
   if (!ParseParameters(json["parameters"], options.parameters, error)) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
@@ -884,6 +887,9 @@ int RunGenerate(int argc, char* argv[]) {
 
   // Generate.
   auto result = coverwise::core::Generate(options);
+
+  // Annotate equivalence class coverage if any parameter has classes defined.
+  coverwise::validator::AnnotateClassCoverage(result, options.parameters, options.strength);
 
   // Determine exit code.
   int exit_code = kExitOk;
@@ -1002,7 +1008,7 @@ int RunExtend(int argc, char* argv[]) {
   }
 
   std::string error;
-  coverwise::core::GenerateOptions options;
+  coverwise::model::GenerateOptions options;
   if (!ParseParameters(input_json["parameters"], options.parameters, error)) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
@@ -1055,6 +1061,9 @@ int RunExtend(int argc, char* argv[]) {
 
   auto result = coverwise::core::Extend(existing, options);
 
+  // Annotate equivalence class coverage if any parameter has classes defined.
+  coverwise::validator::AnnotateClassCoverage(result, options.parameters, options.strength);
+
   int exit_code = kExitOk;
   if (result.coverage < 1.0 && options.max_tests > 0) {
     exit_code = kExitInsufficientCoverage;
@@ -1088,7 +1097,7 @@ int RunStats(int argc, char* argv[]) {
   }
 
   std::string error;
-  coverwise::core::GenerateOptions options;
+  coverwise::model::GenerateOptions options;
   if (!ParseParameters(json["parameters"], options.parameters, error)) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
@@ -1118,7 +1127,7 @@ int RunStats(int argc, char* argv[]) {
     for (size_t i = 0; i < sub_models_val.array_val.size(); ++i) {
       const auto& sm = sub_models_val.array_val[i];
       if (sm.type == JsonType::kObject) {
-        coverwise::core::SubModel sub_model;
+        coverwise::model::SubModel sub_model;
         const auto& sm_strength = sm["strength"];
         if (!sm_strength.IsNull() && sm_strength.type == JsonType::kNumber) {
           sub_model.strength = static_cast<uint32_t>(sm_strength.number_val);

@@ -6,13 +6,26 @@
 #include "validator/coverage_validator.h"
 
 using coverwise::core::Generate;
-using coverwise::core::GenerateOptions;
 using coverwise::model::Constraint;
+using coverwise::model::GenerateOptions;
 using coverwise::model::Parameter;
 using coverwise::model::ParseConstraint;
 using coverwise::model::TestCase;
+using coverwise::validator::ComputeClassCoverage;
 using coverwise::validator::ValidateConstraints;
 using coverwise::validator::ValidateCoverage;
+
+namespace {
+
+/// @brief Helper to create a parameter with equivalence classes.
+Parameter MakeClassParam(const std::string& name, std::vector<std::string> values,
+                         std::vector<std::string> classes) {
+  Parameter p(name, std::move(values));
+  p.set_equivalence_classes(std::move(classes));
+  return p;
+}
+
+}  // namespace
 
 TEST(IntegrationTest, GenerateAndValidatePairwise) {
   GenerateOptions opts;
@@ -658,7 +671,7 @@ TEST(IntegrationEdgeCaseTest, NegativeNumberConstraint) {
 // Sub-model (mixed strength) integration tests
 // ===========================================================================
 
-using coverwise::core::SubModel;
+using coverwise::model::SubModel;
 
 TEST(IntegrationSubModelTest, SubModelHigherStrength) {
   GenerateOptions opts;
@@ -1170,7 +1183,7 @@ TEST(IntegrationTest, AliasingFindValueIndex) {
 // Weight (Priority) tests
 // ---------------------------------------------------------------------------
 
-using coverwise::core::WeightConfig;
+using coverwise::model::WeightConfig;
 
 TEST(IntegrationTest, WeightDoesNotBreakCoverage) {
   GenerateOptions opts;
@@ -1273,7 +1286,7 @@ TEST(IntegrationTest, WeightWithConstraints) {
 // ---------------------------------------------------------------------------
 
 using coverwise::core::EstimateModel;
-using coverwise::core::ModelStats;
+using coverwise::model::ModelStats;
 
 TEST(IntegrationTest, PreviewStatsBasic) {
   GenerateOptions opts;
@@ -1380,4 +1393,44 @@ TEST(IntegrationTest, PreviewStatsEstimateReasonable) {
   EXPECT_LE(actual, stats.estimated_tests * 2)
       << "Actual tests (" << actual << ") much larger than estimate (" << stats.estimated_tests
       << ")";
+}
+
+TEST(IntegrationTest, EquivalenceClassGeneratorIntegration) {
+  // Verify that Generate() + ComputeClassCoverage works when classes are defined.
+  GenerateOptions opts;
+  opts.parameters = {
+      MakeClassParam("age", {"5", "15", "25", "35", "65"},
+                     {"child", "teen", "adult", "adult", "senior"}),
+      MakeClassParam("income", {"20k", "50k", "100k"}, {"low", "mid", "high"}),
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  // Class coverage is no longer computed inside Generate() (to avoid core/ -> validator/
+  // dependency). Compute it explicitly here.
+  auto class_report = ComputeClassCoverage(opts.parameters, result.tests, opts.strength);
+  EXPECT_EQ(class_report.total_class_tuples, 12u);
+  // Generation should cover all class combos since it generates all value pairs.
+  EXPECT_EQ(class_report.covered_class_tuples, 12u);
+  EXPECT_DOUBLE_EQ(class_report.coverage_ratio, 1.0);
+}
+
+TEST(IntegrationTest, EquivalenceClassGeneratorNoClasses) {
+  // Without classes, ComputeClassCoverage should return zero tuples.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  // Class coverage is no longer computed inside Generate(). Verify that ComputeClassCoverage
+  // returns zero tuples when no equivalence classes are defined.
+  auto class_report = ComputeClassCoverage(opts.parameters, result.tests, opts.strength);
+  EXPECT_EQ(class_report.total_class_tuples, 0u);
 }

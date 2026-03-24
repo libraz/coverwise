@@ -48,22 +48,12 @@ uint32_t BreakTieWithWeights(const std::vector<uint32_t>& best_values,
   return best_values[idx];
 }
 
-/// @brief Core greedy construction loop parameterized by scoring and value filtering.
-///
-/// @param params Parameter definitions.
-/// @param constraints Active constraints for pruning.
-/// @param rng Random number generator.
-/// @param weights Weight configuration for tie-breaking.
-/// @param score_fn Function(const TestCase& partial, uint32_t pi, uint32_t vi) -> uint32_t
-/// @param is_allowed Function(uint32_t pi, uint32_t vi) -> bool
-/// @param fallback_fn Function(uint32_t pi) -> uint32_t  (fallback value when all pruned)
-template <typename ScoreFn, typename AllowedFn, typename FallbackFn>
-model::TestCase GreedyConstructImpl(const std::vector<model::Parameter>& params,
-                                    const std::vector<model::Constraint>& constraints,
-                                    util::Rng& rng,
-                                    const std::vector<std::vector<double>>& weights,
-                                    ScoreFn score_fn, AllowedFn is_allowed,
-                                    FallbackFn fallback_fn) {
+}  // namespace
+
+model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params, ScoreFn score_fn,
+                                const std::vector<model::Constraint>& constraints, util::Rng& rng,
+                                const std::vector<std::vector<bool>>& allowed_values,
+                                const std::vector<std::vector<double>>& weights) {
   const auto num_params = static_cast<uint32_t>(params.size());
 
   model::TestCase tc;
@@ -82,7 +72,7 @@ model::TestCase GreedyConstructImpl(const std::vector<model::Parameter>& params,
     std::vector<uint32_t> best_values;
 
     for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
-      if (!is_allowed(pi, vi)) continue;
+      if (!allowed_values.empty() && !allowed_values[pi][vi]) continue;
 
       // Temporarily assign value for constraint evaluation
       tc.values[pi] = vi;
@@ -114,53 +104,26 @@ model::TestCase GreedyConstructImpl(const std::vector<model::Parameter>& params,
     }
 
     if (best_values.empty()) {
-      tc.values[pi] = fallback_fn(pi);
+      // Fallback: pick the first allowed value, or 0 if no mask.
+      if (!allowed_values.empty()) {
+        for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
+          if (allowed_values[pi][vi]) {
+            tc.values[pi] = vi;
+            break;
+          }
+        }
+        if (tc.values[pi] == model::kUnassigned) {
+          tc.values[pi] = 0;
+        }
+      } else {
+        tc.values[pi] = 0;
+      }
     } else {
       tc.values[pi] = BreakTieWithWeights(best_values, weights, pi, rng);
     }
   }
 
   return tc;
-}
-
-}  // namespace
-
-model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
-                                const core::CoverageEngine& coverage,
-                                const std::vector<model::Constraint>& constraints, util::Rng& rng,
-                                const std::vector<std::vector<bool>>& allowed_values,
-                                const std::vector<std::vector<double>>& weights) {
-  auto score_fn = [&](const model::TestCase& partial, uint32_t pi, uint32_t vi) {
-    return coverage.ScoreValue(partial, pi, vi);
-  };
-  auto is_allowed = [&](uint32_t pi, uint32_t vi) {
-    return allowed_values.empty() || allowed_values[pi][vi];
-  };
-  auto fallback_fn = [&](uint32_t pi) -> uint32_t {
-    if (!allowed_values.empty()) {
-      for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
-        if (allowed_values[pi][vi]) return vi;
-      }
-    }
-    return 0;
-  };
-  return GreedyConstructImpl(params, constraints, rng, weights, score_fn, is_allowed, fallback_fn);
-}
-
-model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
-                                const std::vector<const core::CoverageEngine*>& engines,
-                                const std::vector<model::Constraint>& constraints, util::Rng& rng,
-                                const std::vector<std::vector<double>>& weights) {
-  auto score_fn = [&](const model::TestCase& partial, uint32_t pi, uint32_t vi) -> uint32_t {
-    uint32_t score = 0;
-    for (const auto* engine : engines) {
-      score += engine->ScoreValue(partial, pi, vi);
-    }
-    return score;
-  };
-  auto is_allowed = [](uint32_t /*pi*/, uint32_t /*vi*/) { return true; };
-  auto fallback_fn = [](uint32_t /*pi*/) -> uint32_t { return 0; };
-  return GreedyConstructImpl(params, constraints, rng, weights, score_fn, is_allowed, fallback_fn);
 }
 
 }  // namespace algo

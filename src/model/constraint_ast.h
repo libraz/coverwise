@@ -9,8 +9,13 @@
 #include <string>
 #include <vector>
 
+#include "util/string_util.h"
+
 namespace coverwise {
 namespace model {
+
+using util::IsNumeric;
+using util::ToDouble;
 
 /// @brief Sentinel value indicating an unassigned parameter.
 constexpr uint32_t kUnassigned = UINT32_MAX;
@@ -262,12 +267,6 @@ class ParamNotEqualsNode : public ConstraintNode {
   std::vector<std::string> left_values_;
   std::vector<std::string> right_values_;
 };
-
-/// @brief Check if a string can be parsed as a double.
-bool IsNumeric(const std::string& s);
-
-/// @brief Parse a string as a double. Undefined behavior if !IsNumeric(s).
-double ToDouble(const std::string& s);
 
 }  // namespace model
 }  // namespace coverwise

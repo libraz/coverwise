@@ -58,6 +58,8 @@ export interface UncoveredTuple {
   params: string[];
   /** Why this tuple is uncovered. */
   reason: string;
+  /** Human-readable display string. */
+  display: string;
 }
 
 /**
@@ -77,12 +79,18 @@ export interface GenerateResult {
   uncovered: UncoveredTuple[];
   /** Statistics for evaluation and comparison. */
   stats: GenerateStats;
-  /** Actionable suggestions. e.g. "Add test: os=win, browser=safari" */
-  suggestions: string[];
+  /** Actionable suggestions with proposed test cases. */
+  suggestions: Array<{ description: string; testCase: Record<string, string> }>;
   /** Warnings (e.g. performance degradation). */
   warnings: string[];
   /** Strength used for generation. */
   strength: number;
+  /** Equivalence class coverage (present when parameters have equivalence classes). */
+  classCoverage?: {
+    totalClassTuples: number;
+    coveredClassTuples: number;
+    classCoverageRatio: number;
+  };
 }
 
 export interface CoverageReport {
@@ -95,7 +103,7 @@ export interface CoverageReport {
 
 export interface ExtendInput extends GenerateInput {
   /** How to handle existing tests. */
-  mode?: 'strict' | 'optimize';
+  mode?: 'strict';
 }
 
 export interface ModelStats {
@@ -165,6 +173,20 @@ function getModule(): WasmModule {
   return wasmModule;
 }
 
+// --- Result Checking ---
+
+function checkResult<T>(result: unknown): T {
+  const r = result as Record<string, unknown>;
+  if (r && r.error === true) {
+    const err: CoverwiseError = {
+      code: (r.code as CoverwiseError['code']) ?? 'INVALID_INPUT',
+      message: (r.message as string) ?? 'Unknown error',
+    };
+    throw err;
+  }
+  return result as T;
+}
+
 // --- Core API ---
 
 /**
@@ -182,7 +204,7 @@ function getModule(): WasmModule {
  */
 export function generate(input: GenerateInput): GenerateResult {
   const mod = getModule();
-  const result = mod.generate(input) as GenerateResult;
+  const result = checkResult<GenerateResult>(mod.generate(input));
   return result;
 }
 
@@ -203,7 +225,7 @@ export function analyzeCoverage(
   strength?: number,
 ): CoverageReport {
   const mod = getModule();
-  const result = mod.analyzeCoverage(parameters, tests, strength ?? 2) as CoverageReport;
+  const result = checkResult<CoverageReport>(mod.analyzeCoverage(parameters, tests, strength ?? 2));
   // When there are no tuples (e.g. fewer parameters than strength), coverage is vacuously 1.0.
   if (result.totalTuples === 0) {
     result.coverageRatio = 1.0;
@@ -215,11 +237,11 @@ export function analyzeCoverage(
  * Extend an existing test suite with additional tests to improve coverage.
  *
  * mode: "strict" (default) keeps existing tests as-is.
- * mode: "optimize" allows reorganizing for better overall coverage.
+ * Only "strict" mode is supported (existing tests are kept as-is).
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
   const mod = getModule();
-  const result = mod.extendTests(existing, input) as GenerateResult;
+  const result = checkResult<GenerateResult>(mod.extendTests(existing, input));
   return result;
 }
 
@@ -228,6 +250,6 @@ export function extendTests(existing: TestCase[], input: ExtendInput): GenerateR
  */
 export function estimateModel(input: GenerateInput): ModelStats {
   const mod = getModule();
-  const result = mod.estimateModel(input) as ModelStats;
+  const result = checkResult<ModelStats>(mod.estimateModel(input));
   return result;
 }

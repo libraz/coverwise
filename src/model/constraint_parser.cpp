@@ -303,27 +303,6 @@ struct ResolvedComparison {
   Error error;
 };
 
-/// @brief Search for a value by name, checking both primary values and aliases.
-uint32_t FindValueIndex(const Parameter& param, const std::string& value_name,
-                        bool case_sensitive) {
-  // Check primary values.
-  for (uint32_t i = 0; i < static_cast<uint32_t>(param.values.size()); ++i) {
-    if (NamesEqual(param.values[i], value_name, case_sensitive)) {
-      return i;
-    }
-  }
-  // Check aliases.
-  const auto& all_aliases = param.all_aliases();
-  for (uint32_t i = 0; i < static_cast<uint32_t>(all_aliases.size()); ++i) {
-    for (const auto& alias : all_aliases[i]) {
-      if (NamesEqual(alias, value_name, case_sensitive)) {
-        return i;
-      }
-    }
-  }
-  return UINT32_MAX;
-}
-
 ResolvedComparison ResolveComparison(const std::string& param_name, const std::string& value_name,
                                      const std::vector<Parameter>& params, bool case_sensitive) {
   auto rp = ResolveParam(param_name, params, case_sensitive);
@@ -332,7 +311,7 @@ ResolvedComparison ResolveComparison(const std::string& param_name, const std::s
   }
   uint32_t param_idx = rp.param_index;
 
-  uint32_t val_idx = FindValueIndex(params[param_idx], value_name, case_sensitive);
+  uint32_t val_idx = params[param_idx].find_value_index(value_name, case_sensitive);
   if (val_idx == UINT32_MAX) {
     std::string available;
     const auto& values = params[param_idx].values;
@@ -358,7 +337,7 @@ struct ResolvedValue {
 
 ResolvedValue ResolveValue(uint32_t param_index, const std::string& value_name,
                            const std::vector<Parameter>& params, bool case_sensitive) {
-  uint32_t idx = FindValueIndex(params[param_index], value_name, case_sensitive);
+  uint32_t idx = params[param_index].find_value_index(value_name, case_sensitive);
   if (idx != UINT32_MAX) {
     return {idx, {}};
   }
@@ -388,7 +367,7 @@ bool IsParameterName(const std::string& name, const std::vector<Parameter>& para
 /// @brief Check if a name is a value (or alias) of the given parameter.
 bool IsValueOfParam(uint32_t param_index, const std::string& name,
                     const std::vector<Parameter>& params, bool case_sensitive) {
-  return FindValueIndex(params[param_index], name, case_sensitive) != UINT32_MAX;
+  return params[param_index].find_value_index(name, case_sensitive) != UINT32_MAX;
 }
 
 // --- Recursive descent parser ---

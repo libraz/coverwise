@@ -40,7 +40,9 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
   uint32_t n = static_cast<uint32_t>(params.size());
 
   // Edge case: strength is 0 or exceeds parameter count.
+  // Vacuous coverage: nothing to cover means everything is covered.
   if (strength == 0 || strength > n) {
+    report.coverage_ratio = 1.0;
     return report;
   }
 
@@ -198,6 +200,27 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
   }
 
   return report;
+}
+
+void AnnotateClassCoverage(model::GenerateResult& result,
+                           const std::vector<model::Parameter>& params, uint32_t strength) {
+  bool has_eq_classes = false;
+  for (const auto& p : params) {
+    if (p.has_equivalence_classes()) {
+      has_eq_classes = true;
+      break;
+    }
+  }
+  if (!has_eq_classes) {
+    return;
+  }
+
+  auto class_report = ComputeClassCoverage(params, result.tests, strength);
+  result.class_coverage = model::ClassCoverage{
+      class_report.total_class_tuples,
+      class_report.covered_class_tuples,
+      class_report.coverage_ratio,
+  };
 }
 
 }  // namespace validator

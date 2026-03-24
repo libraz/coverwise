@@ -110,7 +110,8 @@ class CoverageEngine {
   /// @brief param_to_combos_[p] = list of combination indices that include param p.
   std::vector<std::vector<uint32_t>> param_to_combos_;
 
-  /// @brief param_position_in_combo_[p][k] = position of p within param_combinations_[param_to_combos_[p][k]].
+  /// @brief param_position_in_combo_[p][k] = position of p within
+  /// param_combinations_[param_to_combos_[p][k]].
   std::vector<std::vector<uint32_t>> param_position_in_combo_;
 
   /// @brief combo_multipliers_[ci][j] = product of value counts for positions j+1..t-1.

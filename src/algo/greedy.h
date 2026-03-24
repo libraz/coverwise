@@ -10,9 +10,9 @@
 #define COVERWISE_ALGO_GREEDY_H_
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
-#include "core/coverage_engine.h"
 #include "model/constraint_ast.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
@@ -20,6 +20,9 @@
 
 namespace coverwise {
 namespace algo {
+
+/// @brief Scoring function: given partial test case, param index, value index -> coverage score.
+using ScoreFn = std::function<uint32_t(const model::TestCase&, uint32_t, uint32_t)>;
 
 /// @brief Build a test case parameter-by-parameter using greedy value selection.
 ///
@@ -32,7 +35,8 @@ namespace algo {
 /// - unknown: continue (not all params assigned yet)
 ///
 /// @param params Parameter definitions.
-/// @param coverage Current coverage state.
+/// @param score_fn Scoring function that returns the coverage gain for assigning
+///   value vi to parameter pi given the current partial test case.
 /// @param constraints Active constraints (empty if none).
 /// @param rng Random number generator for tie-breaking and parameter ordering.
 /// @param allowed_values Optional per-parameter mask of allowed values.
@@ -43,27 +47,9 @@ namespace algo {
 ///   When multiple values tie on coverage score, the highest-weighted one is
 ///   preferred. Default weight is 1.0.
 /// @return The constructed test case.
-model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
-                                const core::CoverageEngine& coverage,
+model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params, ScoreFn score_fn,
                                 const std::vector<model::Constraint>& constraints, util::Rng& rng,
                                 const std::vector<std::vector<bool>>& allowed_values = {},
-                                const std::vector<std::vector<double>>& weights = {});
-
-/// @brief Build a test case using greedy value selection with multiple engines.
-///
-/// Scores are summed across all coverage engines. Used for mixed-strength
-/// (sub-model) generation where different parameter groups have different
-/// coverage requirements.
-///
-/// @param params Parameter definitions.
-/// @param engines Coverage engines (global + sub-model engines).
-/// @param constraints Active constraints (empty if none).
-/// @param rng Random number generator for tie-breaking and parameter ordering.
-/// @param weights Optional per-parameter per-value weights for tie-breaking.
-/// @return The constructed test case.
-model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
-                                const std::vector<const core::CoverageEngine*>& engines,
-                                const std::vector<model::Constraint>& constraints, util::Rng& rng,
                                 const std::vector<std::vector<double>>& weights = {});
 
 }  // namespace algo

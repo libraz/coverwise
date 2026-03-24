@@ -5,10 +5,25 @@
 #include <algorithm>
 #include <vector>
 
+#include "model/parameter.h"
 #include "util/combinatorics.h"
 
 namespace coverwise {
 namespace core {
+
+namespace {
+
+/// @brief Build an error for when tuple count exceeds the safety limit.
+model::Error MakeTupleExplosionError(uint32_t total_tuples, uint32_t max_tuples) {
+  model::Error err;
+  err.code = model::Error::Code::kTupleExplosion;
+  err.message = "t-wise tuple count exceeds safety limit";
+  err.detail = "Total tuples: " + std::to_string(total_tuples) +
+               ", limit: " + std::to_string(max_tuples) + ". Reduce strength or parameter count.";
+  return err;
+}
+
+}  // namespace
 
 std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
     const std::vector<model::Parameter>& params, uint32_t strength) {
@@ -20,12 +35,7 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
   engine.BuildLookupTables();
 
   if (engine.total_tuples_ > kMaxTuples) {
-    model::Error err;
-    err.code = model::Error::Code::kTupleExplosion;
-    err.message = "t-wise tuple count exceeds safety limit";
-    err.detail = "Total tuples: " + std::to_string(engine.total_tuples_) +
-                 ", limit: " + std::to_string(kMaxTuples) + ". Reduce strength or parameter count.";
-    return {CoverageEngine{}, err};
+    return {CoverageEngine{}, MakeTupleExplosionError(engine.total_tuples_, kMaxTuples)};
   }
 
   engine.covered_ = util::DynamicBitset(engine.total_tuples_);
@@ -44,12 +54,7 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
   engine.BuildLookupTables();
 
   if (engine.total_tuples_ > kMaxTuples) {
-    model::Error err;
-    err.code = model::Error::Code::kTupleExplosion;
-    err.message = "t-wise tuple count exceeds safety limit";
-    err.detail = "Total tuples: " + std::to_string(engine.total_tuples_) +
-                 ", limit: " + std::to_string(kMaxTuples) + ". Reduce strength or parameter count.";
-    return {CoverageEngine{}, err};
+    return {CoverageEngine{}, MakeTupleExplosionError(engine.total_tuples_, kMaxTuples)};
   }
 
   engine.covered_ = util::DynamicBitset(engine.total_tuples_);
@@ -213,13 +218,12 @@ std::vector<model::UncoveredTuple> CoverageEngine::GetUncoveredTuples(
 
       // Decode the mixed-radix index into value indices.
       model::UncoveredTuple ut;
-      uint32_t remainder = vi;
-      std::vector<uint32_t> value_indices(combo.size());
-      for (int j = static_cast<int>(combo.size()) - 1; j >= 0; --j) {
-        uint32_t radix = params[combo[j]].size();
-        value_indices[j] = remainder % radix;
-        remainder /= radix;
+      std::vector<uint32_t> radixes(combo.size());
+      for (size_t j = 0; j < combo.size(); ++j) {
+        radixes[j] = params[combo[j]].size();
       }
+      std::vector<uint32_t> value_indices(combo.size());
+      util::DecodeMixedRadix(vi, radixes, value_indices);
 
       for (uint32_t j = 0; j < combo.size(); ++j) {
         uint32_t pi = combo[j];
@@ -254,13 +258,12 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
       if (covered_.Test(global_index)) continue;  // Already marked.
 
       // Decode mixed-radix index into value indices.
-      std::vector<uint32_t> value_indices(combo.size());
-      uint32_t remainder = vi;
-      for (int j = static_cast<int>(combo.size()) - 1; j >= 0; --j) {
-        uint32_t radix = params_[combo[j]].size();
-        value_indices[j] = remainder % radix;
-        remainder /= radix;
+      std::vector<uint32_t> radixes(combo.size());
+      for (size_t j = 0; j < combo.size(); ++j) {
+        radixes[j] = params_[combo[j]].size();
       }
+      std::vector<uint32_t> value_indices(combo.size());
+      util::DecodeMixedRadix(vi, radixes, value_indices);
 
       // Build partial assignment with only this tuple's parameters set.
       std::vector<uint32_t> assignment(num_params, model::kUnassigned);
@@ -287,15 +290,7 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
 }
 
 void CoverageEngine::ExcludeInvalidValues() {
-  // Check if any parameter has invalid values.
-  bool has_invalid = false;
-  for (const auto& p : params_) {
-    if (p.has_invalid_values()) {
-      has_invalid = true;
-      break;
-    }
-  }
-  if (!has_invalid) return;
+  if (!model::HasInvalidValues(params_)) return;
 
   for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
     const auto& combo = param_combinations_[ci];
@@ -312,14 +307,17 @@ void CoverageEngine::ExcludeInvalidValues() {
       if (covered_.Test(global_index)) continue;
 
       // Decode mixed-radix index into value indices.
-      uint32_t remainder = vi;
+      std::vector<uint32_t> radixes(combo.size());
+      for (size_t j = 0; j < combo.size(); ++j) {
+        radixes[j] = params_[combo[j]].size();
+      }
+      std::vector<uint32_t> value_indices(combo.size());
+      util::DecodeMixedRadix(vi, radixes, value_indices);
+
+      // Check if any decoded value is invalid.
       bool contains_invalid = false;
-      for (int j = static_cast<int>(combo.size()) - 1; j >= 0; --j) {
-        uint32_t pi = combo[j];
-        uint32_t radix = params_[pi].size();
-        uint32_t val_idx = remainder % radix;
-        remainder /= radix;
-        if (params_[pi].is_invalid(val_idx)) {
+      for (size_t j = 0; j < combo.size(); ++j) {
+        if (params_[combo[j]].is_invalid(value_indices[j])) {
           contains_invalid = true;
           break;
         }

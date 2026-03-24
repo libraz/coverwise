@@ -16,13 +16,11 @@
 namespace coverwise {
 namespace core {
 
-double WeightConfig::GetWeight(const std::string& param_name, const std::string& value_name) const {
-  auto pit = entries.find(param_name);
-  if (pit == entries.end()) return 1.0;
-  auto vit = pit->second.find(value_name);
-  if (vit == pit->second.end()) return 1.0;
-  return vit->second;
-}
+using model::ExtendMode;
+using model::GenerateOptions;
+using model::ModelStats;
+using model::SubModel;
+using model::WeightConfig;
 
 namespace {
 
@@ -67,14 +65,6 @@ uint32_t TotalScore(const CoverageEngine& global, const std::vector<CoverageEngi
     score += eng.ScoreCandidate(tc);
   }
   return score;
-}
-
-/// @brief Check whether any parameter has invalid values.
-bool HasInvalidValues(const std::vector<model::Parameter>& params) {
-  for (const auto& p : params) {
-    if (p.has_invalid_values()) return true;
-  }
-  return false;
 }
 
 /// @brief Build an allowed_values mask that only permits valid values.
@@ -129,8 +119,9 @@ void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t
 
       // Create a coverage engine for generating tests that pair this invalid
       // value with valid values of all other parameters.
-      auto [fresh_cov, fresh_err] = CoverageEngine::Create(params, strength);
-      if (!fresh_err.ok()) continue;
+      auto fresh_result = CoverageEngine::Create(params, strength);
+      if (!fresh_result.second.ok()) continue;
+      auto& fresh_cov = fresh_result.first;
 
       // Exclude constraint-invalid tuples.
       fresh_cov.ExcludeInvalidTuples(constraints);
@@ -152,7 +143,10 @@ void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t
 
       uint32_t generated = 0;
       while (generated < max_neg_tests) {
-        auto tc = algo::GreedyConstruct(params, fresh_cov, constraints, rng, neg_mask);
+        auto neg_score_fn = [&fresh_cov](const model::TestCase& partial, uint32_t pi, uint32_t vi) {
+          return fresh_cov.ScoreValue(partial, pi, vi);
+        };
+        auto tc = algo::GreedyConstruct(params, neg_score_fn, constraints, rng, neg_mask);
         uint32_t score = fresh_cov.ScoreCandidate(tc);
         if (score == 0) {
           if (++retries >= kMaxRetries) break;
@@ -203,13 +197,15 @@ model::GenerateResult Generate(const GenerateOptions& options) {
   GenerateOptions opts = options;
   ApplyBoundaryExpansion(opts);
 
-  bool has_invalid = HasInvalidValues(opts.parameters);
+  bool has_invalid = model::HasInvalidValues(opts.parameters);
 
-  auto [coverage, err] = CoverageEngine::Create(opts.parameters, opts.strength);
-  if (!err.ok()) {
-    result.warnings.push_back(err.message + ": " + err.detail);
+  auto coverage_result = CoverageEngine::Create(opts.parameters, opts.strength);
+  if (!coverage_result.second.ok()) {
+    result.warnings.push_back(coverage_result.second.message + ": " +
+                              coverage_result.second.detail);
     return result;
   }
+  auto coverage = std::move(coverage_result.first);
 
   // Create sub-model engines.
   std::vector<CoverageEngine> sub_engines;
@@ -278,26 +274,30 @@ model::GenerateResult Generate(const GenerateOptions& options) {
     result.tests.push_back(seed_test);
   }
 
-  // Build engine pointer list for multi-engine greedy.
-  std::vector<const CoverageEngine*> engine_ptrs;
-  engine_ptrs.push_back(&coverage);
-  for (const auto& eng : sub_engines) {
-    engine_ptrs.push_back(&eng);
-  }
+  // Build scoring function that sums across all engines.
+  auto make_score_fn = [&]() -> algo::ScoreFn {
+    if (sub_engines.empty()) {
+      return [&](const model::TestCase& partial, uint32_t pi, uint32_t vi) {
+        return coverage.ScoreValue(partial, pi, vi);
+      };
+    }
+    return [&](const model::TestCase& partial, uint32_t pi, uint32_t vi) -> uint32_t {
+      uint32_t score = coverage.ScoreValue(partial, pi, vi);
+      for (const auto& eng : sub_engines) {
+        score += eng.ScoreValue(partial, pi, vi);
+      }
+      return score;
+    };
+  };
+  auto score_fn = make_score_fn();
 
   // Constructive greedy generation loop (positive tests only).
   constexpr uint32_t kMaxRetries = 50;
   uint32_t retries = 0;
   while (!AllComplete(coverage, sub_engines) &&
          (opts.max_tests == 0 || result.tests.size() < static_cast<size_t>(opts.max_tests))) {
-    model::TestCase tc;
-    if (sub_engines.empty()) {
-      tc = algo::GreedyConstruct(opts.parameters, coverage, constraints, rng, valid_mask,
-                                 resolved_weights);
-    } else {
-      tc = algo::GreedyConstruct(opts.parameters, engine_ptrs, constraints, rng,
-                                 resolved_weights);
-    }
+    auto tc = algo::GreedyConstruct(opts.parameters, score_fn, constraints, rng, valid_mask,
+                                    resolved_weights);
     uint32_t score = TotalScore(coverage, sub_engines, tc);
     if (score == 0) {
       if (++retries >= kMaxRetries) break;
@@ -313,8 +313,7 @@ model::GenerateResult Generate(const GenerateOptions& options) {
 
   // Generate negative tests if any parameter has invalid values.
   if (has_invalid) {
-    GenerateNegativeTests(opts.parameters, opts.strength, constraints, rng,
-                          result.negative_tests);
+    GenerateNegativeTests(opts.parameters, opts.strength, constraints, rng, result.negative_tests);
   }
 
   // Collect uncovered tuples from all engines.
@@ -355,16 +354,9 @@ model::GenerateResult Generate(const GenerateOptions& options) {
 }
 
 model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
-                             const GenerateOptions& options, ExtendMode mode) {
+                             const GenerateOptions& options, ExtendMode /*mode*/) {
   GenerateOptions opts = options;
   opts.seeds = existing;
-
-  if (mode == ExtendMode::kOptimize) {
-    // kOptimize is not yet implemented; fall back to kStrict behavior.
-    auto result = Generate(opts);
-    result.warnings.push_back("ExtendMode::kOptimize is not yet implemented; using kStrict mode");
-    return result;
-  }
 
   return Generate(opts);
 }
@@ -402,7 +394,9 @@ ModelStats EstimateModel(const GenerateOptions& options) {
   // Estimate test count: upper bound is max_values^strength.
   // For better estimate, use max_values^strength when param_count > strength,
   // otherwise it is the product of all value counts.
-  if (stats.parameter_count <= stats.strength) {
+  if (stats.parameter_count == 0) {
+    stats.estimated_tests = 0;
+  } else if (stats.parameter_count <= stats.strength) {
     uint32_t product = 1;
     for (const auto& p : opts.parameters) {
       product *= p.size();

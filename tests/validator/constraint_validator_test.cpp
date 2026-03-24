@@ -19,9 +19,7 @@ using coverwise::validator::ConstraintReport;
 using coverwise::validator::ValidateConstraints;
 
 // Helper: make a TestCase from a list of value indices.
-static TestCase MakeTest(std::vector<uint32_t> values) {
-  return TestCase{std::move(values)};
-}
+static TestCase MakeTest(std::vector<uint32_t> values) { return TestCase{std::move(values)}; }
 
 TEST(ConstraintValidatorTest, EmptyTestsEmptyConstraints) {
   std::vector<TestCase> tests;
@@ -119,10 +117,10 @@ TEST(ConstraintValidatorTest, ComplexAndOrConstraint) {
   // Test {1, 0} -> (false) AND (...) -> false  (violation)
   std::vector<TestCase> tests = {MakeTest({0, 0}), MakeTest({0, 2}), MakeTest({1, 0})};
   std::vector<Constraint> constraints;
-  constraints.push_back(std::make_unique<AndNode>(
-      std::make_unique<EqualsNode>(0, 0),
-      std::make_unique<OrNode>(std::make_unique<EqualsNode>(1, 0),
-                               std::make_unique<EqualsNode>(1, 1))));
+  constraints.push_back(
+      std::make_unique<AndNode>(std::make_unique<EqualsNode>(0, 0),
+                                std::make_unique<OrNode>(std::make_unique<EqualsNode>(1, 0),
+                                                         std::make_unique<EqualsNode>(1, 1))));
 
   auto report = ValidateConstraints(tests, constraints);
   EXPECT_EQ(report.total_tests, 3u);
@@ -173,8 +171,8 @@ TEST(ConstraintValidatorTest, PartialAssignmentNoViolation) {
   std::vector<TestCase> tests = {MakeTest({0, coverwise::model::kUnassigned})};
   std::vector<Constraint> constraints;
   // IF param0=0 THEN param1!=0
-  constraints.push_back(std::make_unique<ImpliesNode>(
-      std::make_unique<EqualsNode>(0, 0), std::make_unique<NotEqualsNode>(1, 0)));
+  constraints.push_back(std::make_unique<ImpliesNode>(std::make_unique<EqualsNode>(0, 0),
+                                                      std::make_unique<NotEqualsNode>(1, 0)));
   auto report = ValidateConstraints(tests, constraints);
   // kUnknown should NOT count as violation
   EXPECT_EQ(report.violations, 0u);

@@ -9,6 +9,7 @@ set(COVERWISE_SOURCES
 
   # util
   util/bitset.cpp
+  util/string_util.cpp
   model/boundary.cpp
   util/combinatorics.cpp
   util/rng.cpp

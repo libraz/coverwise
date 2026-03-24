@@ -4,9 +4,9 @@
 #ifndef COVERWISE_COVERWISE_H_
 #define COVERWISE_COVERWISE_H_
 
-#include "core/coverage_engine.h"
 #include "core/generator.h"
 #include "model/constraint_ast.h"
+#include "model/generate_options.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
 #include "validator/constraint_validator.h"

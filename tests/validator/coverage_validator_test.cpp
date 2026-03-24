@@ -1,10 +1,10 @@
 #include "validator/coverage_validator.h"
 
+#include <gtest/gtest.h>
+
 #include <algorithm>
 #include <string>
 #include <vector>
-
-#include <gtest/gtest.h>
 
 #include "model/parameter.h"
 #include "model/test_case.h"
@@ -26,7 +26,7 @@ static std::string TupleKey(const coverwise::model::UncoveredTuple& t) {
 }
 
 static bool UncoveredContains(const std::vector<coverwise::model::UncoveredTuple>& uncovered,
-                               const std::vector<std::string>& expected_entries) {
+                              const std::vector<std::string>& expected_entries) {
   std::string target;
   for (const auto& e : expected_entries) {
     if (!target.empty()) target += ",";
@@ -191,9 +191,8 @@ TEST(CoverageValidatorTest, StrengthExceedsParamCount) {
   auto report = ValidateCoverage(params, tests, 3);
 
   EXPECT_EQ(report.total_tuples, 0u);
-  // When total_tuples == 0 the validator early-returns without setting
-  // coverage_ratio, so it remains 0.0 (not 1.0).
-  EXPECT_DOUBLE_EQ(report.coverage_ratio, 0.0);
+  // Vacuous coverage: nothing to cover means everything is covered.
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
   EXPECT_TRUE(report.uncovered.empty());
 }
 
@@ -211,14 +210,8 @@ TEST(CoverageValidatorTest, ThreeWiseCoverage) {
   };
   // All 8 = 2^3 combinations.
   std::vector<TestCase> tests = {
-      TestCase{{0, 0, 0}},
-      TestCase{{0, 0, 1}},
-      TestCase{{0, 1, 0}},
-      TestCase{{0, 1, 1}},
-      TestCase{{1, 0, 0}},
-      TestCase{{1, 0, 1}},
-      TestCase{{1, 1, 0}},
-      TestCase{{1, 1, 1}},
+      TestCase{{0, 0, 0}}, TestCase{{0, 0, 1}}, TestCase{{0, 1, 0}}, TestCase{{0, 1, 1}},
+      TestCase{{1, 0, 0}}, TestCase{{1, 0, 1}}, TestCase{{1, 1, 0}}, TestCase{{1, 1, 1}},
   };
 
   auto report = ValidateCoverage(params, tests, 3);

@@ -5,6 +5,7 @@
 #define COVERWISE_MODEL_TEST_CASE_H_
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -70,8 +71,7 @@ struct GenerateResult {
   GenerateStats stats;
   std::vector<Suggestion> suggestions;
   std::vector<std::string> warnings;
-  ClassCoverage class_coverage;         ///< Equivalence class coverage (if classes defined)
-  bool has_class_coverage = false;      ///< True if any parameter has equivalence classes
+  std::optional<ClassCoverage> class_coverage;  ///< Equivalence class coverage (if classes defined)
 };
 
 }  // namespace model

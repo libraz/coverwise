@@ -1,6 +1,7 @@
 #include "model/parameter.h"
 
 #include <algorithm>
+#include <cctype>
 
 namespace coverwise {
 namespace model {
@@ -58,15 +59,34 @@ const std::string& Parameter::display_name(uint32_t value_index, uint32_t rotati
   return alias_list[pick - 1];
 }
 
-uint32_t Parameter::find_value_index(const std::string& name) const {
+namespace {
+
+/// @brief Compare two strings, optionally case-insensitive.
+bool StringsEqual(const std::string& a, const std::string& b, bool case_sensitive) {
+  if (case_sensitive) {
+    return a == b;
+  }
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(a[i])) !=
+        std::tolower(static_cast<unsigned char>(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+uint32_t Parameter::find_value_index(const std::string& name, bool case_sensitive) const {
   // Check primary values first.
   for (uint32_t i = 0; i < static_cast<uint32_t>(values.size()); ++i) {
-    if (values[i] == name) return i;
+    if (StringsEqual(values[i], name, case_sensitive)) return i;
   }
   // Check aliases.
   for (uint32_t i = 0; i < static_cast<uint32_t>(aliases_.size()); ++i) {
     for (const auto& alias : aliases_[i]) {
-      if (alias == name) return i;
+      if (StringsEqual(alias, name, case_sensitive)) return i;
     }
   }
   return UINT32_MAX;

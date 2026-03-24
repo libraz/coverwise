@@ -74,8 +74,10 @@ struct Parameter {
   const std::vector<std::vector<std::string>>& all_aliases() const { return aliases_; }
 
   /// @brief Find a value index by name, checking both primary values and aliases.
+  /// @param name The value name to search for.
+  /// @param case_sensitive If false, compare names case-insensitively.
   /// @return The value index, or UINT32_MAX if not found.
-  uint32_t find_value_index(const std::string& name) const;
+  uint32_t find_value_index(const std::string& name, bool case_sensitive = true) const;
 
   /// @brief Returns the equivalence class for the value at the given index.
   /// Returns an empty string if no class is defined.
@@ -109,6 +111,14 @@ struct Parameter {
   /// Empty means no equivalence classes defined.
   std::vector<std::string> equivalence_classes_;
 };
+
+/// @brief Check if any parameter in the collection has invalid values.
+inline bool HasInvalidValues(const std::vector<Parameter>& params) {
+  for (const auto& p : params) {
+    if (p.has_invalid_values()) return true;
+  }
+  return false;
+}
 
 }  // namespace model
 }  // namespace coverwise

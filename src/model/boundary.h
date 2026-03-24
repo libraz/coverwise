@@ -30,8 +30,7 @@ struct BoundaryConfig {
 /// @param param The original parameter.
 /// @param config The boundary configuration specifying the range.
 /// @return A new Parameter with expanded values.
-Parameter ExpandBoundaryValues(const Parameter& param,
-                               const BoundaryConfig& config);
+Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& config);
 
 }  // namespace model
 }  // namespace coverwise

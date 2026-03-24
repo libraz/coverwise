@@ -46,6 +46,17 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
                                          const std::vector<model::TestCase>& tests,
                                          uint32_t strength);
 
+/// @brief Annotate a GenerateResult with equivalence class coverage if applicable.
+///
+/// Checks whether any parameter has equivalence classes defined. If so,
+/// computes class coverage and sets the class_coverage optional
+/// fields on the result.
+/// @param result The generate result to annotate (modified in place).
+/// @param params The parameter definitions (with equivalence classes).
+/// @param strength The coverage strength used for generation.
+void AnnotateClassCoverage(model::GenerateResult& result,
+                           const std::vector<model::Parameter>& params, uint32_t strength);
+
 }  // namespace validator
 }  // namespace coverwise
 

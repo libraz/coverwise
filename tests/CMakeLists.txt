@@ -19,10 +19,11 @@ endfunction()
 
 # Util tests
 coverwise_add_test(bitset_test util/bitset_test.cpp)
-coverwise_add_test(boundary_test model/boundary_test.cpp)
 coverwise_add_test(rng_test util/rng_test.cpp)
+coverwise_add_test(combinatorics_test util/combinatorics_test.cpp)
 
 # Model tests
+coverwise_add_test(boundary_test model/boundary_test.cpp)
 coverwise_add_test(parameter_test model/parameter_test.cpp)
 coverwise_add_test(test_case_test model/test_case_test.cpp)
 

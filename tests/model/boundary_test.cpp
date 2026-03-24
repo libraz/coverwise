@@ -1,3 +1,5 @@
+#include "model/boundary.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -6,7 +8,6 @@
 #include <vector>
 
 #include "core/generator.h"
-#include "model/boundary.h"
 #include "model/parameter.h"
 #include "validator/coverage_validator.h"
 
@@ -131,7 +132,7 @@ TEST(BoundaryTest, MergeWithExplicitNonNumericValues) {
 
 TEST(BoundaryTest, GenerationWithBoundaryValues) {
   // Test that generation with boundary expansion produces 100% coverage.
-  coverwise::core::GenerateOptions opts;
+  coverwise::model::GenerateOptions opts;
   opts.parameters = {
       {"age", {}},
       {"browser", {"chrome", "firefox", "safari"}},
@@ -159,7 +160,7 @@ TEST(BoundaryTest, GenerationWithBoundaryValues) {
 
 TEST(BoundaryTest, GenerationWithBoundaryAndExplicitValues) {
   // Parameter has explicit values + boundary config -> merged.
-  coverwise::core::GenerateOptions opts;
+  coverwise::model::GenerateOptions opts;
   opts.parameters = {
       {"score", {"50"}},
       {"status", {"pass", "fail"}},
@@ -176,9 +177,10 @@ TEST(BoundaryTest, GenerationWithBoundaryAndExplicitValues) {
   // score expanded: -1, 0, 1, 50, 99, 100, 101 = 7 values
   // Validate coverage with the expanded parameters.
   // We need to manually build the expanded params to validate.
-  Parameter expanded_score = ExpandBoundaryValues(opts.parameters[0],
-                                                  opts.boundary_configs["score"]);
+  Parameter expanded_score =
+      ExpandBoundaryValues(opts.parameters[0], opts.boundary_configs["score"]);
   std::vector<Parameter> expanded_params = {expanded_score, opts.parameters[1]};
-  auto report = coverwise::validator::ValidateCoverage(expanded_params, result.tests, opts.strength);
+  auto report =
+      coverwise::validator::ValidateCoverage(expanded_params, result.tests, opts.strength);
   EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
 }
