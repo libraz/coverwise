@@ -408,12 +408,15 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
       return false;
     }
     bool has_any_invalid = false;
+    bool has_any_aliases = false;
     std::vector<bool> invalid_flags;
+    std::vector<std::vector<std::string>> aliases_list;
     for (size_t j = 0; j < values_val.array_val.size(); ++j) {
       const auto& v = values_val.array_val[j];
       if (v.type == JsonType::kString) {
         param.values.push_back(v.string_val);
         invalid_flags.push_back(false);
+        aliases_list.push_back({});
       } else if (v.type == JsonType::kNumber) {
         // Convert number to string representation.
         if (v.number_val == static_cast<int64_t>(v.number_val)) {
@@ -424,11 +427,13 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
           param.values.push_back(oss.str());
         }
         invalid_flags.push_back(false);
+        aliases_list.push_back({});
       } else if (v.type == JsonType::kBool) {
         param.values.push_back(v.bool_val ? "true" : "false");
         invalid_flags.push_back(false);
+        aliases_list.push_back({});
       } else if (v.type == JsonType::kObject) {
-        // Object form: {"value": "...", "invalid": true}
+        // Object form: {"value": "...", "invalid": true, "aliases": ["..."]}
         const auto& val_field = v["value"];
         std::string val_str;
         if (val_field.type == JsonType::kString) {
@@ -453,15 +458,37 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
         bool is_invalid = (inv_field.type == JsonType::kBool && inv_field.bool_val);
         invalid_flags.push_back(is_invalid);
         if (is_invalid) has_any_invalid = true;
+
+        // Parse aliases.
+        std::vector<std::string> val_aliases;
+        const auto& aliases_field = v["aliases"];
+        if (!aliases_field.IsNull() && aliases_field.type == JsonType::kArray) {
+          for (size_t k = 0; k < aliases_field.array_val.size(); ++k) {
+            const auto& a = aliases_field.array_val[k];
+            if (a.type == JsonType::kString) {
+              val_aliases.push_back(a.string_val);
+            } else {
+              error = "parameter '" + param.name + "' value " + std::to_string(j) + " alias " +
+                      std::to_string(k) + " must be a string";
+              return false;
+            }
+          }
+          if (!val_aliases.empty()) has_any_aliases = true;
+        }
+        aliases_list.push_back(std::move(val_aliases));
       } else {
         error = "parameter '" + param.name + "' value " + std::to_string(j) +
-                " must be a string, number, boolean, or {value, invalid} object";
+                " must be a string, number, boolean, or {value, invalid, aliases} object";
         return false;
       }
     }
     // Set invalid flags only if any value is actually invalid.
     if (has_any_invalid) {
       param.set_invalid(std::move(invalid_flags));
+    }
+    // Set aliases only if any value has aliases.
+    if (has_any_aliases) {
+      param.set_aliases(std::move(aliases_list));
     }
     if (param.values.empty()) {
       error = "parameter '" + param.name + "' has no values";
@@ -520,15 +547,14 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
         return false;
       }
 
-      // Find the value index.
-      const auto& pvals = params[pi].values;
-      auto it = std::find(pvals.begin(), pvals.end(), val_str);
-      if (it == pvals.end()) {
+      // Find the value index (checking primary values and aliases).
+      uint32_t val_idx = params[pi].find_value_index(val_str);
+      if (val_idx == UINT32_MAX) {
         error = "test " + std::to_string(i) + " parameter '" + params[pi].name +
                 "' has unknown value '" + val_str + "'";
         return false;
       }
-      tc.values[pi] = static_cast<uint32_t>(it - pvals.begin());
+      tc.values[pi] = val_idx;
     }
     tests.push_back(std::move(tc));
   }
@@ -548,12 +574,13 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
   // tests
   w.Key("tests");
   w.BeginArray();
-  for (const auto& tc : result.tests) {
+  for (size_t ti = 0; ti < result.tests.size(); ++ti) {
+    const auto& tc = result.tests[ti];
     w.Sep();
     w.BeginObject();
     for (size_t i = 0; i < params.size() && i < tc.values.size(); ++i) {
       w.Key(params[i].name);
-      w.WriteString(params[i].values[tc.values[i]]);
+      w.WriteString(params[i].display_name(tc.values[i], static_cast<uint32_t>(ti)));
     }
     w.EndObject();
   }
@@ -563,12 +590,13 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
   if (!result.negative_tests.empty()) {
     w.Key("negativeTests");
     w.BeginArray();
-    for (const auto& tc : result.negative_tests) {
+    for (size_t ti = 0; ti < result.negative_tests.size(); ++ti) {
+      const auto& tc = result.negative_tests[ti];
       w.Sep();
       w.BeginObject();
       for (size_t i = 0; i < params.size() && i < tc.values.size(); ++i) {
         w.Key(params[i].name);
-        w.WriteString(params[i].values[tc.values[i]]);
+        w.WriteString(params[i].display_name(tc.values[i], static_cast<uint32_t>(ti)));
       }
       w.EndObject();
     }
@@ -746,6 +774,29 @@ int RunGenerate(int argc, char* argv[]) {
         return kExitInvalidInput;
       }
       options.constraint_expressions.push_back(c.string_val);
+    }
+  }
+
+  // Parse weights: {"param_name": {"value_name": weight, ...}, ...}
+  const auto& weights_val = json["weights"];
+  if (!weights_val.IsNull() && weights_val.type == JsonType::kObject) {
+    for (size_t i = 0; i < weights_val.object_keys.size(); ++i) {
+      const auto& param_name = weights_val.object_keys[i];
+      const auto& param_weights = weights_val.object_vals[i];
+      if (param_weights.type != JsonType::kObject) {
+        std::cerr << "error: weights for '" << param_name << "' must be an object\n";
+        return kExitInvalidInput;
+      }
+      for (size_t j = 0; j < param_weights.object_keys.size(); ++j) {
+        const auto& value_name = param_weights.object_keys[j];
+        const auto& weight_val = param_weights.object_vals[j];
+        if (weight_val.type != JsonType::kNumber) {
+          std::cerr << "error: weight for '" << param_name << "." << value_name
+                    << "' must be a number\n";
+          return kExitInvalidInput;
+        }
+        options.weights.entries[param_name][value_name] = weight_val.number_val;
+      }
     }
   }
 
@@ -931,11 +982,128 @@ int RunExtend(int argc, char* argv[]) {
   return exit_code;
 }
 
+int RunStats(int argc, char* argv[]) {
+  if (argc < 3) {
+    std::cerr << "Usage: coverwise stats <input.json>\n";
+    return kExitInvalidInput;
+  }
+
+  std::string content = ReadFile(argv[2]);
+  if (content.empty()) {
+    std::cerr << "error: cannot read file '" << argv[2] << "'\n";
+    return kExitInvalidInput;
+  }
+
+  JsonParser parser(content);
+  auto json = parser.Parse();
+  if (!parser.error().empty()) {
+    std::cerr << "error: invalid JSON: " << parser.error() << "\n";
+    return kExitInvalidInput;
+  }
+  if (json.type != JsonType::kObject) {
+    std::cerr << "error: input must be a JSON object\n";
+    return kExitInvalidInput;
+  }
+
+  std::string error;
+  coverwise::core::GenerateOptions options;
+  if (!ParseParameters(json["parameters"], options.parameters, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
+
+  const auto& strength_val = json["strength"];
+  if (!strength_val.IsNull() && strength_val.type == JsonType::kNumber) {
+    options.strength = static_cast<uint32_t>(strength_val.number_val);
+  }
+
+  const auto& constraints_val = json["constraints"];
+  if (!constraints_val.IsNull() && constraints_val.type == JsonType::kArray) {
+    for (size_t i = 0; i < constraints_val.array_val.size(); ++i) {
+      const auto& c = constraints_val.array_val[i];
+      if (c.type == JsonType::kString) {
+        options.constraint_expressions.push_back(c.string_val);
+      }
+    }
+  }
+
+  // Parse sub-models.
+  const auto& sub_models_val = json["subModels"];
+  if (!sub_models_val.IsNull() && sub_models_val.type == JsonType::kArray) {
+    for (size_t i = 0; i < sub_models_val.array_val.size(); ++i) {
+      const auto& sm = sub_models_val.array_val[i];
+      if (sm.type == JsonType::kObject) {
+        coverwise::core::SubModel sub_model;
+        const auto& sm_strength = sm["strength"];
+        if (!sm_strength.IsNull() && sm_strength.type == JsonType::kNumber) {
+          sub_model.strength = static_cast<uint32_t>(sm_strength.number_val);
+        }
+        const auto& sm_params = sm["parameters"];
+        if (!sm_params.IsNull() && sm_params.type == JsonType::kArray) {
+          for (const auto& p : sm_params.array_val) {
+            if (p.type == JsonType::kString) {
+              sub_model.parameter_names.push_back(p.string_val);
+            }
+          }
+        }
+        options.sub_models.push_back(std::move(sub_model));
+      }
+    }
+  }
+
+  auto stats = coverwise::core::EstimateModel(options);
+
+  JsonWriter w(std::cout);
+  w.BeginObject();
+
+  w.Key("parameterCount");
+  w.WriteNumber(static_cast<double>(stats.parameter_count));
+
+  w.Key("totalValues");
+  w.WriteNumber(static_cast<double>(stats.total_values));
+
+  w.Key("strength");
+  w.WriteNumber(static_cast<double>(stats.strength));
+
+  w.Key("totalTuples");
+  w.WriteNumber(static_cast<double>(stats.total_tuples));
+
+  w.Key("estimatedTests");
+  w.WriteNumber(static_cast<double>(stats.estimated_tests));
+
+  w.Key("subModels");
+  w.WriteNumber(static_cast<double>(stats.sub_model_count));
+
+  w.Key("constraints");
+  w.WriteNumber(static_cast<double>(stats.constraint_count));
+
+  w.Key("parametersDetail");
+  w.BeginArray();
+  for (const auto& pd : stats.parameters) {
+    w.Sep();
+    w.BeginObject();
+    w.Key("name");
+    w.WriteString(pd.name);
+    w.Key("valueCount");
+    w.WriteNumber(static_cast<double>(pd.value_count));
+    w.Key("invalidCount");
+    w.WriteNumber(static_cast<double>(pd.invalid_count));
+    w.EndObject();
+  }
+  w.EndArray();
+
+  w.EndObject();
+  std::cout << '\n';
+
+  return kExitOk;
+}
+
 void PrintUsage() {
   std::cerr << "Usage:\n"
             << "  coverwise generate <input.json>\n"
             << "  coverwise analyze --params <params.json> --tests <tests.json>\n"
             << "  coverwise extend --existing <tests.json> <input.json>\n"
+            << "  coverwise stats <input.json>\n"
             << "\n"
             << "Exit codes:\n"
             << "  0 = OK (coverage 100%)\n"
@@ -969,6 +1137,10 @@ int main(int argc, char* argv[]) {
 
   if (command == "extend") {
     return RunExtend(argc, argv);
+  }
+
+  if (command == "stats") {
+    return RunStats(argc, argv);
   }
 
   std::cerr << "Unknown command: " << command << "\n";

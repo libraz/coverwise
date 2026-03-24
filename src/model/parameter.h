@@ -51,10 +51,40 @@ struct Parameter {
   /// @brief Set the invalid flags vector.
   void set_invalid(std::vector<bool> inv) { invalid_ = std::move(inv); }
 
+  /// @brief Returns the aliases for the value at the given index.
+  /// Returns an empty vector if no aliases are defined.
+  const std::vector<std::string>& aliases(uint32_t index) const;
+
+  /// @brief Returns true if any value has aliases.
+  bool has_aliases() const;
+
+  /// @brief Get a display name for a value, rotating through primary + aliases.
+  ///
+  /// For a value with aliases ["chrome", "edge"], rotation 0 returns the primary
+  /// value, rotation 1 returns "chrome", rotation 2 returns "edge", then wraps.
+  /// @param value_index Index of the value.
+  /// @param rotation Counter used to select which name to display.
+  const std::string& display_name(uint32_t value_index, uint32_t rotation) const;
+
+  /// @brief Set the aliases for all values.
+  /// aliases[i] is the list of aliases for values[i]. Empty inner vector = no aliases.
+  void set_aliases(std::vector<std::vector<std::string>> aliases) { aliases_ = std::move(aliases); }
+
+  /// @brief Access the aliases vector.
+  const std::vector<std::vector<std::string>>& all_aliases() const { return aliases_; }
+
+  /// @brief Find a value index by name, checking both primary values and aliases.
+  /// @return The value index, or UINT32_MAX if not found.
+  uint32_t find_value_index(const std::string& name) const;
+
  private:
   /// @brief Per-value invalid flag. invalid_[i] = true if values[i] is invalid.
   /// Empty means all values are valid.
   std::vector<bool> invalid_;
+
+  /// @brief Per-value alias list. aliases_[i] = aliases for values[i].
+  /// Empty means no aliases for any value.
+  std::vector<std::vector<std::string>> aliases_;
 };
 
 }  // namespace model

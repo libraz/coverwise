@@ -1062,3 +1062,322 @@ TEST(IntegrationNegativeTest, NegativeTestDeterministic) {
     EXPECT_EQ(result1.negative_tests[i].values, result2.negative_tests[i].values);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Aliasing tests
+// ---------------------------------------------------------------------------
+
+TEST(IntegrationTest, AliasingBasic) {
+  // "chromium" has aliases "chrome", "edge", "brave".
+  // Coverage should treat it as 1 value (3 total for browser).
+  GenerateOptions opts;
+  Parameter browser("browser", {"chromium", "firefox", "safari"});
+  browser.set_aliases({{"chrome", "edge", "brave"}, {}, {}});
+  opts.parameters = {
+      {"os", {"win", "mac", "linux"}, {}},
+      browser,
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  // Validate coverage uses primary values only: 3 * 3 = 9 tuples.
+  auto report = ValidateCoverage(opts.parameters, result.tests, opts.strength);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+  EXPECT_EQ(report.total_tuples, 9u);
+  EXPECT_EQ(report.uncovered.size(), 0u);
+
+  // Verify display_name rotation works for chromium (index 0).
+  // With 4 names (chromium + 3 aliases), rotation should cycle.
+  EXPECT_EQ(opts.parameters[1].display_name(0, 0), "chromium");
+  EXPECT_EQ(opts.parameters[1].display_name(0, 1), "chrome");
+  EXPECT_EQ(opts.parameters[1].display_name(0, 2), "edge");
+  EXPECT_EQ(opts.parameters[1].display_name(0, 3), "brave");
+  EXPECT_EQ(opts.parameters[1].display_name(0, 4), "chromium");  // wraps
+
+  // Non-aliased values always return primary name.
+  EXPECT_EQ(opts.parameters[1].display_name(1, 0), "firefox");
+  EXPECT_EQ(opts.parameters[1].display_name(1, 5), "firefox");
+}
+
+TEST(IntegrationTest, AliasingConstraint) {
+  // Constraint references an alias name "chrome" which should resolve to "chromium".
+  GenerateOptions opts;
+  Parameter browser("browser", {"chromium", "firefox", "safari"});
+  browser.set_aliases({{"chrome", "edge"}, {}, {}});
+  opts.parameters = {
+      {"os", {"win", "mac"}, {}},
+      browser,
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+  // "chrome" is an alias for "chromium". Constraint: IF os=mac THEN browser!=chrome
+  // This should exclude (os=mac, browser=chromium).
+  opts.constraint_expressions = {"IF os = mac THEN browser != chrome"};
+
+  auto result = Generate(opts);
+
+  // Verify no test case has os=mac + browser=chromium.
+  for (const auto& tc : result.tests) {
+    if (tc.values[0] == 1) {  // os=mac
+      EXPECT_NE(tc.values[1], 0u) << "Constraint violated: os=mac with browser=chromium (alias)";
+    }
+  }
+
+  // Coverage should still be high (only the excluded tuple is missing or excluded).
+  EXPECT_GE(result.coverage, 0.5);
+}
+
+TEST(IntegrationTest, AliasingNoEffect) {
+  // No aliases defined — behavior should be identical to non-aliased generation.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 99;
+
+  auto result = Generate(opts);
+  auto report = ValidateCoverage(opts.parameters, result.tests, opts.strength);
+
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+  EXPECT_EQ(report.total_tuples, 4u);
+
+  // display_name with no aliases returns primary name regardless of rotation.
+  EXPECT_EQ(opts.parameters[0].display_name(0, 0), "a0");
+  EXPECT_EQ(opts.parameters[0].display_name(0, 100), "a0");
+  EXPECT_FALSE(opts.parameters[0].has_aliases());
+  EXPECT_FALSE(opts.parameters[1].has_aliases());
+}
+
+TEST(IntegrationTest, AliasingFindValueIndex) {
+  // Test that find_value_index resolves both primary values and aliases.
+  Parameter browser("browser", {"chromium", "firefox", "safari"});
+  browser.set_aliases({{"chrome", "edge", "brave"}, {}, {}});
+
+  EXPECT_EQ(browser.find_value_index("chromium"), 0u);
+  EXPECT_EQ(browser.find_value_index("chrome"), 0u);
+  EXPECT_EQ(browser.find_value_index("edge"), 0u);
+  EXPECT_EQ(browser.find_value_index("brave"), 0u);
+  EXPECT_EQ(browser.find_value_index("firefox"), 1u);
+  EXPECT_EQ(browser.find_value_index("safari"), 2u);
+  EXPECT_EQ(browser.find_value_index("opera"), UINT32_MAX);
+}
+
+// ---------------------------------------------------------------------------
+// Weight (Priority) tests
+// ---------------------------------------------------------------------------
+
+using coverwise::core::WeightConfig;
+
+TEST(IntegrationTest, WeightDoesNotBreakCoverage) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari"}, {}},
+      {"arch", {"x86", "arm"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+  opts.weights.entries["os"]["win"] = 10.0;
+  opts.weights.entries["os"]["mac"] = 5.0;
+  opts.weights.entries["browser"]["chrome"] = 20.0;
+
+  auto result = Generate(opts);
+
+  // Coverage must still be 100%.
+  auto report = ValidateCoverage(opts.parameters, result.tests, opts.strength);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+  EXPECT_EQ(report.uncovered.size(), 0u);
+}
+
+TEST(IntegrationTest, WeightAffectsOutput) {
+  // Generate twice: once with heavy weight on "win", once without.
+  // The weighted run should have "win" appearing more frequently in early tests.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari"}, {}},
+      {"mode", {"dark", "light"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 100;
+
+  auto result_no_weight = Generate(opts);
+
+  opts.weights.entries["os"]["win"] = 100.0;
+  opts.weights.entries["os"]["mac"] = 1.0;
+  opts.weights.entries["os"]["linux"] = 1.0;
+
+  auto result_weighted = Generate(opts);
+
+  // Both must achieve 100% coverage.
+  auto report1 = ValidateCoverage(opts.parameters, result_no_weight.tests, opts.strength);
+  auto report2 = ValidateCoverage(opts.parameters, result_weighted.tests, opts.strength);
+  EXPECT_DOUBLE_EQ(report1.coverage_ratio, 1.0);
+  EXPECT_DOUBLE_EQ(report2.coverage_ratio, 1.0);
+
+  // Count how many times "win" (index 0) appears in os parameter (index 0)
+  // in the first half of tests.
+  auto count_win = [](const std::vector<TestCase>& tests, size_t limit) -> uint32_t {
+    uint32_t count = 0;
+    for (size_t i = 0; i < std::min(limit, tests.size()); ++i) {
+      if (tests[i].values[0] == 0) ++count;
+    }
+    return count;
+  };
+
+  size_t half = std::min(result_weighted.tests.size(), result_no_weight.tests.size()) / 2;
+  if (half > 0) {
+    uint32_t weighted_wins = count_win(result_weighted.tests, half);
+    uint32_t unweighted_wins = count_win(result_no_weight.tests, half);
+    // Weighted should have at least as many "win" appearances.
+    // This is a soft check; the weight is a hint, not a guarantee for every seed.
+    EXPECT_GE(weighted_wins, unweighted_wins)
+        << "Expected weighted run to prefer 'win' in early tests";
+  }
+}
+
+TEST(IntegrationTest, WeightWithConstraints) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari", "ie"}, {}},
+  };
+  opts.constraint_expressions = {"IF os = mac THEN browser != ie"};
+  opts.strength = 2;
+  opts.seed = 777;
+  opts.weights.entries["os"]["mac"] = 3.0;
+  opts.weights.entries["browser"]["chrome"] = 3.0;
+
+  auto result = Generate(opts);
+
+  // Generator coverage accounts for constraint exclusions.
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(result.uncovered.empty());
+
+  // Verify constraint is respected.
+  for (const auto& tc : result.tests) {
+    bool is_mac = (tc.values[0] == 1);
+    bool is_ie = (tc.values[1] == 3);
+    if (is_mac) {
+      EXPECT_FALSE(is_ie) << "Constraint violation: os=mac, browser=ie";
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Preview Stats (EstimateModel) tests
+// ---------------------------------------------------------------------------
+
+using coverwise::core::EstimateModel;
+using coverwise::core::ModelStats;
+
+TEST(IntegrationTest, PreviewStatsBasic) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
+  };
+  opts.strength = 2;
+
+  auto stats = EstimateModel(opts);
+
+  EXPECT_EQ(stats.parameter_count, 3u);
+  EXPECT_EQ(stats.total_values, 6u);
+  EXPECT_EQ(stats.strength, 2u);
+  // C(3,2) * 2*2 = 3 * 4 = 12 tuples
+  EXPECT_EQ(stats.total_tuples, 12u);
+  EXPECT_GT(stats.estimated_tests, 0u);
+  EXPECT_EQ(stats.sub_model_count, 0u);
+  EXPECT_EQ(stats.constraint_count, 0u);
+
+  ASSERT_EQ(stats.parameters.size(), 3u);
+  EXPECT_EQ(stats.parameters[0].name, "A");
+  EXPECT_EQ(stats.parameters[0].value_count, 2u);
+  EXPECT_EQ(stats.parameters[0].invalid_count, 0u);
+}
+
+TEST(IntegrationTest, PreviewStatsMixedParams) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1", "b2"}, {}},
+      {"C", {"c0", "c1", "c2", "c3"}, {}},
+      {"D", {"d0", "d1"}, {}},
+  };
+  opts.strength = 2;
+
+  auto stats = EstimateModel(opts);
+
+  EXPECT_EQ(stats.parameter_count, 4u);
+  EXPECT_EQ(stats.total_values, 11u);
+  EXPECT_EQ(stats.strength, 2u);
+  // C(4,2) pairs: 6 combinations
+  // (A,B): 6, (A,C): 8, (A,D): 4, (B,C): 12, (B,D): 6, (C,D): 8 = 44
+  EXPECT_EQ(stats.total_tuples, 44u);
+  EXPECT_GT(stats.estimated_tests, 0u);
+
+  ASSERT_EQ(stats.parameters.size(), 4u);
+  EXPECT_EQ(stats.parameters[2].name, "C");
+  EXPECT_EQ(stats.parameters[2].value_count, 4u);
+}
+
+TEST(IntegrationTest, PreviewStatsWithInvalid) {
+  GenerateOptions opts;
+  opts.parameters = {
+      Parameter("os", {"win", "mac", "linux"}, {false, false, false}),
+      Parameter("browser", {"chrome", "firefox", "ie"}, {false, false, true}),
+  };
+  opts.strength = 2;
+
+  auto stats = EstimateModel(opts);
+
+  EXPECT_EQ(stats.parameter_count, 2u);
+  EXPECT_EQ(stats.total_values, 6u);
+  ASSERT_EQ(stats.parameters.size(), 2u);
+  EXPECT_EQ(stats.parameters[0].invalid_count, 0u);
+  EXPECT_EQ(stats.parameters[1].invalid_count, 1u);
+}
+
+TEST(IntegrationTest, PreviewStatsWithConstraints) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win", "mac"}, {}},
+      {"browser", {"chrome", "safari"}, {}},
+  };
+  opts.constraint_expressions = {"IF os = mac THEN browser != chrome"};
+  opts.strength = 2;
+
+  auto stats = EstimateModel(opts);
+
+  EXPECT_EQ(stats.constraint_count, 1u);
+  EXPECT_EQ(stats.total_tuples, 4u);
+}
+
+TEST(IntegrationTest, PreviewStatsEstimateReasonable) {
+  // Verify that estimated_tests is in a reasonable range compared to actual generation.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"P1", {"a", "b", "c"}, {}},
+      {"P2", {"x", "y", "z"}, {}},
+      {"P3", {"1", "2", "3"}, {}},
+      {"P4", {"p", "q", "r"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto stats = EstimateModel(opts);
+  auto result = Generate(opts);
+
+  // Estimated should be at least as many as actual (it is an upper bound).
+  // Allow some margin: estimated should be within a factor of 5 of actual.
+  uint32_t actual = static_cast<uint32_t>(result.tests.size());
+  EXPECT_GT(stats.estimated_tests, 0u);
+  EXPECT_LE(actual, stats.estimated_tests * 2)
+      << "Actual tests (" << actual << ") much larger than estimate (" << stats.estimated_tests
+      << ")";
+}

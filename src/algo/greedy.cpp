@@ -10,10 +10,52 @@
 namespace coverwise {
 namespace algo {
 
+namespace {
+
+/// @brief Break ties among best_values using weights, then RNG for remaining ties.
+///
+/// Uses weighted random selection: each tied value's probability is proportional
+/// to its weight. This biases toward higher-weighted values while maintaining
+/// enough randomness for the greedy algorithm to explore diverse test cases.
+/// @return The chosen value index.
+uint32_t BreakTieWithWeights(const std::vector<uint32_t>& best_values,
+                             const std::vector<std::vector<double>>& weights, uint32_t pi,
+                             util::Rng& rng) {
+  if (best_values.size() == 1) {
+    return best_values[0];
+  }
+  if (!weights.empty()) {
+    // Weighted random selection: probability proportional to weight.
+    double total_weight = 0.0;
+    for (uint32_t vi : best_values) {
+      total_weight += weights[pi][vi];
+    }
+    if (total_weight > 0.0) {
+      // Generate a random value in [0, total_weight).
+      double r = static_cast<double>(rng.NextUint32(1000000)) / 1000000.0 * total_weight;
+      double cumulative = 0.0;
+      for (uint32_t vi : best_values) {
+        cumulative += weights[pi][vi];
+        if (r < cumulative) {
+          return vi;
+        }
+      }
+      // Fallback to last value (floating point edge case).
+      return best_values.back();
+    }
+  }
+  // No weights or zero total: random tie-break.
+  uint32_t idx = rng.NextUint32(static_cast<uint32_t>(best_values.size()));
+  return best_values[idx];
+}
+
+}  // namespace
+
 model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
                                 const core::CoverageEngine& coverage,
                                 const std::vector<model::Constraint>& constraints, util::Rng& rng,
-                                const std::vector<std::vector<bool>>& allowed_values) {
+                                const std::vector<std::vector<bool>>& allowed_values,
+                                const std::vector<std::vector<double>>& weights) {
   const auto num_params = static_cast<uint32_t>(params.size());
   constexpr uint32_t kUnassigned = std::numeric_limits<uint32_t>::max();
 
@@ -83,12 +125,8 @@ model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
           }
         }
       }
-    } else if (best_values.size() == 1) {
-      tc.values[pi] = best_values[0];
     } else {
-      // Tie-break randomly
-      uint32_t idx = rng.NextUint32(static_cast<uint32_t>(best_values.size()));
-      tc.values[pi] = best_values[idx];
+      tc.values[pi] = BreakTieWithWeights(best_values, weights, pi, rng);
     }
   }
 
@@ -97,7 +135,8 @@ model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
 
 model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
                                 const std::vector<const core::CoverageEngine*>& engines,
-                                const std::vector<model::Constraint>& constraints, util::Rng& rng) {
+                                const std::vector<model::Constraint>& constraints, util::Rng& rng,
+                                const std::vector<std::vector<double>>& weights) {
   const auto num_params = static_cast<uint32_t>(params.size());
   constexpr uint32_t kUnassigned = std::numeric_limits<uint32_t>::max();
 
@@ -152,11 +191,8 @@ model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
 
     if (best_values.empty()) {
       tc.values[pi] = 0;
-    } else if (best_values.size() == 1) {
-      tc.values[pi] = best_values[0];
     } else {
-      uint32_t idx = rng.NextUint32(static_cast<uint32_t>(best_values.size()));
-      tc.values[pi] = best_values[idx];
+      tc.values[pi] = BreakTieWithWeights(best_values, weights, pi, rng);
     }
   }
 

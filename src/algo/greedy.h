@@ -38,11 +38,16 @@ namespace algo {
 /// @param allowed_values Optional per-parameter mask of allowed values.
 ///   If non-empty, allowed_values[pi][vi] must be true for value vi of param pi
 ///   to be considered. If empty, all values are allowed.
+/// @param weights Optional per-parameter per-value weights for tie-breaking.
+///   If non-empty, weights[pi][vi] is the weight for value vi of param pi.
+///   When multiple values tie on coverage score, the highest-weighted one is
+///   preferred. Default weight is 1.0.
 /// @return The constructed test case.
 model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
                                 const core::CoverageEngine& coverage,
                                 const std::vector<model::Constraint>& constraints, util::Rng& rng,
-                                const std::vector<std::vector<bool>>& allowed_values = {});
+                                const std::vector<std::vector<bool>>& allowed_values = {},
+                                const std::vector<std::vector<double>>& weights = {});
 
 /// @brief Build a test case using greedy value selection with multiple engines.
 ///
@@ -54,10 +59,12 @@ model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
 /// @param engines Coverage engines (global + sub-model engines).
 /// @param constraints Active constraints (empty if none).
 /// @param rng Random number generator for tie-breaking and parameter ordering.
+/// @param weights Optional per-parameter per-value weights for tie-breaking.
 /// @return The constructed test case.
 model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
                                 const std::vector<const core::CoverageEngine*>& engines,
-                                const std::vector<model::Constraint>& constraints, util::Rng& rng);
+                                const std::vector<model::Constraint>& constraints, util::Rng& rng,
+                                const std::vector<std::vector<double>>& weights = {});
 
 }  // namespace algo
 }  // namespace coverwise

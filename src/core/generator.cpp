@@ -3,6 +3,7 @@
 #include "core/generator.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,14 @@
 
 namespace coverwise {
 namespace core {
+
+double WeightConfig::GetWeight(const std::string& param_name, const std::string& value_name) const {
+  auto pit = entries.find(param_name);
+  if (pit == entries.end()) return 1.0;
+  auto vit = pit->second.find(value_name);
+  if (vit == pit->second.end()) return 1.0;
+  return vit->second;
+}
 
 namespace {
 
@@ -203,6 +212,22 @@ void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t
   }
 }
 
+/// @brief Resolve string-based WeightConfig to index-based weight vectors.
+/// @return weights[param_idx][value_idx] = weight (default 1.0).
+///         Empty vector if no weights are configured.
+std::vector<std::vector<double>> ResolveWeights(const std::vector<model::Parameter>& params,
+                                                const WeightConfig& config) {
+  if (config.empty()) return {};
+  std::vector<std::vector<double>> resolved(params.size());
+  for (uint32_t pi = 0; pi < static_cast<uint32_t>(params.size()); ++pi) {
+    resolved[pi].resize(params[pi].size(), 1.0);
+    for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
+      resolved[pi][vi] = config.GetWeight(params[pi].name, params[pi].values[vi]);
+    }
+  }
+  return resolved;
+}
+
 }  // namespace
 
 model::GenerateResult Generate(const GenerateOptions& options) {
@@ -269,6 +294,9 @@ model::GenerateResult Generate(const GenerateOptions& options) {
     valid_mask = BuildValidOnlyMask(options.parameters);
   }
 
+  // Resolve value weights to index-based vectors.
+  auto resolved_weights = ResolveWeights(options.parameters, options.weights);
+
   util::Rng rng(options.seed);
 
   // Pre-load seed tests into all engines.
@@ -294,9 +322,11 @@ model::GenerateResult Generate(const GenerateOptions& options) {
          (options.max_tests == 0 || result.tests.size() < static_cast<size_t>(options.max_tests))) {
     model::TestCase tc;
     if (sub_engines.empty()) {
-      tc = algo::GreedyConstruct(options.parameters, coverage, constraints, rng, valid_mask);
+      tc = algo::GreedyConstruct(options.parameters, coverage, constraints, rng, valid_mask,
+                                 resolved_weights);
     } else {
-      tc = algo::GreedyConstruct(options.parameters, engine_ptrs, constraints, rng);
+      tc = algo::GreedyConstruct(options.parameters, engine_ptrs, constraints, rng,
+                                 resolved_weights);
     }
     uint32_t score = TotalScore(coverage, sub_engines, tc);
     if (score == 0) {
@@ -358,6 +388,60 @@ model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
 
   // TODO: For kOptimize mode, allow reordering existing tests
   return Generate(opts);
+}
+
+ModelStats EstimateModel(const GenerateOptions& options) {
+  ModelStats stats;
+  stats.parameter_count = static_cast<uint32_t>(options.parameters.size());
+  stats.strength = options.strength;
+  stats.sub_model_count = static_cast<uint32_t>(options.sub_models.size());
+  stats.constraint_count = static_cast<uint32_t>(options.constraint_expressions.size());
+
+  uint32_t max_values = 0;
+  for (const auto& p : options.parameters) {
+    stats.total_values += p.size();
+    if (p.size() > max_values) {
+      max_values = p.size();
+    }
+    ModelStats::ParamDetail detail;
+    detail.name = p.name;
+    detail.value_count = p.size();
+    detail.invalid_count = p.invalid_count();
+    stats.parameters.push_back(std::move(detail));
+  }
+
+  // Compute exact total tuples using CoverageEngine.
+  auto [coverage, err] = CoverageEngine::Create(options.parameters, options.strength);
+  if (err.ok()) {
+    stats.total_tuples = coverage.TotalTuples();
+  }
+
+  // Estimate test count: upper bound is max_values^strength.
+  // For better estimate, use max_values^strength when param_count > strength,
+  // otherwise it is the product of all value counts.
+  if (stats.parameter_count <= stats.strength) {
+    uint32_t product = 1;
+    for (const auto& p : options.parameters) {
+      product *= p.size();
+    }
+    stats.estimated_tests = product;
+  } else {
+    uint32_t estimate = 1;
+    for (uint32_t i = 0; i < stats.strength; ++i) {
+      estimate *= max_values;
+    }
+    // Refine with log factor: roughly max_v^t * ceil(log2(n))
+    uint32_t log_factor =
+        static_cast<uint32_t>(std::ceil(std::log2(static_cast<double>(stats.parameter_count))));
+    if (log_factor < 1) log_factor = 1;
+    stats.estimated_tests = estimate * log_factor;
+    // Cap at total_tuples (can't need more tests than tuples).
+    if (stats.total_tuples > 0 && stats.estimated_tests > stats.total_tuples) {
+      stats.estimated_tests = stats.total_tuples;
+    }
+  }
+
+  return stats;
 }
 
 }  // namespace core
