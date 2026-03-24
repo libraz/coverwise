@@ -1,0 +1,47 @@
+/// @file greedy.h
+/// @brief Constructive greedy algorithm for covering array construction.
+///
+/// Instead of enumerating all candidates (combinatorial explosion),
+/// builds test cases parameter-by-parameter, choosing the value that
+/// maximizes coverage gain at each step. This is O(n * max_values)
+/// per test case instead of O(Π values).
+
+#ifndef COVERWISE_ALGO_GREEDY_H_
+#define COVERWISE_ALGO_GREEDY_H_
+
+#include <cstdint>
+#include <vector>
+
+#include "core/coverage_engine.h"
+#include "model/constraint_ast.h"
+#include "model/parameter.h"
+#include "model/test_case.h"
+#include "util/rng.h"
+
+namespace coverwise {
+namespace algo {
+
+/// @brief Build a test case parameter-by-parameter using greedy value selection.
+///
+/// For each parameter (in order), evaluate all possible values and pick
+/// the one that would cover the most uncovered tuples. Ties broken by RNG.
+///
+/// Constraints are evaluated at each step using three-valued logic:
+/// - true: continue
+/// - false: skip this value (prune)
+/// - unknown: continue (not all params assigned yet)
+///
+/// @param params Parameter definitions.
+/// @param coverage Current coverage state.
+/// @param constraints Active constraints (empty if none).
+/// @param rng Random number generator for tie-breaking and parameter ordering.
+/// @return The constructed test case.
+model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params,
+                                const core::CoverageEngine& coverage,
+                                const std::vector<model::Constraint>& constraints,
+                                util::Rng& rng);
+
+}  // namespace algo
+}  // namespace coverwise
+
+#endif  // COVERWISE_ALGO_GREEDY_H_
