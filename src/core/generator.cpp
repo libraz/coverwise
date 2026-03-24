@@ -11,7 +11,9 @@
 #include "core/coverage_engine.h"
 #include "model/constraint_ast.h"
 #include "model/constraint_parser.h"
+#include "util/boundary.h"
 #include "util/rng.h"
+#include "validator/coverage_validator.h"
 
 namespace coverwise {
 namespace core {
@@ -73,6 +75,14 @@ uint32_t TotalScore(const CoverageEngine& global, const std::vector<CoverageEngi
 bool HasInvalidValues(const std::vector<model::Parameter>& params) {
   for (const auto& p : params) {
     if (p.has_invalid_values()) return true;
+  }
+  return false;
+}
+
+/// @brief Check whether any parameter has equivalence classes.
+bool HasEquivalenceClasses(const std::vector<model::Parameter>& params) {
+  for (const auto& p : params) {
+    if (p.has_equivalence_classes()) return true;
   }
   return false;
 }
@@ -233,9 +243,20 @@ std::vector<std::vector<double>> ResolveWeights(const std::vector<model::Paramet
 model::GenerateResult Generate(const GenerateOptions& options) {
   model::GenerateResult result;
 
-  bool has_invalid = HasInvalidValues(options.parameters);
+  // Apply boundary value expansion to parameters that have boundary configs.
+  GenerateOptions opts = options;
+  if (!opts.boundary_configs.empty()) {
+    for (auto& param : opts.parameters) {
+      auto it = opts.boundary_configs.find(param.name);
+      if (it != opts.boundary_configs.end()) {
+        param = util::ExpandBoundaryValues(param, it->second);
+      }
+    }
+  }
 
-  auto [coverage, err] = CoverageEngine::Create(options.parameters, options.strength);
+  bool has_invalid = HasInvalidValues(opts.parameters);
+
+  auto [coverage, err] = CoverageEngine::Create(opts.parameters, opts.strength);
   if (!err.ok()) {
     result.warnings.push_back(err.message + ": " + err.detail);
     return result;
@@ -243,8 +264,8 @@ model::GenerateResult Generate(const GenerateOptions& options) {
 
   // Create sub-model engines.
   std::vector<CoverageEngine> sub_engines;
-  for (const auto& sm : options.sub_models) {
-    auto [indices, resolve_err] = ResolveParamNames(sm.parameter_names, options.parameters);
+  for (const auto& sm : opts.sub_models) {
+    auto [indices, resolve_err] = ResolveParamNames(sm.parameter_names, opts.parameters);
     if (!resolve_err.empty()) {
       result.warnings.push_back(resolve_err);
       return result;
@@ -255,7 +276,7 @@ model::GenerateResult Generate(const GenerateOptions& options) {
                                 ")");
       return result;
     }
-    auto [eng, sm_err] = CoverageEngine::Create(options.parameters, indices, sm.strength);
+    auto [eng, sm_err] = CoverageEngine::Create(opts.parameters, indices, sm.strength);
     if (!sm_err.ok()) {
       result.warnings.push_back(sm_err.message + ": " + sm_err.detail);
       return result;
@@ -265,8 +286,8 @@ model::GenerateResult Generate(const GenerateOptions& options) {
 
   // Parse constraint expressions into AST.
   std::vector<model::Constraint> constraints;
-  for (const auto& expr : options.constraint_expressions) {
-    auto parse_result = model::ParseConstraint(expr, options.parameters);
+  for (const auto& expr : opts.constraint_expressions) {
+    auto parse_result = model::ParseConstraint(expr, opts.parameters);
     if (!parse_result.error.ok()) {
       result.warnings.push_back(parse_result.error.message + ": " + parse_result.error.detail);
       return result;
@@ -291,16 +312,16 @@ model::GenerateResult Generate(const GenerateOptions& options) {
   // Build allowed_values mask for positive generation (valid values only).
   std::vector<std::vector<bool>> valid_mask;
   if (has_invalid) {
-    valid_mask = BuildValidOnlyMask(options.parameters);
+    valid_mask = BuildValidOnlyMask(opts.parameters);
   }
 
   // Resolve value weights to index-based vectors.
-  auto resolved_weights = ResolveWeights(options.parameters, options.weights);
+  auto resolved_weights = ResolveWeights(opts.parameters, opts.weights);
 
-  util::Rng rng(options.seed);
+  util::Rng rng(opts.seed);
 
   // Pre-load seed tests into all engines.
-  for (const auto& seed_test : options.seeds) {
+  for (const auto& seed_test : opts.seeds) {
     coverage.AddTestCase(seed_test);
     for (auto& eng : sub_engines) {
       eng.AddTestCase(seed_test);
@@ -319,13 +340,13 @@ model::GenerateResult Generate(const GenerateOptions& options) {
   constexpr uint32_t kMaxRetries = 50;
   uint32_t retries = 0;
   while (!AllComplete(coverage, sub_engines) &&
-         (options.max_tests == 0 || result.tests.size() < static_cast<size_t>(options.max_tests))) {
+         (opts.max_tests == 0 || result.tests.size() < static_cast<size_t>(opts.max_tests))) {
     model::TestCase tc;
     if (sub_engines.empty()) {
-      tc = algo::GreedyConstruct(options.parameters, coverage, constraints, rng, valid_mask,
+      tc = algo::GreedyConstruct(opts.parameters, coverage, constraints, rng, valid_mask,
                                  resolved_weights);
     } else {
-      tc = algo::GreedyConstruct(options.parameters, engine_ptrs, constraints, rng,
+      tc = algo::GreedyConstruct(opts.parameters, engine_ptrs, constraints, rng,
                                  resolved_weights);
     }
     uint32_t score = TotalScore(coverage, sub_engines, tc);
@@ -343,17 +364,17 @@ model::GenerateResult Generate(const GenerateOptions& options) {
 
   // Generate negative tests if any parameter has invalid values.
   if (has_invalid) {
-    GenerateNegativeTests(options.parameters, options.strength, constraints, rng,
+    GenerateNegativeTests(opts.parameters, opts.strength, constraints, rng,
                           result.negative_tests);
   }
 
   // Collect uncovered tuples from all engines.
   if (!AllComplete(coverage, sub_engines)) {
-    auto global_uncovered = coverage.GetUncoveredTuples(options.parameters);
+    auto global_uncovered = coverage.GetUncoveredTuples(opts.parameters);
     result.uncovered.insert(result.uncovered.end(), global_uncovered.begin(),
                             global_uncovered.end());
     for (const auto& eng : sub_engines) {
-      auto sub_uncovered = eng.GetUncoveredTuples(options.parameters);
+      auto sub_uncovered = eng.GetUncoveredTuples(opts.parameters);
       result.uncovered.insert(result.uncovered.end(), sub_uncovered.begin(), sub_uncovered.end());
     }
     for (const auto& ut : result.uncovered) {
@@ -377,6 +398,17 @@ model::GenerateResult Generate(const GenerateOptions& options) {
     result.stats.covered_tuples += eng.CoveredCount();
   }
   result.stats.test_count = static_cast<uint32_t>(result.tests.size());
+
+  // Compute equivalence class coverage if any parameter has classes.
+  if (HasEquivalenceClasses(options.parameters)) {
+    auto class_report =
+        validator::ComputeClassCoverage(options.parameters, result.tests, options.strength);
+    result.class_coverage.total_class_tuples = class_report.total_class_tuples;
+    result.class_coverage.covered_class_tuples = class_report.covered_class_tuples;
+    result.class_coverage.class_coverage_ratio = class_report.coverage_ratio;
+    result.has_class_coverage = true;
+  }
+
   return result;
 }
 
@@ -391,14 +423,25 @@ model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
 }
 
 ModelStats EstimateModel(const GenerateOptions& options) {
+  // Apply boundary expansion for estimation.
+  GenerateOptions opts = options;
+  if (!opts.boundary_configs.empty()) {
+    for (auto& param : opts.parameters) {
+      auto it = opts.boundary_configs.find(param.name);
+      if (it != opts.boundary_configs.end()) {
+        param = util::ExpandBoundaryValues(param, it->second);
+      }
+    }
+  }
+
   ModelStats stats;
-  stats.parameter_count = static_cast<uint32_t>(options.parameters.size());
-  stats.strength = options.strength;
-  stats.sub_model_count = static_cast<uint32_t>(options.sub_models.size());
-  stats.constraint_count = static_cast<uint32_t>(options.constraint_expressions.size());
+  stats.parameter_count = static_cast<uint32_t>(opts.parameters.size());
+  stats.strength = opts.strength;
+  stats.sub_model_count = static_cast<uint32_t>(opts.sub_models.size());
+  stats.constraint_count = static_cast<uint32_t>(opts.constraint_expressions.size());
 
   uint32_t max_values = 0;
-  for (const auto& p : options.parameters) {
+  for (const auto& p : opts.parameters) {
     stats.total_values += p.size();
     if (p.size() > max_values) {
       max_values = p.size();
@@ -411,7 +454,7 @@ ModelStats EstimateModel(const GenerateOptions& options) {
   }
 
   // Compute exact total tuples using CoverageEngine.
-  auto [coverage, err] = CoverageEngine::Create(options.parameters, options.strength);
+  auto [coverage, err] = CoverageEngine::Create(opts.parameters, opts.strength);
   if (err.ok()) {
     stats.total_tuples = coverage.TotalTuples();
   }
@@ -421,7 +464,7 @@ ModelStats EstimateModel(const GenerateOptions& options) {
   // otherwise it is the product of all value counts.
   if (stats.parameter_count <= stats.strength) {
     uint32_t product = 1;
-    for (const auto& p : options.parameters) {
+    for (const auto& p : opts.parameters) {
       product *= p.size();
     }
     stats.estimated_tests = product;

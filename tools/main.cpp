@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "core/generator.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
+#include "util/boundary.h"
 #include "validator/coverage_validator.h"
 
 namespace {
@@ -409,14 +411,17 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
     }
     bool has_any_invalid = false;
     bool has_any_aliases = false;
+    bool has_any_classes = false;
     std::vector<bool> invalid_flags;
     std::vector<std::vector<std::string>> aliases_list;
+    std::vector<std::string> eq_classes;
     for (size_t j = 0; j < values_val.array_val.size(); ++j) {
       const auto& v = values_val.array_val[j];
       if (v.type == JsonType::kString) {
         param.values.push_back(v.string_val);
         invalid_flags.push_back(false);
         aliases_list.push_back({});
+        eq_classes.push_back({});
       } else if (v.type == JsonType::kNumber) {
         // Convert number to string representation.
         if (v.number_val == static_cast<int64_t>(v.number_val)) {
@@ -428,10 +433,12 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
         }
         invalid_flags.push_back(false);
         aliases_list.push_back({});
+        eq_classes.push_back({});
       } else if (v.type == JsonType::kBool) {
         param.values.push_back(v.bool_val ? "true" : "false");
         invalid_flags.push_back(false);
         aliases_list.push_back({});
+        eq_classes.push_back({});
       } else if (v.type == JsonType::kObject) {
         // Object form: {"value": "...", "invalid": true, "aliases": ["..."]}
         const auto& val_field = v["value"];
@@ -476,6 +483,15 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
           if (!val_aliases.empty()) has_any_aliases = true;
         }
         aliases_list.push_back(std::move(val_aliases));
+
+        // Parse equivalence class.
+        const auto& class_field = v["class"];
+        if (class_field.type == JsonType::kString && !class_field.string_val.empty()) {
+          eq_classes.push_back(class_field.string_val);
+          has_any_classes = true;
+        } else {
+          eq_classes.push_back({});
+        }
       } else {
         error = "parameter '" + param.name + "' value " + std::to_string(j) +
                 " must be a string, number, boolean, or {value, invalid, aliases} object";
@@ -490,6 +506,10 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
     if (has_any_aliases) {
       param.set_aliases(std::move(aliases_list));
     }
+    // Set equivalence classes only if any value has a class.
+    if (has_any_classes) {
+      param.set_equivalence_classes(std::move(eq_classes));
+    }
     if (param.values.empty()) {
       error = "parameter '" + param.name + "' has no values";
       return false;
@@ -501,6 +521,52 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
     return false;
   }
   return true;
+}
+
+/// @brief Parse boundary value configs from parameter JSON.
+///
+/// For each parameter with "type" ("integer" or "float") and "range" ([min, max]),
+/// creates a BoundaryConfig. Optional "step" for float type.
+void ParseBoundaryConfigs(const JsonValue& json,
+                          std::map<std::string, coverwise::util::BoundaryConfig>& configs) {
+  if (json.type != JsonType::kArray) return;
+  for (size_t i = 0; i < json.array_val.size(); ++i) {
+    const auto& p = json.array_val[i];
+    if (p.type != JsonType::kObject) continue;
+
+    const auto& name_val = p["name"];
+    if (name_val.type != JsonType::kString) continue;
+
+    const auto& type_val = p["type"];
+    const auto& range_val = p["range"];
+    if (type_val.type != JsonType::kString) continue;
+    if (range_val.type != JsonType::kArray || range_val.array_val.size() != 2) continue;
+    if (range_val.array_val[0].type != JsonType::kNumber ||
+        range_val.array_val[1].type != JsonType::kNumber) {
+      continue;
+    }
+
+    coverwise::util::BoundaryConfig config;
+    config.min_value = range_val.array_val[0].number_val;
+    config.max_value = range_val.array_val[1].number_val;
+
+    if (type_val.string_val == "integer") {
+      config.type = coverwise::util::BoundaryConfig::Type::kInteger;
+      config.step = 1.0;
+    } else if (type_val.string_val == "float") {
+      config.type = coverwise::util::BoundaryConfig::Type::kFloat;
+      const auto& step_val = p["step"];
+      if (step_val.type == JsonType::kNumber) {
+        config.step = step_val.number_val;
+      } else {
+        config.step = 1.0;
+      }
+    } else {
+      continue;
+    }
+
+    configs[name_val.string_val] = config;
+  }
 }
 
 /// @brief Parse test cases from a JSON array of objects with string values.
@@ -644,6 +710,19 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
   w.WriteNumber(static_cast<double>(result.stats.test_count));
   w.EndObject();
 
+  // classCoverage (only when equivalence classes are defined)
+  if (result.has_class_coverage) {
+    w.Key("classCoverage");
+    w.BeginObject();
+    w.Key("totalClassTuples");
+    w.WriteNumber(static_cast<double>(result.class_coverage.total_class_tuples));
+    w.Key("coveredClassTuples");
+    w.WriteNumber(static_cast<double>(result.class_coverage.covered_class_tuples));
+    w.Key("classCoverageRatio");
+    w.WriteNumber(result.class_coverage.class_coverage_ratio);
+    w.EndObject();
+  }
+
   // suggestions
   w.Key("suggestions");
   w.BeginArray();
@@ -749,6 +828,9 @@ int RunGenerate(int argc, char* argv[]) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
   }
+
+  // Parse boundary value configs from parameters.
+  ParseBoundaryConfigs(json["parameters"], options.boundary_configs);
 
   // Parse optional fields.
   const auto& strength_val = json["strength"];
@@ -1011,6 +1093,9 @@ int RunStats(int argc, char* argv[]) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
   }
+
+  // Parse boundary value configs from parameters.
+  ParseBoundaryConfigs(json["parameters"], options.boundary_configs);
 
   const auto& strength_val = json["strength"];
   if (!strength_val.IsNull() && strength_val.type == JsonType::kNumber) {

@@ -11,6 +11,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['js/**/*.test.ts', 'tests/wasm/**/*.test.ts'],
+
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

@@ -12,6 +12,7 @@
 #include "model/constraint_ast.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
+#include "util/boundary.h"
 
 namespace coverwise {
 namespace core {
@@ -51,7 +52,8 @@ struct GenerateOptions {
   uint32_t max_tests = 0;                           ///< 0 = no limit
   std::vector<model::TestCase> seeds;               ///< Existing tests to build upon
   std::vector<SubModel> sub_models;                 ///< Mixed-strength sub-models
-  WeightConfig weights;                             ///< Value weight hints
+  WeightConfig weights;                              ///< Value weight hints
+  std::map<std::string, util::BoundaryConfig> boundary_configs;  ///< Per-param boundary expansion
 };
 
 /// @brief Mode for extendTests operation.

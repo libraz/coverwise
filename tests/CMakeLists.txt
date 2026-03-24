@@ -19,6 +19,7 @@ endfunction()
 
 # Util tests
 coverwise_add_test(bitset_test util/bitset_test.cpp)
+coverwise_add_test(boundary_test util/boundary_test.cpp)
 coverwise_add_test(rng_test util/rng_test.cpp)
 
 # Model tests
@@ -27,11 +28,17 @@ coverwise_add_test(test_case_test model/test_case_test.cpp)
 
 coverwise_add_test(constraint_parser_test model/constraint_parser_test.cpp)
 
+# Algo tests
+coverwise_add_test(greedy_test algo/greedy_test.cpp)
+
 # Core tests
 coverwise_add_test(coverage_engine_test core/coverage_engine_test.cpp)
+coverwise_add_test(generator_test core/generator_test.cpp)
 
 # Validator tests
 coverwise_add_test(coverage_validator_test validator/coverage_validator_test.cpp)
+coverwise_add_test(constraint_validator_test validator/constraint_validator_test.cpp)
+coverwise_add_test(equivalence_class_test validator/equivalence_class_test.cpp)
 
 # Integration tests
 coverwise_add_test(integration_test integration/generate_and_validate_test.cpp)

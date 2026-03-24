@@ -1,5 +1,7 @@
 #include "model/parameter.h"
 
+#include <algorithm>
+
 namespace coverwise {
 namespace model {
 
@@ -68,6 +70,31 @@ uint32_t Parameter::find_value_index(const std::string& name) const {
     }
   }
   return UINT32_MAX;
+}
+
+const std::string& Parameter::equivalence_class(uint32_t index) const {
+  static const std::string kEmpty;
+  if (equivalence_classes_.empty() || index >= static_cast<uint32_t>(equivalence_classes_.size())) {
+    return kEmpty;
+  }
+  return equivalence_classes_[index];
+}
+
+bool Parameter::has_equivalence_classes() const {
+  for (const auto& c : equivalence_classes_) {
+    if (!c.empty()) return true;
+  }
+  return false;
+}
+
+std::vector<std::string> Parameter::unique_classes() const {
+  std::vector<std::string> result;
+  for (const auto& c : equivalence_classes_) {
+    if (!c.empty() && std::find(result.begin(), result.end(), c) == result.end()) {
+      result.push_back(c);
+    }
+  }
+  return result;
 }
 
 }  // namespace model

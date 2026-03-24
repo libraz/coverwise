@@ -77,6 +77,25 @@ struct Parameter {
   /// @return The value index, or UINT32_MAX if not found.
   uint32_t find_value_index(const std::string& name) const;
 
+  /// @brief Returns the equivalence class for the value at the given index.
+  /// Returns an empty string if no class is defined.
+  const std::string& equivalence_class(uint32_t index) const;
+
+  /// @brief Returns true if any value has an equivalence class defined.
+  bool has_equivalence_classes() const;
+
+  /// @brief Returns the distinct class names (in first-seen order).
+  std::vector<std::string> unique_classes() const;
+
+  /// @brief Set the equivalence class for each value.
+  /// equivalence_classes[i] = class name for values[i]. Empty string = no class.
+  void set_equivalence_classes(std::vector<std::string> classes) {
+    equivalence_classes_ = std::move(classes);
+  }
+
+  /// @brief Access the equivalence classes vector.
+  const std::vector<std::string>& equivalence_classes() const { return equivalence_classes_; }
+
  private:
   /// @brief Per-value invalid flag. invalid_[i] = true if values[i] is invalid.
   /// Empty means all values are valid.
@@ -85,6 +104,10 @@ struct Parameter {
   /// @brief Per-value alias list. aliases_[i] = aliases for values[i].
   /// Empty means no aliases for any value.
   std::vector<std::vector<std::string>> aliases_;
+
+  /// @brief Per-value equivalence class. equivalence_classes_[i] = class for values[i].
+  /// Empty means no equivalence classes defined.
+  std::vector<std::string> equivalence_classes_;
 };
 
 }  // namespace model

@@ -3,7 +3,10 @@
 #include "validator/coverage_validator.h"
 
 #include <algorithm>
+#include <set>
 #include <string>
+#include <tuple>
+#include <vector>
 
 namespace coverwise {
 namespace validator {
@@ -130,6 +133,101 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
   if (report.total_tuples > 0) {
     report.coverage_ratio =
         static_cast<double>(report.covered_tuples) / static_cast<double>(report.total_tuples);
+  }
+
+  return report;
+}
+
+ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& params,
+                                         const std::vector<model::TestCase>& tests,
+                                         uint32_t strength) {
+  ClassCoverageReport report;
+  uint32_t n = static_cast<uint32_t>(params.size());
+
+  if (strength == 0 || strength > n) {
+    return report;
+  }
+
+  // Identify parameters that have equivalence classes.
+  std::vector<uint32_t> class_params;
+  for (uint32_t i = 0; i < n; ++i) {
+    if (params[i].has_equivalence_classes()) {
+      class_params.push_back(i);
+    }
+  }
+
+  if (class_params.empty()) {
+    return report;
+  }
+
+  // For class coverage we consider combinations of parameters that have classes.
+  // If fewer parameters have classes than the strength, use the available count.
+  uint32_t class_n = static_cast<uint32_t>(class_params.size());
+  uint32_t effective_strength = std::min(strength, class_n);
+
+  // Generate all C(class_n, effective_strength) combinations of class-enabled parameters.
+  auto combinations = GenerateCombinations(class_n, effective_strength);
+
+  // For each combination, enumerate all class tuples (cartesian product of unique classes).
+  // Use a set of string tuples to track covered class combinations.
+  for (const auto& combo : combinations) {
+    // Get the unique classes for each parameter in this combination.
+    std::vector<std::vector<std::string>> classes_per_param;
+    for (uint32_t idx : combo) {
+      classes_per_param.push_back(params[class_params[idx]].unique_classes());
+    }
+
+    // Compute the number of class tuples for this combination.
+    uint32_t num_tuples = 1;
+    for (const auto& cls : classes_per_param) {
+      num_tuples *= static_cast<uint32_t>(cls.size());
+    }
+
+    // Enumerate all class tuples and check coverage.
+    for (uint32_t flat = 0; flat < num_tuples; ++flat) {
+      // Decode flat index into class indices.
+      std::vector<uint32_t> class_indices(effective_strength);
+      uint32_t remainder = flat;
+      for (int i = static_cast<int>(effective_strength) - 1; i >= 0; --i) {
+        uint32_t radix = static_cast<uint32_t>(classes_per_param[i].size());
+        class_indices[i] = remainder % radix;
+        remainder /= radix;
+      }
+
+      ++report.total_class_tuples;
+
+      // Check if any test case covers this class tuple.
+      bool covered = false;
+      for (const auto& test : tests) {
+        bool matches = true;
+        for (uint32_t k = 0; k < effective_strength; ++k) {
+          uint32_t pi = class_params[combo[k]];
+          if (pi >= static_cast<uint32_t>(test.values.size())) {
+            matches = false;
+            break;
+          }
+          uint32_t vi = test.values[pi];
+          const std::string& test_class = params[pi].equivalence_class(vi);
+          if (test_class != classes_per_param[k][class_indices[k]]) {
+            matches = false;
+            break;
+          }
+        }
+        if (matches) {
+          covered = true;
+          break;
+        }
+      }
+
+      if (covered) {
+        ++report.covered_class_tuples;
+      }
+    }
+  }
+
+  if (report.total_class_tuples > 0) {
+    report.coverage_ratio = static_cast<double>(report.covered_class_tuples) /
+                            static_cast<double>(report.total_class_tuples);
   }
 
   return report;

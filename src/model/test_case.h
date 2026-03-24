@@ -39,6 +39,13 @@ struct GenerateStats {
   uint32_t test_count = 0;
 };
 
+/// @brief Equivalence class coverage metrics.
+struct ClassCoverage {
+  uint32_t total_class_tuples = 0;
+  uint32_t covered_class_tuples = 0;
+  double class_coverage_ratio = 0.0;
+};
+
 /// @brief Suggested test case to add (for AI/human guidance).
 struct Suggestion {
   std::string description;  ///< e.g. "Add test: os=win, browser=safari"
@@ -54,6 +61,8 @@ struct GenerateResult {
   GenerateStats stats;
   std::vector<Suggestion> suggestions;
   std::vector<std::string> warnings;
+  ClassCoverage class_coverage;         ///< Equivalence class coverage (if classes defined)
+  bool has_class_coverage = false;      ///< True if any parameter has equivalence classes
 };
 
 /// @brief Structured error with context.
