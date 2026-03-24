@@ -26,6 +26,31 @@ namespace {
 // JS -> C++ conversion helpers
 // ---------------------------------------------------------------------------
 
+/// @brief Convert a JS value (string, number, or boolean) to a C++ string.
+///
+/// - string  → as-is
+/// - number  → "42", "3.14"  (integer-like doubles drop the ".0")
+/// - boolean → "true" / "false"
+std::string JsValueToString(val item) {
+  std::string type = item.typeOf().as<std::string>();
+  if (type == "string") {
+    return item.as<std::string>();
+  }
+  if (type == "number") {
+    double d = item.as<double>();
+    // Emit integers without decimal point: 42.0 -> "42"
+    if (d == static_cast<double>(static_cast<int64_t>(d)) && d >= -1e15 && d <= 1e15) {
+      return std::to_string(static_cast<int64_t>(d));
+    }
+    return std::to_string(d);
+  }
+  if (type == "boolean") {
+    return item.as<bool>() ? "true" : "false";
+  }
+  // Fallback: use JS String() conversion
+  return val::global("String").call<std::string>("call", val::null(), item);
+}
+
 /// @brief Parse a single JS parameter object into a C++ Parameter.
 ///
 /// Handles three value formats:
@@ -46,14 +71,15 @@ coverwise::model::Parameter ParseParameter(val js_param) {
 
   for (uint32_t i = 0; i < count; ++i) {
     val item = js_values[i];
-    if (item.typeOf().as<std::string>() == "string") {
-      // Simple string value
-      param.values.push_back(item.as<std::string>());
+    std::string item_type = item.typeOf().as<std::string>();
+    if (item_type == "string" || item_type == "number" || item_type == "boolean") {
+      // Scalar value — convert to string
+      param.values.push_back(JsValueToString(item));
       invalid_flags.push_back(false);
       aliases.emplace_back();
     } else {
       // Object form: { value: "...", invalid?: bool, aliases?: [...] }
-      param.values.push_back(item["value"].as<std::string>());
+      param.values.push_back(JsValueToString(item["value"]));
 
       bool is_invalid = false;
       if (item.hasOwnProperty("invalid")) {
@@ -105,7 +131,7 @@ coverwise::model::TestCase ParseTestCase(val js_test,
   tc.values.resize(params.size(), coverwise::model::kUnassigned);
   for (uint32_t i = 0; i < params.size(); ++i) {
     if (js_test.hasOwnProperty(params[i].name.c_str())) {
-      std::string val_str = js_test[params[i].name].as<std::string>();
+      std::string val_str = JsValueToString(js_test[params[i].name]);
       tc.values[i] = params[i].find_value_index(val_str);
     }
   }

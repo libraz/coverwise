@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   analyzeCoverage,
+  Coverwise,
   estimateModel,
   extendTests,
   generate,
@@ -401,5 +402,353 @@ describe('estimateModel() edge cases', () => {
     });
     expect(stats.parameterCount).toBe(1);
     expect(stats.totalTuples).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Non-string parameter values (boolean, number)
+// ---------------------------------------------------------------------------
+
+describe('boolean parameter values', () => {
+  it('values: [true, false] — generate works', () => {
+    const result = generate({
+      parameters: [
+        { name: 'debug', values: [true, false] },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+    });
+    expect(result.coverage).toBe(1.0);
+    expect(result.tests.length).toBeGreaterThan(0);
+    for (const test of result.tests) {
+      expect(['true', 'false']).toContain(test.debug);
+    }
+  });
+
+  it('analyzeCoverage with boolean values', () => {
+    const params: Parameter[] = [
+      { name: 'debug', values: [true, false] },
+      { name: 'os', values: ['win', 'mac'] },
+    ];
+    const tests: TestCase[] = [
+      { debug: 'true', os: 'win' },
+      { debug: 'false', os: 'mac' },
+    ];
+    const report = analyzeCoverage(params, tests);
+    expect(report.coverageRatio).toBeLessThan(1.0);
+    expect(report.totalTuples).toBe(4);
+    expect(report.coveredTuples).toBe(2);
+  });
+
+  it('analyzeCoverage with boolean test values', () => {
+    const params: Parameter[] = [
+      { name: 'debug', values: [true, false] },
+      { name: 'os', values: ['win', 'mac'] },
+    ];
+    // Test case uses boolean values (not strings) — should resolve correctly
+    const tests: TestCase[] = [
+      { debug: true, os: 'win' },
+      { debug: false, os: 'mac' },
+      { debug: true, os: 'mac' },
+      { debug: false, os: 'win' },
+    ];
+    const report = analyzeCoverage(params, tests);
+    expect(report.coverageRatio).toBe(1.0);
+  });
+
+  it('extendTests with boolean param values', () => {
+    const params: Parameter[] = [
+      { name: 'debug', values: [true, false] },
+      { name: 'os', values: ['win', 'mac'] },
+    ];
+    const existing: TestCase[] = [{ debug: 'true', os: 'win' }];
+    const result = extendTests(existing, { parameters: params });
+    expect(result.coverage).toBe(1.0);
+  });
+
+  it('constraint with boolean param: IF debug = true THEN os != mac', () => {
+    const result = generate({
+      parameters: [
+        { name: 'debug', values: [true, false] },
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+      ],
+      constraints: ['IF debug = true THEN os != mac'],
+    });
+    expect(result.coverage).toBe(1.0);
+    for (const test of result.tests) {
+      if (test.debug === 'true') {
+        expect(test.os).not.toBe('mac');
+      }
+    }
+  });
+
+  it('seed tests with boolean values', () => {
+    const result = generate({
+      parameters: [
+        { name: 'debug', values: [true, false] },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+      seeds: [{ debug: 'true', os: 'win' }],
+    });
+    expect(result.coverage).toBe(1.0);
+    expect(result.tests[0]).toEqual({ debug: 'true', os: 'win' });
+  });
+});
+
+describe('number parameter values', () => {
+  it('values: [1, 2, 3] — generate works', () => {
+    const result = generate({
+      parameters: [
+        { name: 'version', values: [1, 2, 3] },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+    });
+    expect(result.coverage).toBe(1.0);
+    expect(result.tests.length).toBeGreaterThan(0);
+    for (const test of result.tests) {
+      expect(['1', '2', '3']).toContain(test.version);
+    }
+  });
+
+  it('values: [0] — single numeric value', () => {
+    const result = generate({
+      parameters: [
+        { name: 'count', values: [0] },
+        { name: 'flag', values: ['a', 'b'] },
+      ],
+    });
+    expect(result.coverage).toBe(1.0);
+    for (const test of result.tests) {
+      expect(test.count).toBe('0');
+    }
+  });
+
+  it('negative number values', () => {
+    const result = generate({
+      parameters: [
+        { name: 'temp', values: [-10, 0, 10] },
+        { name: 'unit', values: ['C', 'F'] },
+      ],
+    });
+    expect(result.coverage).toBe(1.0);
+    for (const test of result.tests) {
+      expect(['-10', '0', '10']).toContain(test.temp);
+    }
+  });
+
+  it('float values', () => {
+    const result = generate({
+      parameters: [
+        { name: 'ratio', values: [0.5, 1.0, 2.0] },
+        { name: 'mode', values: ['a', 'b'] },
+      ],
+    });
+    expect(result.coverage).toBe(1.0);
+  });
+
+  it('analyzeCoverage with numeric test values', () => {
+    const params: Parameter[] = [
+      { name: 'version', values: [1, 2] },
+      { name: 'os', values: ['win', 'mac'] },
+    ];
+    const tests: TestCase[] = [
+      { version: 1, os: 'win' },
+      { version: 2, os: 'mac' },
+      { version: 1, os: 'mac' },
+      { version: 2, os: 'win' },
+    ];
+    const report = analyzeCoverage(params, tests);
+    expect(report.coverageRatio).toBe(1.0);
+  });
+
+  it('constraint with numeric param: IF version > 1 THEN os != linux', () => {
+    const result = generate({
+      parameters: [
+        { name: 'version', values: [1, 2, 3] },
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+      ],
+      constraints: ['IF version > 1 THEN os != linux'],
+    });
+    expect(result.coverage).toBe(1.0);
+    for (const test of result.tests) {
+      const v = Number(test.version);
+      if (v > 1) {
+        expect(test.os).not.toBe('linux');
+      }
+    }
+  });
+});
+
+describe('mixed type parameter values', () => {
+  it('string + number + boolean in same values array', () => {
+    const result = generate({
+      parameters: [
+        { name: 'setting', values: ['auto', 0, true] },
+        { name: 'env', values: ['dev', 'prod'] },
+      ],
+    });
+    expect(result.coverage).toBe(1.0);
+    for (const test of result.tests) {
+      expect(['auto', '0', 'true']).toContain(test.setting);
+    }
+  });
+
+  it('ParameterValue object with numeric value', () => {
+    const result = generate({
+      parameters: [
+        {
+          name: 'port',
+          values: [{ value: 80 }, { value: 443 }, { value: 0, invalid: true }],
+        },
+        { name: 'proto', values: ['http', 'https'] },
+      ],
+    });
+    expect(result.coverage).toBe(1.0);
+    expect(result.negativeTests).toBeDefined();
+    expect(result.negativeTests!.length).toBeGreaterThan(0);
+    for (const nt of result.negativeTests!) {
+      expect(nt.port).toBe('0');
+    }
+  });
+
+  it('ParameterValue object with boolean value', () => {
+    const result = generate({
+      parameters: [
+        {
+          name: 'flag',
+          values: [{ value: true }, { value: false, invalid: true }],
+        },
+        { name: 'mode', values: ['fast', 'slow'] },
+      ],
+    });
+    expect(result.coverage).toBe(1.0);
+    expect(result.negativeTests).toBeDefined();
+    for (const nt of result.negativeTests!) {
+      expect(nt.flag).toBe('false');
+    }
+  });
+
+  it('estimateModel with non-string values', () => {
+    const stats = estimateModel({
+      parameters: [
+        { name: 'debug', values: [true, false] },
+        { name: 'version', values: [1, 2, 3] },
+      ],
+    });
+    expect(stats.parameterCount).toBe(2);
+    expect(stats.totalValues).toBe(5);
+    expect(stats.totalTuples).toBe(6);
+  });
+
+  it('determinism: same non-string values + seed = same output', () => {
+    const input = {
+      parameters: [
+        { name: 'debug', values: [true, false] as (string | number | boolean)[] },
+        { name: 'version', values: [1, 2, 3] as (string | number | boolean)[] },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+      seed: 42,
+    };
+    const r1 = generate(input);
+    const r2 = generate(input);
+    expect(r1.tests).toEqual(r2.tests);
+  });
+});
+
+describe('Coverwise class', () => {
+  let cw: Coverwise;
+
+  beforeAll(async () => {
+    cw = await Coverwise.create();
+  });
+
+  it('Coverwise.create() returns an instance', () => {
+    expect(cw).toBeInstanceOf(Coverwise);
+  });
+
+  it('generate(): basic pairwise, full coverage', () => {
+    const result = cw.generate({
+      parameters: [
+        { name: 'os', values: ['win', 'mac'] },
+        { name: 'browser', values: ['chrome', 'firefox'] },
+      ],
+    });
+    expect(result.coverage).toBe(1.0);
+    expect(result.tests.length).toBeGreaterThan(0);
+    expect(result.uncovered).toHaveLength(0);
+  });
+
+  it('generate() with constraints: IF os=mac THEN browser!=ie', () => {
+    const result = cw.generate({
+      parameters: [
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+        { name: 'browser', values: ['chrome', 'firefox', 'ie'] },
+      ],
+      constraints: ['IF os = mac THEN browser != ie'],
+    });
+    expect(result.coverage).toBe(1.0);
+    for (const test of result.tests) {
+      if (test.os === 'mac') {
+        expect(test.browser).not.toBe('ie');
+      }
+    }
+  });
+
+  it('analyzeCoverage(): partial coverage shows uncovered', () => {
+    const params: Parameter[] = [
+      { name: 'os', values: ['win', 'mac'] },
+      { name: 'browser', values: ['chrome', 'firefox'] },
+    ];
+    const tests: TestCase[] = [{ os: 'win', browser: 'chrome' }];
+    const report = cw.analyzeCoverage(params, tests);
+    expect(report.coverageRatio).toBeLessThan(1.0);
+    expect(report.uncovered.length).toBeGreaterThan(0);
+    expect(report.totalTuples).toBe(4);
+    expect(report.coveredTuples).toBe(1);
+  });
+
+  it('extendTests(): extends partial suite to full coverage', () => {
+    const params: Parameter[] = [
+      { name: 'os', values: ['win', 'mac', 'linux'] },
+      { name: 'browser', values: ['chrome', 'firefox', 'safari'] },
+    ];
+    const existing: TestCase[] = [{ os: 'win', browser: 'chrome' }];
+    const result = cw.extendTests(existing, { parameters: params });
+    expect(result.coverage).toBe(1.0);
+    expect(result.tests.length).toBeGreaterThan(1);
+    expect(result.tests[0]).toEqual({ os: 'win', browser: 'chrome' });
+  });
+
+  it('estimateModel(): returns stats', () => {
+    const stats = cw.estimateModel({
+      parameters: [
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+        { name: 'browser', values: ['chrome', 'firefox'] },
+      ],
+    });
+    expect(stats.parameterCount).toBe(2);
+    expect(stats.totalValues).toBe(5);
+    expect(stats.strength).toBe(2);
+    expect(stats.totalTuples).toBe(6);
+    expect(stats.estimatedTests).toBeGreaterThan(0);
+  });
+
+  it('multiple Coverwise.create() calls work (shared singleton)', async () => {
+    const cw2 = await Coverwise.create();
+    expect(cw2).toBeInstanceOf(Coverwise);
+    const r1 = cw.generate({
+      parameters: [
+        { name: 'a', values: ['1', '2'] },
+        { name: 'b', values: ['1', '2'] },
+      ],
+      seed: 42,
+    });
+    const r2 = cw2.generate({
+      parameters: [
+        { name: 'a', values: ['1', '2'] },
+        { name: 'b', values: ['1', '2'] },
+      ],
+      seed: 42,
+    });
+    expect(r1.tests).toEqual(r2.tests);
   });
 });

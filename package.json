@@ -31,6 +31,8 @@
     "format": "biome format --write js/ tests/wasm/",
     "test": "vitest run",
     "test:watch": "vitest",
+    "prepack": "cp README.md README.md.bak && cp README.npm.md README.md",
+    "postpack": "mv README.md.bak README.md",
     "prepublishOnly": "yarn clean && yarn build && yarn lint && yarn test"
   },
   "keywords": [
@@ -44,7 +46,7 @@
     "webassembly"
   ],
   "author": "libraz <libraz@libraz.net>",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/libraz/coverwise.git"

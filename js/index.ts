@@ -5,17 +5,22 @@
  * JSON-complete, stateless, decomposable.
  */
 
+// --- Re-exports ---
+
+export type { Condition, ConditionStart, Constraint } from './constraint';
+export { allOf, anyOf, not, when } from './constraint';
+
 // --- Public Types ---
 
 export interface ParameterValue {
-  value: string;
+  value: string | number | boolean;
   invalid?: boolean;
   aliases?: string[];
 }
 
 export interface Parameter {
   name: string;
-  values: (string | ParameterValue)[];
+  values: (string | number | boolean | ParameterValue)[];
 }
 
 export interface SubModel {
@@ -252,4 +257,69 @@ export function estimateModel(input: GenerateInput): ModelStats {
   const mod = getModule();
   const result = checkResult<ModelStats>(mod.estimateModel(input));
   return result;
+}
+
+// --- Class-based API ---
+
+/**
+ * Class-based wrapper around the coverwise API.
+ * Provides the same functionality as the free functions in an object-oriented style.
+ *
+ * @example
+ * const cw = await Coverwise.create();
+ * const result = cw.generate({ parameters: [...] });
+ */
+export class Coverwise {
+  private module: WasmModule;
+
+  private constructor(module: WasmModule) {
+    this.module = module;
+  }
+
+  /**
+   * Create a Coverwise instance.
+   * Reuses the shared WASM singleton — safe to call multiple times.
+   *
+   * @example
+   * const cw = await Coverwise.create();
+   * const result = cw.generate({ parameters: [...] });
+   */
+  static async create(): Promise<Coverwise> {
+    await init();
+    return new Coverwise(wasmModule!);
+  }
+
+  /**
+   * Generate a covering array. One function, sensible defaults.
+   */
+  generate(input: GenerateInput): GenerateResult {
+    return checkResult<GenerateResult>(this.module.generate(input));
+  }
+
+  /**
+   * Analyze t-wise coverage of an existing test suite.
+   */
+  analyzeCoverage(parameters: Parameter[], tests: TestCase[], strength?: number): CoverageReport {
+    const result = checkResult<CoverageReport>(
+      this.module.analyzeCoverage(parameters, tests, strength ?? 2),
+    );
+    if (result.totalTuples === 0) {
+      result.coverageRatio = 1.0;
+    }
+    return result;
+  }
+
+  /**
+   * Extend an existing test suite with additional tests to improve coverage.
+   */
+  extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
+    return checkResult<GenerateResult>(this.module.extendTests(existing, input));
+  }
+
+  /**
+   * Get model statistics without running generation.
+   */
+  estimateModel(input: GenerateInput): ModelStats {
+    return checkResult<ModelStats>(this.module.estimateModel(input));
+  }
 }

@@ -3,8 +3,21 @@ name: CI
 on:
   push:
     branches: [main]
+    tags-ignore: ['**']
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -19,40 +32,69 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: volta-cli/action@v4
+      - uses: mymindstorm/setup-emsdk@v14
+
+      - name: Cache CMake dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-cmake-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-cmake-deps-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential lcov ccache
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1
-        with:
-          key: ${{ runner.os }}-ccache
+        run: |
+          ccache --set-config=max_size=500M
+          ccache --zero-stats
 
-      - name: Configure CMake
+      - name: Configure CMake with coverage
+        env:
+          CC: ccache gcc
+          CXX: ccache g++
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DBUILD_TESTING=ON \
             -DENABLE_COVERAGE=ON
 
       - name: Build C++
-        run: cmake --build build -j
+        run: cmake --build build --parallel
+
+      - name: Show ccache statistics
+        run: ccache --show-stats
 
       - name: Run C++ tests
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --parallel
 
-      - name: Coverage report
+      - name: Generate coverage report
         run: |
-          lcov --directory build --capture --output-file coverage.info
-          lcov --extract coverage.info '*/src/*' --output-file coverage_filtered.info
+          mkdir -p build/coverage
+          lcov --directory build --capture --output-file build/coverage/coverage.info --ignore-errors source,gcov
+          lcov --extract build/coverage/coverage.info "${PWD}/src/*" --output-file build/coverage/coverage_filtered.info --ignore-errors unused
 
-      - name: Upload coverage
+      - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
-          files: coverage_filtered.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./build/coverage/coverage_filtered.info
+          flags: unittests
+          name: codecov-coverwise
           fail_ci_if_error: false
 
-      - name: Install JS dependencies
-        run: yarn install --immutable
-
-      - name: TypeScript build
-        run: yarn build:js
+      - run: yarn install --immutable
+      - run: yarn build
+      - run: yarn test

@@ -1,0 +1,96 @@
+# coverwise
+
+[![CI](https://img.shields.io/github/actions/workflow/status/libraz/coverwise/ci.yml?branch=main&label=CI)](https://github.com/libraz/coverwise/actions)
+[![npm](https://img.shields.io/npm/v/@libraz/coverwise)](https://www.npmjs.com/package/@libraz/coverwise)
+[![codecov](https://codecov.io/gh/libraz/coverwise/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/coverwise)
+[![License](https://img.shields.io/github/license/libraz/coverwise)](https://github.com/libraz/coverwise/blob/main/LICENSE)
+
+A modern combinatorial testing engine via WebAssembly. Design high-quality test suites with full coverage guarantees — no native dependencies.
+
+## Install
+
+```bash
+npm install @libraz/coverwise
+```
+
+## Why Coverwise?
+
+- **Prove your test quality** — exact coverage metrics with every missing combination identified
+- **Design better tests** — analyze existing suites and extend them incrementally
+- **Zero native dependencies** — pure WASM, works in browsers and Node.js
+
+For QA engineers, SDETs, and developers who need systematic coverage without combinatorial explosion.
+
+## Usage
+
+```typescript
+import { Coverwise, when } from '@libraz/coverwise';
+
+const cw = await Coverwise.create();
+
+// Generate a minimal test suite with full pairwise coverage
+const result = cw.generate({
+  parameters: [
+    { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
+    { name: 'browser', values: ['Chrome', 'Firefox', 'Safari'] },
+    { name: 'theme',   values: ['light', 'dark'] },
+  ],
+  constraints: [
+    when('os').eq('Windows').then(when('browser').ne('Safari')).toString(),
+  ],
+});
+console.log(result.tests);    // 10 tests, 100% coverage
+console.log(result.uncovered); // [] — nothing missing
+
+// Already have tests? Measure what they actually cover
+const report = cw.analyzeCoverage(parameters, myExistingTests);
+console.log(report.coverageRatio); // 0.72
+console.log(report.uncovered);     // ["os=Linux, browser=Safari", ...]
+
+// Fill only the gaps — no need to regenerate from scratch
+const extended = cw.extendTests(myExistingTests, { parameters, constraints });
+console.log(extended.tests.length - myExistingTests.length); // 3 new tests added
+```
+
+### Browser (CDN)
+
+```html
+<script type="module">
+  import { Coverwise } from 'https://esm.sh/@libraz/coverwise';
+  const cw = await Coverwise.create();
+  const result = cw.generate({ parameters: [/* ... */] });
+</script>
+```
+
+## Features
+
+- **Pairwise & t-wise** — 2-wise through arbitrary strength
+- **Constraints** — `IF/THEN/ELSE`, `AND/OR/NOT`, relational, `IN`, `LIKE`
+- **Negative testing** — Auto-generate single-fault tests from `invalid` values
+- **Mixed strength** — Sub-models for critical parameter groups
+- **Boundary values** — Auto-expand integer/float ranges
+- **Equivalence classes** — Class-level coverage tracking
+- **Seed tests** — Build on existing tests incrementally
+- **Coverage analysis** — Validate any test suite independently
+- **Deterministic** — Same input + seed = same output
+
+## API
+
+| Method | Description |
+|--------|-------------|
+| `Coverwise.create()` | Create instance (loads WASM once) |
+| `cw.generate(input)` | Generate minimal covering array |
+| `cw.analyzeCoverage(params, tests, strength?)` | Analyze t-wise coverage |
+| `cw.extendTests(existing, input)` | Extend tests for full coverage |
+| `cw.estimateModel(input)` | Preview model statistics |
+
+Function-based API (`init()` + `generate()`, `analyzeCoverage()`, ...) is also available.
+
+## Requirements
+
+- Node.js >= 18 or modern browser with WASM support
+- ESM only (`"type": "module"`)
+
+## License
+
+[Apache License 2.0](https://github.com/libraz/coverwise/blob/main/LICENSE)
