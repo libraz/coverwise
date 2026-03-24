@@ -83,7 +83,7 @@ jobs:
       - name: Generate coverage report
         run: |
           mkdir -p build/coverage
-          lcov --directory build --capture --output-file build/coverage/coverage.info --ignore-errors source,gcov
+          lcov --directory build --capture --output-file build/coverage/coverage.info --ignore-errors source,gcov,mismatch
           lcov --extract build/coverage/coverage.info "${PWD}/src/*" --output-file build/coverage/coverage_filtered.info --ignore-errors unused
 
       - name: Upload coverage to Codecov

@@ -443,7 +443,8 @@ TEST(ConstraintParserTest, CaseInsensitiveDefault) {
 
 TEST(ConstraintParserTest, CaseSensitiveFails) {
   std::vector<Parameter> params = {{"os", {"win", "mac"}, {}}};
-  coverwise::model::ParseOptions opts{.case_sensitive = true};
+  coverwise::model::ParseOptions opts;
+  opts.case_sensitive = true;
 
   // "OS" does not match "os" in case-sensitive mode.
   auto result = ParseConstraint("OS=Win", params, opts);
@@ -452,7 +453,8 @@ TEST(ConstraintParserTest, CaseSensitiveFails) {
 
 TEST(ConstraintParserTest, CaseSensitiveExactMatch) {
   std::vector<Parameter> params = {{"os", {"win", "mac"}, {}}};
-  coverwise::model::ParseOptions opts{.case_sensitive = true};
+  coverwise::model::ParseOptions opts;
+  opts.case_sensitive = true;
 
   // Exact case matches succeed.
   auto result = ParseConstraint("os=win", params, opts);
