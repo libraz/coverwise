@@ -47,7 +47,8 @@ struct Suggestion {
 
 /// @brief Result of test generation.
 struct GenerateResult {
-  std::vector<TestCase> tests;
+  std::vector<TestCase> tests;           ///< Positive tests (no invalid values)
+  std::vector<TestCase> negative_tests;  ///< Negative tests (exactly 1 invalid value each)
   double coverage = 0.0;
   std::vector<UncoveredTuple> uncovered;
   GenerateStats stats;

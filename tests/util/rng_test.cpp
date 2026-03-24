@@ -1,6 +1,6 @@
-#include <gtest/gtest.h>
-
 #include "util/rng.h"
+
+#include <gtest/gtest.h>
 
 using coverwise::util::Rng;
 

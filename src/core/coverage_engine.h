@@ -32,6 +32,18 @@ class CoverageEngine {
   static std::pair<CoverageEngine, model::Error> Create(const std::vector<model::Parameter>& params,
                                                         uint32_t strength);
 
+  /// @brief Initialize coverage tracking for a subset of parameters.
+  ///
+  /// Only the parameters at the given indices are considered for tuple
+  /// generation. Test cases still use global parameter indices.
+  /// @param all_params All parameter definitions.
+  /// @param param_subset Indices of parameters to cover (must be sorted).
+  /// @param strength The interaction strength (t).
+  /// @return Error if tuple count exceeds kMaxTuples.
+  static std::pair<CoverageEngine, model::Error> Create(
+      const std::vector<model::Parameter>& all_params, const std::vector<uint32_t>& param_subset,
+      uint32_t strength);
+
   /// @brief Mark all tuples covered by the given test case.
   void AddTestCase(const model::TestCase& test_case);
 
@@ -52,6 +64,12 @@ class CoverageEngine {
   /// as covered (excluded) and does not count toward coverage goals.
   /// @param constraints Active constraints to evaluate.
   void ExcludeInvalidTuples(const std::vector<model::Constraint>& constraints);
+
+  /// @brief Exclude tuples that contain values marked as invalid in parameters.
+  ///
+  /// Any tuple containing at least one value where Parameter::is_invalid()
+  /// returns true is marked as excluded. Used for positive-only generation.
+  void ExcludeInvalidValues();
 
   /// @brief Return the total number of valid t-wise tuples.
   uint32_t TotalTuples() const { return total_tuples_ - invalid_tuples_; }
@@ -80,14 +98,20 @@ class CoverageEngine {
   uint32_t invalid_tuples_ = 0;
   util::DynamicBitset covered_;
 
+  /// @brief Mapping from local param index to global param index.
+  /// Empty means identity mapping (all params, no subset).
+  std::vector<uint32_t> param_subset_;
+
   uint32_t TupleIndex(const std::vector<uint32_t>& param_indices,
                       const std::vector<uint32_t>& value_indices) const;
 
   /// @brief Pre-computed C(n, t) parameter index combinations.
+  /// When param_subset_ is set, these contain GLOBAL param indices.
   std::vector<std::vector<uint32_t>> param_combinations_;
   std::vector<uint32_t> combination_offsets_;
 
   void InitCombinations();
+  void InitCombinationsFromSubset();
   uint32_t ComputeTotalTuples() const;
 };
 

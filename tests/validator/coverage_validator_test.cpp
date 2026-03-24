@@ -1,8 +1,9 @@
+#include "validator/coverage_validator.h"
+
 #include <gtest/gtest.h>
 
 #include "model/parameter.h"
 #include "model/test_case.h"
-#include "validator/coverage_validator.h"
 
 using coverwise::model::Parameter;
 using coverwise::model::TestCase;
@@ -10,8 +11,8 @@ using coverwise::validator::ValidateCoverage;
 
 TEST(CoverageValidatorTest, EmptyTestSuiteZeroCoverage) {
   std::vector<Parameter> params = {
-      {"A", {"0", "1"}},
-      {"B", {"0", "1"}},
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
   };
   std::vector<TestCase> tests;
 

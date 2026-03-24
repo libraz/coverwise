@@ -34,6 +34,29 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
   return {std::move(engine), model::Error{}};
 }
 
+std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
+    const std::vector<model::Parameter>& all_params, const std::vector<uint32_t>& param_subset,
+    uint32_t strength) {
+  CoverageEngine engine;
+  engine.params_ = all_params;
+  engine.strength_ = strength;
+  engine.param_subset_ = param_subset;
+  engine.InitCombinationsFromSubset();
+  engine.total_tuples_ = engine.ComputeTotalTuples();
+
+  if (engine.total_tuples_ > kMaxTuples) {
+    model::Error err;
+    err.code = model::Error::Code::kTupleExplosion;
+    err.message = "t-wise tuple count exceeds safety limit";
+    err.detail = "Total tuples: " + std::to_string(engine.total_tuples_) +
+                 ", limit: " + std::to_string(kMaxTuples) + ". Reduce strength or parameter count.";
+    return {CoverageEngine{}, err};
+  }
+
+  engine.covered_ = util::DynamicBitset(engine.total_tuples_);
+  return {std::move(engine), model::Error{}};
+}
+
 void CoverageEngine::InitCombinations() {
   uint32_t n = static_cast<uint32_t>(params_.size());
   param_combinations_.clear();
@@ -62,6 +85,43 @@ void CoverageEngine::InitCombinations() {
     ++indices[pos];
     for (uint32_t j = static_cast<uint32_t>(pos) + 1; j < strength_; ++j) {
       indices[j] = indices[j - 1] + 1;
+    }
+  }
+}
+
+void CoverageEngine::InitCombinationsFromSubset() {
+  uint32_t n = static_cast<uint32_t>(param_subset_.size());
+  param_combinations_.clear();
+
+  if (n < strength_ || strength_ == 0) {
+    return;
+  }
+
+  // Generate all C(n, strength_) combinations of indices within the subset,
+  // but store the GLOBAL param indices so AddTestCase/ScoreValue work directly.
+  std::vector<uint32_t> local_indices(strength_);
+  for (uint32_t i = 0; i < strength_; ++i) {
+    local_indices[i] = i;
+  }
+
+  while (true) {
+    // Map local indices to global param indices.
+    std::vector<uint32_t> global_combo(strength_);
+    for (uint32_t i = 0; i < strength_; ++i) {
+      global_combo[i] = param_subset_[local_indices[i]];
+    }
+    param_combinations_.push_back(global_combo);
+
+    // Find rightmost index that can be incremented.
+    int pos = static_cast<int>(strength_) - 1;
+    while (pos >= 0 && local_indices[pos] == n - strength_ + static_cast<uint32_t>(pos)) {
+      --pos;
+    }
+    if (pos < 0) break;
+
+    ++local_indices[pos];
+    for (uint32_t j = static_cast<uint32_t>(pos) + 1; j < strength_; ++j) {
+      local_indices[j] = local_indices[j - 1] + 1;
     }
   }
 }
@@ -275,6 +335,53 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
       }
 
       if (invalid) {
+        covered_.Set(global_index);
+        ++invalid_tuples_;
+      }
+    }
+  }
+}
+
+void CoverageEngine::ExcludeInvalidValues() {
+  // Check if any parameter has invalid values.
+  bool has_invalid = false;
+  for (const auto& p : params_) {
+    if (p.has_invalid_values()) {
+      has_invalid = true;
+      break;
+    }
+  }
+  if (!has_invalid) return;
+
+  for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
+    const auto& combo = param_combinations_[ci];
+
+    // Compute product for this combination.
+    uint32_t product = 1;
+    for (uint32_t pi : combo) {
+      product *= params_[pi].size();
+    }
+
+    // Enumerate all value tuples.
+    for (uint32_t vi = 0; vi < product; ++vi) {
+      uint32_t global_index = combination_offsets_[ci] + vi;
+      if (covered_.Test(global_index)) continue;
+
+      // Decode mixed-radix index into value indices.
+      uint32_t remainder = vi;
+      bool contains_invalid = false;
+      for (int j = static_cast<int>(combo.size()) - 1; j >= 0; --j) {
+        uint32_t pi = combo[j];
+        uint32_t radix = params_[pi].size();
+        uint32_t val_idx = remainder % radix;
+        remainder /= radix;
+        if (params_[pi].is_invalid(val_idx)) {
+          contains_invalid = true;
+          break;
+        }
+      }
+
+      if (contains_invalid) {
         covered_.Set(global_index);
         ++invalid_tuples_;
       }

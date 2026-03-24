@@ -22,9 +22,8 @@ struct ConstraintReport {
 };
 
 /// @brief Validate that all test cases satisfy all constraints.
-ConstraintReport ValidateConstraints(
-    const std::vector<model::TestCase>& tests,
-    const std::vector<model::Constraint>& constraints);
+ConstraintReport ValidateConstraints(const std::vector<model::TestCase>& tests,
+                                     const std::vector<model::Constraint>& constraints);
 
 }  // namespace validator
 }  // namespace coverwise

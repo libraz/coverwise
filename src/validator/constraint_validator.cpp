@@ -5,9 +5,8 @@
 namespace coverwise {
 namespace validator {
 
-ConstraintReport ValidateConstraints(
-    const std::vector<model::TestCase>& tests,
-    const std::vector<model::Constraint>& constraints) {
+ConstraintReport ValidateConstraints(const std::vector<model::TestCase>& tests,
+                                     const std::vector<model::Constraint>& constraints) {
   ConstraintReport report;
   report.total_tests = static_cast<uint32_t>(tests.size());
 

@@ -17,9 +17,9 @@ using coverwise::validator::ValidateCoverage;
 TEST(IntegrationTest, GenerateAndValidatePairwise) {
   GenerateOptions opts;
   opts.parameters = {
-      {"A", {"0", "1"}},
-      {"B", {"0", "1"}},
-      {"C", {"0", "1"}},
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
   };
   opts.strength = 2;
   opts.seed = 42;
@@ -38,9 +38,9 @@ TEST(IntegrationTest, GenerateAndValidatePairwise) {
 TEST(IntegrationTest, DeterministicOutput) {
   GenerateOptions opts;
   opts.parameters = {
-      {"X", {"a", "b", "c"}},
-      {"Y", {"1", "2"}},
-      {"Z", {"p", "q"}},
+      {"X", {"a", "b", "c"}, {}},
+      {"Y", {"1", "2"}, {}},
+      {"Z", {"p", "q"}, {}},
   };
   opts.strength = 2;
   opts.seed = 12345;
@@ -57,9 +57,9 @@ TEST(IntegrationTest, DeterministicOutput) {
 TEST(IntegrationTest, ThreeByThreePairwise) {
   GenerateOptions opts;
   opts.parameters = {
-      {"P1", {"a", "b", "c"}},
-      {"P2", {"x", "y", "z"}},
-      {"P3", {"1", "2", "3"}},
+      {"P1", {"a", "b", "c"}, {}},
+      {"P2", {"x", "y", "z"}, {}},
+      {"P3", {"1", "2", "3"}, {}},
   };
   opts.strength = 2;
   opts.seed = 99;
@@ -77,10 +77,10 @@ TEST(IntegrationTest, ThreeByThreePairwise) {
 TEST(IntegrationTest, FourParamsMixed) {
   GenerateOptions opts;
   opts.parameters = {
-      {"A", {"a0", "a1"}},
-      {"B", {"b0", "b1", "b2"}},
-      {"C", {"c0", "c1", "c2", "c3"}},
-      {"D", {"d0", "d1"}},
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1", "b2"}, {}},
+      {"C", {"c0", "c1", "c2", "c3"}, {}},
+      {"D", {"d0", "d1"}, {}},
   };
   opts.strength = 2;
   opts.seed = 777;
@@ -99,9 +99,9 @@ TEST(IntegrationTest, FourParamsMixed) {
 TEST(IntegrationTest, MaxTestsLimitation) {
   GenerateOptions opts;
   opts.parameters = {
-      {"A", {"a0", "a1", "a2", "a3"}},
-      {"B", {"b0", "b1", "b2", "b3"}},
-      {"C", {"c0", "c1", "c2", "c3"}},
+      {"A", {"a0", "a1", "a2", "a3"}, {}},
+      {"B", {"b0", "b1", "b2", "b3"}, {}},
+      {"C", {"c0", "c1", "c2", "c3"}, {}},
   };
   opts.strength = 2;
   opts.seed = 42;
@@ -123,9 +123,9 @@ TEST(IntegrationTest, MaxTestsLimitation) {
 TEST(IntegrationTest, SeedTestPreloading) {
   GenerateOptions opts;
   opts.parameters = {
-      {"A", {"0", "1"}},
-      {"B", {"0", "1"}},
-      {"C", {"0", "1"}},
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
   };
   opts.strength = 2;
   opts.seed = 42;
@@ -153,10 +153,10 @@ TEST(IntegrationTest, SeedTestPreloading) {
 TEST(IntegrationTest, ThreeWiseGeneration) {
   GenerateOptions opts;
   opts.parameters = {
-      {"P1", {"a", "b", "c"}},
-      {"P2", {"x", "y", "z"}},
-      {"P3", {"1", "2", "3"}},
-      {"P4", {"p", "q", "r"}},
+      {"P1", {"a", "b", "c"}, {}},
+      {"P2", {"x", "y", "z"}, {}},
+      {"P3", {"1", "2", "3"}, {}},
+      {"P4", {"p", "q", "r"}, {}},
   };
   opts.strength = 3;
   opts.seed = 42;
@@ -174,10 +174,10 @@ TEST(IntegrationTest, ThreeWiseGeneration) {
 TEST(IntegrationTest, FourWiseGeneration) {
   GenerateOptions opts;
   opts.parameters = {
-      {"A", {"0", "1"}},
-      {"B", {"0", "1"}},
-      {"C", {"0", "1"}},
-      {"D", {"0", "1"}},
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
+      {"D", {"0", "1"}, {}},
   };
   opts.strength = 4;
   opts.seed = 42;
@@ -195,7 +195,7 @@ TEST(IntegrationTest, FourWiseGeneration) {
 TEST(IntegrationTest, StrengthOneSingleParam) {
   GenerateOptions opts;
   opts.parameters = {
-      {"Color", {"red", "green", "blue", "yellow", "purple"}},
+      {"Color", {"red", "green", "blue", "yellow", "purple"}, {}},
   };
   opts.strength = 1;
   opts.seed = 42;
@@ -213,9 +213,9 @@ TEST(IntegrationTest, StrengthOneSingleParam) {
 TEST(IntegrationTest, StrengthEqualsParamCount) {
   GenerateOptions opts;
   opts.parameters = {
-      {"X", {"0", "1"}},
-      {"Y", {"0", "1"}},
-      {"Z", {"0", "1"}},
+      {"X", {"0", "1"}, {}},
+      {"Y", {"0", "1"}, {}},
+      {"Z", {"0", "1"}, {}},
   };
   opts.strength = 3;
   opts.seed = 42;
@@ -235,9 +235,9 @@ TEST(IntegrationTest, StrengthEqualsParamCount) {
 TEST(IntegrationTest, ValidatorIndependence) {
   GenerateOptions opts;
   opts.parameters = {
-      {"OS", {"win", "mac", "linux"}},
-      {"Browser", {"chrome", "firefox"}},
-      {"Lang", {"en", "ja"}},
+      {"OS", {"win", "mac", "linux"}, {}},
+      {"Browser", {"chrome", "firefox"}, {}},
+      {"Lang", {"en", "ja"}, {}},
   };
   opts.strength = 2;
   opts.seed = 555;
@@ -278,8 +278,8 @@ static std::vector<Constraint> ParseConstraints(const std::vector<std::string>& 
 TEST(IntegrationTest, ConstraintIfThen) {
   GenerateOptions opts;
   opts.parameters = {
-      {"os", {"win", "mac", "linux"}},
-      {"browser", {"chrome", "firefox", "safari", "ie"}},
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari", "ie"}, {}},
   };
   opts.constraint_expressions = {"IF os=mac THEN browser!=ie"};
   opts.strength = 2;
@@ -309,8 +309,8 @@ TEST(IntegrationTest, ConstraintIfThen) {
 TEST(IntegrationTest, ConstraintNot) {
   GenerateOptions opts;
   opts.parameters = {
-      {"os", {"win", "mac"}},
-      {"browser", {"chrome", "safari"}},
+      {"os", {"win", "mac"}, {}},
+      {"browser", {"chrome", "safari"}, {}},
   };
   opts.constraint_expressions = {"NOT (os=win AND browser=safari)"};
   opts.strength = 2;
@@ -337,9 +337,9 @@ TEST(IntegrationTest, ConstraintNot) {
 TEST(IntegrationTest, MultipleConstraints) {
   GenerateOptions opts;
   opts.parameters = {
-      {"os", {"win", "mac", "linux"}},
-      {"browser", {"chrome", "firefox", "ie"}},
-      {"arch", {"x64", "arm"}},
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "ie"}, {}},
+      {"arch", {"x64", "arm"}, {}},
   };
   opts.constraint_expressions = {
       "IF os=mac THEN browser!=ie",
@@ -372,9 +372,9 @@ TEST(IntegrationTest, MultipleConstraints) {
 TEST(IntegrationTest, ConstraintIfThenElse) {
   GenerateOptions opts;
   opts.parameters = {
-      {"os", {"win", "mac", "linux"}},
-      {"browser", {"chrome", "firefox", "safari", "ie"}},
-      {"arch", {"x64", "arm", "riscv"}},
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari", "ie"}, {}},
+      {"arch", {"x64", "arm", "riscv"}, {}},
   };
   opts.constraint_expressions = {"IF os=mac THEN browser!=ie ELSE arch!=arm"};
   opts.strength = 2;
@@ -406,9 +406,9 @@ TEST(IntegrationTest, ConstraintIfThenElse) {
 TEST(IntegrationTest, ConstraintRelational) {
   GenerateOptions opts;
   opts.parameters = {
-      {"priority", {"1", "2", "3", "4", "5"}},
-      {"env", {"dev", "staging", "prod"}},
-      {"region", {"us", "eu", "ap"}},
+      {"priority", {"1", "2", "3", "4", "5"}, {}},
+      {"env", {"dev", "staging", "prod"}, {}},
+      {"region", {"us", "eu", "ap"}, {}},
   };
   opts.constraint_expressions = {"priority > 2"};
   opts.strength = 2;
@@ -433,9 +433,9 @@ TEST(IntegrationTest, ConstraintRelational) {
 TEST(IntegrationTest, ConstraintIn) {
   GenerateOptions opts;
   opts.parameters = {
-      {"env", {"dev", "staging", "prod"}},
-      {"region", {"us", "eu", "ap"}},
-      {"tier", {"free", "pro", "enterprise"}},
+      {"env", {"dev", "staging", "prod"}, {}},
+      {"region", {"us", "eu", "ap"}, {}},
+      {"tier", {"free", "pro", "enterprise"}, {}},
   };
   opts.constraint_expressions = {"env IN {staging, prod}"};
   opts.strength = 2;
@@ -459,8 +459,8 @@ TEST(IntegrationTest, ConstraintIn) {
 TEST(IntegrationTest, ConstraintLike) {
   GenerateOptions opts;
   opts.parameters = {
-      {"browser", {"chrome", "chrome-beta", "firefox", "safari"}},
-      {"os", {"win", "mac", "linux"}},
+      {"browser", {"chrome", "chrome-beta", "firefox", "safari"}, {}},
+      {"os", {"win", "mac", "linux"}, {}},
   };
   opts.constraint_expressions = {"browser LIKE chrome*"};
   opts.strength = 2;
@@ -486,9 +486,9 @@ TEST(IntegrationTest, ConstraintParamComparison) {
   // than relational comparisons (< requires numeric ordering awareness).
   GenerateOptions opts;
   opts.parameters = {
-      {"src", {"a", "b", "c"}},
-      {"dst", {"a", "b", "c"}},
-      {"mode", {"fast", "slow"}},
+      {"src", {"a", "b", "c"}, {}},
+      {"dst", {"a", "b", "c"}, {}},
+      {"mode", {"fast", "slow"}, {}},
   };
   opts.constraint_expressions = {"src != dst"};
   opts.strength = 2;
@@ -507,16 +507,15 @@ TEST(IntegrationTest, ConstraintParamComparison) {
   for (const auto& tc : result.tests) {
     // Values at same index have the same string ("a","b","c"), so same index
     // means same value which would violate the constraint.
-    EXPECT_NE(tc.values[0], tc.values[1])
-        << "src and dst have same value index " << tc.values[0];
+    EXPECT_NE(tc.values[0], tc.values[1]) << "src and dst have same value index " << tc.values[0];
   }
 }
 
 TEST(IntegrationTest, UnconditionalConstraint) {
   GenerateOptions opts;
   opts.parameters = {
-      {"priority", {"1", "2", "3", "4", "5"}},
-      {"env", {"dev", "staging", "prod"}},
+      {"priority", {"1", "2", "3", "4", "5"}, {}},
+      {"env", {"dev", "staging", "prod"}, {}},
   };
   // Standalone constraint (no IF): acts as invariant for every test case.
   opts.constraint_expressions = {"priority > 3"};
@@ -534,8 +533,8 @@ TEST(IntegrationTest, UnconditionalConstraint) {
 
   // Verify: every test case has priority > 3, i.e. value "4" or "5" (indices 3 or 4).
   for (const auto& tc : result.tests) {
-    EXPECT_GE(tc.values[0], 3u)
-        << "priority index " << tc.values[0] << " corresponds to value <= 3";
+    EXPECT_GE(tc.values[0], 3u) << "priority index " << tc.values[0]
+                                << " corresponds to value <= 3";
   }
 }
 
@@ -546,8 +545,8 @@ TEST(IntegrationTest, ConstraintReducesTuples) {
 
   GenerateOptions unconstrained;
   unconstrained.parameters = {
-      {"os", {"win", "mac", "linux"}},
-      {"browser", {"chrome", "firefox", "safari", "ie"}},
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari", "ie"}, {}},
   };
   unconstrained.strength = 2;
   unconstrained.seed = 42;
@@ -577,8 +576,8 @@ TEST(IntegrationTest, ConstraintReducesTuples) {
 TEST(IntegrationEdgeCaseTest, SingleValueParam) {
   GenerateOptions opts;
   opts.parameters = {
-      {"fixed", {"only"}},
-      {"mode", {"a", "b", "c"}},
+      {"fixed", {"only"}, {}},
+      {"mode", {"a", "b", "c"}, {}},
   };
   opts.strength = 2;
   opts.seed = 42;
@@ -599,7 +598,7 @@ TEST(IntegrationEdgeCaseTest, SingleValueParam) {
 TEST(IntegrationEdgeCaseTest, MultibyteConstraintGeneration) {
   GenerateOptions opts;
   opts.parameters = {
-      {"OS", {"Windows", "macOS", "Linux"}},
+      {"OS", {"Windows", "macOS", "Linux"}, {}},
       {"\xE3\x83\x96\xE3\x83\xA9\xE3\x82\xA6\xE3\x82\xB6",  // "ブラウザ"
        {"Chrome", "Safari", "Firefox"}},
   };
@@ -624,16 +623,15 @@ TEST(IntegrationEdgeCaseTest, MultibyteConstraintGeneration) {
   for (const auto& tc : result.tests) {
     bool is_macos = (tc.values[0] == 1);   // "macOS" is index 1
     bool is_safari = (tc.values[1] == 1);  // "Safari" is index 1
-    EXPECT_FALSE(is_macos && is_safari)
-        << "Found OS=macOS, browser=Safari violation";
+    EXPECT_FALSE(is_macos && is_safari) << "Found OS=macOS, browser=Safari violation";
   }
 }
 
 TEST(IntegrationEdgeCaseTest, NegativeNumberConstraint) {
   GenerateOptions opts;
   opts.parameters = {
-      {"temp", {"-10", "-1", "0", "1", "10"}},
-      {"unit", {"celsius", "fahrenheit"}},
+      {"temp", {"-10", "-1", "0", "1", "10"}, {}},
+      {"unit", {"celsius", "fahrenheit"}, {}},
   };
   opts.constraint_expressions = {"temp >= -1"};
   opts.strength = 2;
@@ -652,7 +650,415 @@ TEST(IntegrationEdgeCaseTest, NegativeNumberConstraint) {
   // Verify: every test has temp >= -1, meaning values "-1", "0", "1", "10"
   // (indices 1, 2, 3, 4). Index 0 ("-10") should never appear.
   for (const auto& tc : result.tests) {
-    EXPECT_GE(tc.values[0], 1u)
-        << "temp index " << tc.values[0] << " corresponds to value < -1";
+    EXPECT_GE(tc.values[0], 1u) << "temp index " << tc.values[0] << " corresponds to value < -1";
+  }
+}
+
+// ===========================================================================
+// Sub-model (mixed strength) integration tests
+// ===========================================================================
+
+using coverwise::core::SubModel;
+
+TEST(IntegrationSubModelTest, SubModelHigherStrength) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari"}, {}},
+      {"arch", {"x64", "arm"}, {}},
+      {"lang", {"en", "ja"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  // Require 3-wise coverage for (os, browser, arch).
+  SubModel sm;
+  sm.parameter_names = {"os", "browser", "arch"};
+  sm.strength = 3;
+  opts.sub_models = {sm};
+
+  auto result = Generate(opts);
+
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+
+  // Validate global pairwise coverage.
+  auto report2 = ValidateCoverage(opts.parameters, result.tests, 2);
+  EXPECT_DOUBLE_EQ(report2.coverage_ratio, 1.0);
+
+  // Validate 3-wise coverage for the sub-model parameters only.
+  std::vector<Parameter> sub_params = {
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari"}, {}},
+      {"arch", {"x64", "arm"}, {}},
+  };
+  // Project test cases to sub-model parameters (indices 0, 1, 2 of original).
+  std::vector<TestCase> projected;
+  for (const auto& tc : result.tests) {
+    TestCase ptc;
+    ptc.values = {tc.values[0], tc.values[1], tc.values[2]};
+    projected.push_back(ptc);
+  }
+  auto report3 = ValidateCoverage(sub_params, projected, 3);
+  // C(3,3) = 1 combination, 3*3*2 = 18 tuples
+  EXPECT_EQ(report3.total_tuples, 18u);
+  EXPECT_DOUBLE_EQ(report3.coverage_ratio, 1.0);
+  EXPECT_EQ(report3.uncovered.size(), 0u);
+}
+
+TEST(IntegrationSubModelTest, SubModelMultiple) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1", "a2"}, {}}, {"B", {"b0", "b1", "b2"}, {}}, {"C", {"c0", "c1"}, {}},
+      {"D", {"d0", "d1"}, {}},       {"E", {"e0", "e1"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 99;
+
+  // Two sub-models with different strengths.
+  SubModel sm1;
+  sm1.parameter_names = {"A", "B", "C"};
+  sm1.strength = 3;
+
+  SubModel sm2;
+  sm2.parameter_names = {"C", "D", "E"};
+  sm2.strength = 3;
+
+  opts.sub_models = {sm1, sm2};
+
+  auto result = Generate(opts);
+
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+
+  // Validate global pairwise.
+  auto report2 = ValidateCoverage(opts.parameters, result.tests, 2);
+  EXPECT_DOUBLE_EQ(report2.coverage_ratio, 1.0);
+
+  // Validate 3-wise for sub-model 1: A, B, C (indices 0, 1, 2).
+  {
+    std::vector<Parameter> sp = {
+        {"A", {"a0", "a1", "a2"}, {}},
+        {"B", {"b0", "b1", "b2"}, {}},
+        {"C", {"c0", "c1"}, {}},
+    };
+    std::vector<TestCase> proj;
+    for (const auto& tc : result.tests) {
+      TestCase ptc;
+      ptc.values = {tc.values[0], tc.values[1], tc.values[2]};
+      proj.push_back(ptc);
+    }
+    auto r = ValidateCoverage(sp, proj, 3);
+    EXPECT_DOUBLE_EQ(r.coverage_ratio, 1.0) << "Sub-model 1 (A,B,C) not fully 3-wise covered";
+  }
+
+  // Validate 3-wise for sub-model 2: C, D, E (indices 2, 3, 4).
+  {
+    std::vector<Parameter> sp = {
+        {"C", {"c0", "c1"}, {}},
+        {"D", {"d0", "d1"}, {}},
+        {"E", {"e0", "e1"}, {}},
+    };
+    std::vector<TestCase> proj;
+    for (const auto& tc : result.tests) {
+      TestCase ptc;
+      ptc.values = {tc.values[2], tc.values[3], tc.values[4]};
+      proj.push_back(ptc);
+    }
+    auto r = ValidateCoverage(sp, proj, 3);
+    EXPECT_DOUBLE_EQ(r.coverage_ratio, 1.0) << "Sub-model 2 (C,D,E) not fully 3-wise covered";
+  }
+}
+
+TEST(IntegrationSubModelTest, SubModelWithConstraints) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "ie"}, {}},
+      {"arch", {"x64", "arm"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+  opts.constraint_expressions = {"IF os=mac THEN browser!=ie"};
+
+  SubModel sm;
+  sm.parameter_names = {"os", "browser", "arch"};
+  sm.strength = 3;
+  opts.sub_models = {sm};
+
+  auto result = Generate(opts);
+
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+
+  // Verify no constraint violations.
+  auto constraints = ParseConstraints(opts.constraint_expressions, opts.parameters);
+  auto creport = ValidateConstraints(result.tests, constraints);
+  EXPECT_EQ(creport.violations, 0u);
+
+  // Verify no test has os=mac AND browser=ie.
+  for (const auto& tc : result.tests) {
+    bool is_mac = (tc.values[0] == 1);
+    bool is_ie = (tc.values[1] == 2);
+    EXPECT_FALSE(is_mac && is_ie) << "Found os=mac, browser=ie violation";
+  }
+}
+
+TEST(IntegrationSubModelTest, SubModelOverlapping) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1"}, {}},
+      {"C", {"c0", "c1"}, {}},
+      {"D", {"d0", "d1"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  // Parameter B appears in both sub-models.
+  SubModel sm1;
+  sm1.parameter_names = {"A", "B", "C"};
+  sm1.strength = 3;
+
+  SubModel sm2;
+  sm2.parameter_names = {"B", "C", "D"};
+  sm2.strength = 3;
+
+  opts.sub_models = {sm1, sm2};
+
+  auto result = Generate(opts);
+
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+
+  // Validate global pairwise.
+  auto report2 = ValidateCoverage(opts.parameters, result.tests, 2);
+  EXPECT_DOUBLE_EQ(report2.coverage_ratio, 1.0);
+
+  // Validate 3-wise for sub-model 1: A, B, C (indices 0, 1, 2).
+  {
+    std::vector<Parameter> sp = {
+        {"A", {"a0", "a1"}, {}},
+        {"B", {"b0", "b1"}, {}},
+        {"C", {"c0", "c1"}, {}},
+    };
+    std::vector<TestCase> proj;
+    for (const auto& tc : result.tests) {
+      TestCase ptc;
+      ptc.values = {tc.values[0], tc.values[1], tc.values[2]};
+      proj.push_back(ptc);
+    }
+    auto r = ValidateCoverage(sp, proj, 3);
+    EXPECT_DOUBLE_EQ(r.coverage_ratio, 1.0) << "Sub-model 1 (A,B,C) not fully 3-wise covered";
+  }
+
+  // Validate 3-wise for sub-model 2: B, C, D (indices 1, 2, 3).
+  {
+    std::vector<Parameter> sp = {
+        {"B", {"b0", "b1"}, {}},
+        {"C", {"c0", "c1"}, {}},
+        {"D", {"d0", "d1"}, {}},
+    };
+    std::vector<TestCase> proj;
+    for (const auto& tc : result.tests) {
+      TestCase ptc;
+      ptc.values = {tc.values[1], tc.values[2], tc.values[3]};
+      proj.push_back(ptc);
+    }
+    auto r = ValidateCoverage(sp, proj, 3);
+    EXPECT_DOUBLE_EQ(r.coverage_ratio, 1.0) << "Sub-model 2 (B,C,D) not fully 3-wise covered";
+  }
+}
+
+TEST(IntegrationSubModelTest, NoSubModelsBackwardCompatible) {
+  // Ensure that not using sub_models produces the same result as before.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+  // sub_models left empty.
+
+  auto result = Generate(opts);
+
+  auto report = ValidateCoverage(opts.parameters, result.tests, opts.strength);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+  EXPECT_EQ(report.total_tuples, 12u);
+  EXPECT_EQ(report.uncovered.size(), 0u);
+}
+
+// ===========================================================================
+// Negative testing (invalid value) integration tests
+// ===========================================================================
+
+TEST(IntegrationNegativeTest, BasicNegativeGeneration) {
+  // One parameter with one invalid value.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"browser", {"chrome", "safari", "ie6"}, {false, false, true}},
+      {"os", {"win", "mac"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  // Positive tests should have 100% coverage of valid tuples.
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(result.warnings.empty());
+
+  // Positive tests must not contain invalid values.
+  for (const auto& tc : result.tests) {
+    EXPECT_FALSE(opts.parameters[0].is_invalid(tc.values[0]))
+        << "Positive test contains invalid value ie6";
+  }
+
+  // Negative tests should exist.
+  EXPECT_FALSE(result.negative_tests.empty());
+
+  // Every negative test must have exactly one invalid value.
+  for (const auto& tc : result.negative_tests) {
+    uint32_t invalid_count = 0;
+    for (uint32_t pi = 0; pi < static_cast<uint32_t>(opts.parameters.size()); ++pi) {
+      if (opts.parameters[pi].is_invalid(tc.values[pi])) {
+        ++invalid_count;
+      }
+    }
+    EXPECT_EQ(invalid_count, 1u) << "Negative test must have exactly 1 invalid value";
+  }
+}
+
+TEST(IntegrationNegativeTest, OneInvalidPerTest) {
+  // Multiple parameters with invalid values.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"browser", {"chrome", "safari", "ie6"}, {false, false, true}},
+      {"os", {"win", "mac", "dos"}, {false, false, true}},
+      {"lang", {"en", "ja"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+
+  // Positive tests: no invalid values at all.
+  for (const auto& tc : result.tests) {
+    for (uint32_t pi = 0; pi < static_cast<uint32_t>(opts.parameters.size()); ++pi) {
+      EXPECT_FALSE(opts.parameters[pi].is_invalid(tc.values[pi]))
+          << "Positive test contains invalid value at param " << opts.parameters[pi].name;
+    }
+  }
+
+  // Negative tests: exactly 1 invalid value per test.
+  EXPECT_FALSE(result.negative_tests.empty());
+  for (const auto& tc : result.negative_tests) {
+    uint32_t invalid_count = 0;
+    for (uint32_t pi = 0; pi < static_cast<uint32_t>(opts.parameters.size()); ++pi) {
+      if (opts.parameters[pi].is_invalid(tc.values[pi])) {
+        ++invalid_count;
+      }
+    }
+    EXPECT_EQ(invalid_count, 1u) << "Negative test must have exactly 1 invalid value";
+  }
+}
+
+TEST(IntegrationNegativeTest, NegativeTestCoverage) {
+  // Verify that invalid values are paired with all valid values of other params.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"browser", {"chrome", "safari", "ie6"}, {false, false, true}},
+      {"os", {"win", "mac"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  // Collect which os values appear with ie6 in negative tests.
+  std::vector<bool> os_seen(2, false);
+  for (const auto& tc : result.negative_tests) {
+    if (tc.values[0] == 2) {  // browser=ie6
+      os_seen[tc.values[1]] = true;
+    }
+  }
+
+  // Both os=win and os=mac should appear with browser=ie6.
+  EXPECT_TRUE(os_seen[0]) << "Missing pairing: browser=ie6, os=win";
+  EXPECT_TRUE(os_seen[1]) << "Missing pairing: browser=ie6, os=mac";
+}
+
+TEST(IntegrationNegativeTest, PositiveSeparation) {
+  // Verify positive tests contain zero invalid values.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1", "a_bad"}, {false, false, true}},
+      {"B", {"b0", "b1"}, {}},
+      {"C", {"c0", "c_bad", "c1"}, {false, true, false}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+
+  // No positive test should have any invalid value.
+  for (size_t ti = 0; ti < result.tests.size(); ++ti) {
+    const auto& tc = result.tests[ti];
+    for (uint32_t pi = 0; pi < static_cast<uint32_t>(opts.parameters.size()); ++pi) {
+      EXPECT_FALSE(opts.parameters[pi].is_invalid(tc.values[pi]))
+          << "Positive test " << ti << " contains invalid value for param "
+          << opts.parameters[pi].name;
+    }
+  }
+
+  // Negative tests should exist for both a_bad and c_bad.
+  bool has_a_bad = false;
+  bool has_c_bad = false;
+  for (const auto& tc : result.negative_tests) {
+    if (tc.values[0] == 2) has_a_bad = true;  // A=a_bad
+    if (tc.values[2] == 1) has_c_bad = true;  // C=c_bad
+  }
+  EXPECT_TRUE(has_a_bad) << "No negative test for A=a_bad";
+  EXPECT_TRUE(has_c_bad) << "No negative test for C=c_bad";
+}
+
+TEST(IntegrationNegativeTest, NoInvalidValuesNoNegativeTests) {
+  // When no values are marked invalid, negative_tests should be empty.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  EXPECT_TRUE(result.negative_tests.empty());
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+}
+
+TEST(IntegrationNegativeTest, NegativeTestDeterministic) {
+  // Same seed produces identical negative tests.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"browser", {"chrome", "ie6"}, {false, true}},
+      {"os", {"win", "mac", "linux"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 12345;
+
+  auto result1 = Generate(opts);
+  auto result2 = Generate(opts);
+
+  ASSERT_EQ(result1.negative_tests.size(), result2.negative_tests.size());
+  for (size_t i = 0; i < result1.negative_tests.size(); ++i) {
+    EXPECT_EQ(result1.negative_tests[i].values, result2.negative_tests[i].values);
   }
 }

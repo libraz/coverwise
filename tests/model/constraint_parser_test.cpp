@@ -1,6 +1,8 @@
 /// @file constraint_parser_test.cpp
 /// @brief Tests for constraint expression parsing and evaluation.
 
+#include "model/constraint_parser.h"
+
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -9,7 +11,6 @@
 #include <vector>
 
 #include "model/constraint_ast.h"
-#include "model/constraint_parser.h"
 #include "model/parameter.h"
 
 using coverwise::model::ConstraintResult;
@@ -23,15 +24,14 @@ constexpr uint32_t kUnassigned = UINT32_MAX;
 
 std::vector<Parameter> MakeParams() {
   return {
-      {"os", {"win", "mac", "linux"}},
-      {"browser", {"chrome", "firefox", "safari", "ie"}},
-      {"arch", {"x64", "arm", "riscv"}},
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari", "ie"}, {}},
+      {"arch", {"x64", "arm", "riscv"}, {}},
   };
 }
 
 /// @brief Find the value index for a given parameter name and value string.
-uint32_t ValueIndex(const std::vector<Parameter>& params,
-                    const std::string& param_name,
+uint32_t ValueIndex(const std::vector<Parameter>& params, const std::string& param_name,
                     const std::string& value) {
   for (size_t i = 0; i < params.size(); ++i) {
     if (params[i].name == param_name) {
@@ -71,13 +71,11 @@ TEST(ConstraintParserTest, SimpleEquals) {
 
   // os=win should be true when os is win
   auto assignment_win = MakeAssignment(params, {{"os", "win"}});
-  EXPECT_EQ(result.constraint->Evaluate(assignment_win),
-            ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(assignment_win), ConstraintResult::kTrue);
 
   // os=win should be false when os is mac
   auto assignment_mac = MakeAssignment(params, {{"os", "mac"}});
-  EXPECT_EQ(result.constraint->Evaluate(assignment_mac),
-            ConstraintResult::kFalse);
+  EXPECT_EQ(result.constraint->Evaluate(assignment_mac), ConstraintResult::kFalse);
 }
 
 TEST(ConstraintParserTest, SimpleNotEquals) {
@@ -88,18 +86,15 @@ TEST(ConstraintParserTest, SimpleNotEquals) {
 
   // browser!=ie should be true when browser is chrome
   auto assignment_chrome = MakeAssignment(params, {{"browser", "chrome"}});
-  EXPECT_EQ(result.constraint->Evaluate(assignment_chrome),
-            ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(assignment_chrome), ConstraintResult::kTrue);
 
   // browser!=ie should be false when browser is ie
   auto assignment_ie = MakeAssignment(params, {{"browser", "ie"}});
-  EXPECT_EQ(result.constraint->Evaluate(assignment_ie),
-            ConstraintResult::kFalse);
+  EXPECT_EQ(result.constraint->Evaluate(assignment_ie), ConstraintResult::kFalse);
 
   // browser!=ie should be unknown when browser is unassigned
   std::vector<uint32_t> unassigned(params.size(), kUnassigned);
-  EXPECT_EQ(result.constraint->Evaluate(unassigned),
-            ConstraintResult::kUnknown);
+  EXPECT_EQ(result.constraint->Evaluate(unassigned), ConstraintResult::kUnknown);
 }
 
 TEST(ConstraintParserTest, IfThenSyntax) {
@@ -113,8 +108,7 @@ TEST(ConstraintParserTest, IfThenSyntax) {
   EXPECT_EQ(result.constraint->Evaluate(violating), ConstraintResult::kFalse);
 
   // os=mac AND browser=chrome => true (antecedent true, consequent true)
-  auto satisfying =
-      MakeAssignment(params, {{"os", "mac"}, {"browser", "chrome"}});
+  auto satisfying = MakeAssignment(params, {{"os", "mac"}, {"browser", "chrome"}});
   EXPECT_EQ(result.constraint->Evaluate(satisfying), ConstraintResult::kTrue);
 
   // os=win => true (antecedent false, implication vacuously true)
@@ -133,8 +127,7 @@ TEST(ConstraintParserTest, ImpliesSyntax) {
   EXPECT_EQ(result.constraint->Evaluate(violating), ConstraintResult::kFalse);
 
   // os=linux AND arch=x64 => true
-  auto satisfying =
-      MakeAssignment(params, {{"os", "linux"}, {"arch", "x64"}});
+  auto satisfying = MakeAssignment(params, {{"os", "linux"}, {"arch", "x64"}});
   EXPECT_EQ(result.constraint->Evaluate(satisfying), ConstraintResult::kTrue);
 
   // os=win AND arch=arm => true (antecedent false)
@@ -150,13 +143,11 @@ TEST(ConstraintParserTest, NotExpression) {
 
   // NOT os=win should be false when os is win
   auto assignment_win = MakeAssignment(params, {{"os", "win"}});
-  EXPECT_EQ(result.constraint->Evaluate(assignment_win),
-            ConstraintResult::kFalse);
+  EXPECT_EQ(result.constraint->Evaluate(assignment_win), ConstraintResult::kFalse);
 
   // NOT os=win should be true when os is mac
   auto assignment_mac = MakeAssignment(params, {{"os", "mac"}});
-  EXPECT_EQ(result.constraint->Evaluate(assignment_mac),
-            ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(assignment_mac), ConstraintResult::kTrue);
 }
 
 TEST(ConstraintParserTest, AndOrCombination) {
@@ -166,18 +157,15 @@ TEST(ConstraintParserTest, AndOrCombination) {
   ASSERT_NE(result.constraint, nullptr);
 
   // Both true => true
-  auto both_true =
-      MakeAssignment(params, {{"os", "win"}, {"browser", "chrome"}});
+  auto both_true = MakeAssignment(params, {{"os", "win"}, {"browser", "chrome"}});
   EXPECT_EQ(result.constraint->Evaluate(both_true), ConstraintResult::kTrue);
 
   // One false => false
-  auto one_false =
-      MakeAssignment(params, {{"os", "mac"}, {"browser", "chrome"}});
+  auto one_false = MakeAssignment(params, {{"os", "mac"}, {"browser", "chrome"}});
   EXPECT_EQ(result.constraint->Evaluate(one_false), ConstraintResult::kFalse);
 
   // Both false => false
-  auto both_false =
-      MakeAssignment(params, {{"os", "mac"}, {"browser", "firefox"}});
+  auto both_false = MakeAssignment(params, {{"os", "mac"}, {"browser", "firefox"}});
   EXPECT_EQ(result.constraint->Evaluate(both_false), ConstraintResult::kFalse);
 }
 
@@ -188,13 +176,11 @@ TEST(ConstraintParserTest, ParenthesizedExpr) {
   ASSERT_NE(result.constraint, nullptr);
 
   // os=win AND browser=safari => NOT true => false
-  auto inner_true =
-      MakeAssignment(params, {{"os", "win"}, {"browser", "safari"}});
+  auto inner_true = MakeAssignment(params, {{"os", "win"}, {"browser", "safari"}});
   EXPECT_EQ(result.constraint->Evaluate(inner_true), ConstraintResult::kFalse);
 
   // os=mac AND browser=safari => NOT false => true
-  auto inner_false =
-      MakeAssignment(params, {{"os", "mac"}, {"browser", "safari"}});
+  auto inner_false = MakeAssignment(params, {{"os", "mac"}, {"browser", "safari"}});
   EXPECT_EQ(result.constraint->Evaluate(inner_false), ConstraintResult::kTrue);
 }
 
@@ -206,8 +192,7 @@ TEST(ConstraintParserTest, ThreeValuedLogic) {
 
   // All unassigned => unknown
   std::vector<uint32_t> all_unassigned(params.size(), kUnassigned);
-  EXPECT_EQ(result.constraint->Evaluate(all_unassigned),
-            ConstraintResult::kUnknown);
+  EXPECT_EQ(result.constraint->Evaluate(all_unassigned), ConstraintResult::kUnknown);
 }
 
 TEST(ConstraintParserTest, UnknownParameter) {
@@ -232,8 +217,7 @@ TEST(ConstraintParserTest, UnknownValue) {
 
 TEST(ConstraintParserTest, IfThenElse) {
   auto params = MakeParams();
-  auto result =
-      ParseConstraint("IF os=mac THEN browser!=ie ELSE arch!=arm", params);
+  auto result = ParseConstraint("IF os=mac THEN browser!=ie ELSE arch!=arm", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
   ASSERT_NE(result.constraint, nullptr);
 
@@ -243,8 +227,7 @@ TEST(ConstraintParserTest, IfThenElse) {
   EXPECT_EQ(result.constraint->Evaluate(mac_ie), ConstraintResult::kFalse);
 
   // os=mac, browser=chrome -> kTrue (then-branch satisfied)
-  auto mac_chrome =
-      MakeAssignment(params, {{"os", "mac"}, {"browser", "chrome"}, {"arch", "arm"}});
+  auto mac_chrome = MakeAssignment(params, {{"os", "mac"}, {"browser", "chrome"}, {"arch", "arm"}});
   EXPECT_EQ(result.constraint->Evaluate(mac_chrome), ConstraintResult::kTrue);
 
   // os!=mac -> arch!=arm must hold
@@ -262,7 +245,7 @@ TEST(ConstraintParserTest, IfThenElse) {
 // ---------------------------------------------------------------------------
 
 TEST(ConstraintParserTest, RelationalGreaterThan) {
-  std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}}};
+  std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}, {}}};
 
   auto result = ParseConstraint("priority > 3", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
@@ -278,7 +261,7 @@ TEST(ConstraintParserTest, RelationalGreaterThan) {
 }
 
 TEST(ConstraintParserTest, RelationalGreaterEqual) {
-  std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}}};
+  std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}, {}}};
 
   auto result = ParseConstraint("priority >= 3", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
@@ -296,7 +279,7 @@ TEST(ConstraintParserTest, RelationalGreaterEqual) {
 }
 
 TEST(ConstraintParserTest, RelationalLessThan) {
-  std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}}};
+  std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}, {}}};
 
   auto result = ParseConstraint("priority < 2", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
@@ -310,7 +293,7 @@ TEST(ConstraintParserTest, RelationalLessThan) {
 }
 
 TEST(ConstraintParserTest, RelationalLessEqual) {
-  std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}}};
+  std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}, {}}};
 
   auto result = ParseConstraint("priority <= 2", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
@@ -332,7 +315,7 @@ TEST(ConstraintParserTest, RelationalLessEqual) {
 // ---------------------------------------------------------------------------
 
 TEST(ConstraintParserTest, InOperator) {
-  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}}};
+  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}, {}}};
 
   auto result = ParseConstraint("env IN {staging, prod}", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
@@ -350,8 +333,7 @@ TEST(ConstraintParserTest, InOperator) {
 // ---------------------------------------------------------------------------
 
 TEST(ConstraintParserTest, LikeStarWildcard) {
-  std::vector<Parameter> params = {
-      {"browser", {"chrome", "chrome-beta", "firefox", "safari"}}};
+  std::vector<Parameter> params = {{"browser", {"chrome", "chrome-beta", "firefox", "safari"}, {}}};
 
   auto result = ParseConstraint("browser LIKE chrome*", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
@@ -367,7 +349,7 @@ TEST(ConstraintParserTest, LikeStarWildcard) {
 }
 
 TEST(ConstraintParserTest, LikeQuestionWildcard) {
-  std::vector<Parameter> params = {{"size", {"s", "m", "l", "xl", "xxl"}}};
+  std::vector<Parameter> params = {{"size", {"s", "m", "l", "xl", "xxl"}, {}}};
 
   auto result = ParseConstraint("size LIKE ?l", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
@@ -388,8 +370,8 @@ TEST(ConstraintParserTest, LikeQuestionWildcard) {
 
 TEST(ConstraintParserTest, ParamToParamRelational) {
   std::vector<Parameter> params = {
-      {"start", {"1", "2", "3"}},
-      {"end", {"1", "2", "3"}},
+      {"start", {"1", "2", "3"}, {}},
+      {"end", {"1", "2", "3"}, {}},
   };
 
   auto result = ParseConstraint("start < end", params);
@@ -407,8 +389,8 @@ TEST(ConstraintParserTest, ParamToParamRelational) {
 
 TEST(ConstraintParserTest, ParamToParamEquals) {
   std::vector<Parameter> params = {
-      {"src", {"a", "b", "c"}},
-      {"dst", {"a", "b", "c"}},
+      {"src", {"a", "b", "c"}, {}},
+      {"dst", {"a", "b", "c"}, {}},
   };
 
   auto result = ParseConstraint("src = dst", params);
@@ -422,8 +404,8 @@ TEST(ConstraintParserTest, ParamToParamEquals) {
 
 TEST(ConstraintParserTest, ParamToParamNotEquals) {
   std::vector<Parameter> params = {
-      {"src", {"a", "b", "c"}},
-      {"dst", {"a", "b", "c"}},
+      {"src", {"a", "b", "c"}, {}},
+      {"dst", {"a", "b", "c"}, {}},
   };
 
   auto result = ParseConstraint("src != dst", params);
@@ -442,7 +424,8 @@ TEST(ConstraintParserTest, ParamToParamNotEquals) {
 // ---------------------------------------------------------------------------
 
 TEST(ConstraintParserTest, CaseInsensitiveDefault) {
-  std::vector<Parameter> params = {{"os", {"win", "mac"}}, {"browser", {"chrome", "firefox"}}};
+  std::vector<Parameter> params = {{"os", {"win", "mac"}, {}},
+                                   {"browser", {"chrome", "firefox"}, {}}};
 
   // Mixed-case in the expression; default is case-insensitive.
   auto result = ParseConstraint("OS=Win", params);
@@ -459,7 +442,7 @@ TEST(ConstraintParserTest, CaseInsensitiveDefault) {
 // ---------------------------------------------------------------------------
 
 TEST(ConstraintParserTest, CaseSensitiveFails) {
-  std::vector<Parameter> params = {{"os", {"win", "mac"}}};
+  std::vector<Parameter> params = {{"os", {"win", "mac"}, {}}};
   coverwise::model::ParseOptions opts{.case_sensitive = true};
 
   // "OS" does not match "os" in case-sensitive mode.
@@ -468,7 +451,7 @@ TEST(ConstraintParserTest, CaseSensitiveFails) {
 }
 
 TEST(ConstraintParserTest, CaseSensitiveExactMatch) {
-  std::vector<Parameter> params = {{"os", {"win", "mac"}}};
+  std::vector<Parameter> params = {{"os", {"win", "mac"}, {}}};
   coverwise::model::ParseOptions opts{.case_sensitive = true};
 
   // Exact case matches succeed.
@@ -484,18 +467,18 @@ TEST(ConstraintParserTest, CaseSensitiveExactMatch) {
 // ---------------------------------------------------------------------------
 
 TEST(ConstraintParserTest, UnconditionalConstraint) {
-  std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}}};
+  std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}, {}}};
 
   // "priority > 3" without IF — acts as invariant.
   auto result = ParseConstraint("priority > 3", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
 
   // Every test case must satisfy this.
-  EXPECT_EQ(result.constraint->Evaluate({0}), ConstraintResult::kFalse);   // 1
-  EXPECT_EQ(result.constraint->Evaluate({1}), ConstraintResult::kFalse);   // 2
-  EXPECT_EQ(result.constraint->Evaluate({2}), ConstraintResult::kFalse);   // 3
-  EXPECT_EQ(result.constraint->Evaluate({3}), ConstraintResult::kTrue);    // 4
-  EXPECT_EQ(result.constraint->Evaluate({4}), ConstraintResult::kTrue);    // 5
+  EXPECT_EQ(result.constraint->Evaluate({0}), ConstraintResult::kFalse);  // 1
+  EXPECT_EQ(result.constraint->Evaluate({1}), ConstraintResult::kFalse);  // 2
+  EXPECT_EQ(result.constraint->Evaluate({2}), ConstraintResult::kFalse);  // 3
+  EXPECT_EQ(result.constraint->Evaluate({3}), ConstraintResult::kTrue);   // 4
+  EXPECT_EQ(result.constraint->Evaluate({4}), ConstraintResult::kTrue);   // 5
 }
 
 // ---------------------------------------------------------------------------
@@ -504,8 +487,8 @@ TEST(ConstraintParserTest, UnconditionalConstraint) {
 
 TEST(ConstraintParserTest, ComplexIfRelationalIn) {
   std::vector<Parameter> params = {
-      {"priority", {"1", "2", "3", "4", "5"}},
-      {"env", {"dev", "staging", "prod"}},
+      {"priority", {"1", "2", "3", "4", "5"}, {}},
+      {"env", {"dev", "staging", "prod"}, {}},
   };
 
   auto result = ParseConstraint("IF priority > 3 THEN env IN {staging, prod}", params);
@@ -526,7 +509,7 @@ TEST(ConstraintParserTest, ComplexIfRelationalIn) {
 // ---------------------------------------------------------------------------
 
 TEST(ConstraintParserTest, RelationalUnassignedIsUnknown) {
-  std::vector<Parameter> params = {{"priority", {"1", "2", "3"}}};
+  std::vector<Parameter> params = {{"priority", {"1", "2", "3"}, {}}};
 
   auto result = ParseConstraint("priority > 1", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
@@ -536,7 +519,7 @@ TEST(ConstraintParserTest, RelationalUnassignedIsUnknown) {
 }
 
 TEST(ConstraintParserTest, InUnassignedIsUnknown) {
-  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}}};
+  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}, {}}};
 
   auto result = ParseConstraint("env IN {staging, prod}", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
@@ -546,7 +529,7 @@ TEST(ConstraintParserTest, InUnassignedIsUnknown) {
 }
 
 TEST(ConstraintParserTest, LikeUnassignedIsUnknown) {
-  std::vector<Parameter> params = {{"browser", {"chrome", "firefox"}}};
+  std::vector<Parameter> params = {{"browser", {"chrome", "firefox"}, {}}};
 
   auto result = ParseConstraint("browser LIKE chrome*", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
@@ -557,8 +540,7 @@ TEST(ConstraintParserTest, LikeUnassignedIsUnknown) {
 
 TEST(ConstraintParserTest, IfThenElseConditionUnknown) {
   auto params = MakeParams();
-  auto result =
-      ParseConstraint("IF os=mac THEN browser!=ie ELSE arch!=arm", params);
+  auto result = ParseConstraint("IF os=mac THEN browser!=ie ELSE arch!=arm", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
 
   // os unassigned, browser=ie, arch=arm -> condition unknown
@@ -582,8 +564,8 @@ TEST(ConstraintParserTest, IfThenElseConditionUnknown) {
 
 TEST(ConstraintParserTest, ParamToParamRelationalUnassigned) {
   std::vector<Parameter> params = {
-      {"start", {"1", "2", "3"}},
-      {"end", {"1", "2", "3"}},
+      {"start", {"1", "2", "3"}, {}},
+      {"end", {"1", "2", "3"}, {}},
   };
 
   auto result = ParseConstraint("start < end", params);
@@ -611,8 +593,8 @@ TEST(ConstraintParserEdgeCaseTest, ReservedWordSubstringInParamName) {
   // Parameter named "if_condition" should NOT be parsed as keyword IF.
   // The tokenizer reads full identifier tokens, so "if_condition" is one token.
   std::vector<Parameter> params = {
-      {"if_condition", {"yes", "no"}},
-      {"order", {"first", "second"}},
+      {"if_condition", {"yes", "no"}, {}},
+      {"order", {"first", "second"}, {}},
   };
 
   auto result = ParseConstraint("if_condition=yes", params);
@@ -625,7 +607,7 @@ TEST(ConstraintParserEdgeCaseTest, ReservedWordSubstringInParamName) {
 TEST(ConstraintParserEdgeCaseTest, ReservedWordSubstringInValue) {
   // Value "not_available" should NOT parse "not" as NOT keyword.
   std::vector<Parameter> params = {
-      {"status", {"not_available", "available", "pending"}},
+      {"status", {"not_available", "available", "pending"}, {}},
   };
 
   auto result = ParseConstraint("status=not_available", params);
@@ -638,7 +620,7 @@ TEST(ConstraintParserEdgeCaseTest, ReservedWordSubstringInValue) {
 TEST(ConstraintParserEdgeCaseTest, ValueContainingAndSubstring) {
   // Value "android" should not match "and" keyword.
   std::vector<Parameter> params = {
-      {"platform", {"android", "ios", "web"}},
+      {"platform", {"android", "ios", "web"}, {}},
   };
 
   auto result = ParseConstraint("platform=android", params);
@@ -651,8 +633,8 @@ TEST(ConstraintParserEdgeCaseTest, ValueContainingAndSubstring) {
 TEST(ConstraintParserEdgeCaseTest, ParamNamedImplies) {
   // Parameter named "implies_flag" should not collide with IMPLIES keyword.
   std::vector<Parameter> params = {
-      {"implies_flag", {"on", "off"}},
-      {"mode", {"fast", "slow"}},
+      {"implies_flag", {"on", "off"}, {}},
+      {"mode", {"fast", "slow"}, {}},
   };
 
   auto result = ParseConstraint("implies_flag=on", params);
@@ -668,8 +650,8 @@ TEST(ConstraintParserEdgeCaseTest, ParamNamedImplies) {
 TEST(ConstraintParserEdgeCaseTest, SingleValueParam) {
   // A parameter with exactly one possible value.
   std::vector<Parameter> params = {
-      {"fixed", {"only"}},
-      {"mode", {"a", "b"}},
+      {"fixed", {"only"}, {}},
+      {"mode", {"a", "b"}, {}},
   };
 
   // Constraint "fixed=only" is trivially true for all tests.
@@ -682,8 +664,8 @@ TEST(ConstraintParserEdgeCaseTest, SingleValueParam) {
 
 TEST(ConstraintParserEdgeCaseTest, SingleValueParamNotEquals) {
   std::vector<Parameter> params = {
-      {"fixed", {"only"}},
-      {"mode", {"a", "b"}},
+      {"fixed", {"only"}, {}},
+      {"mode", {"a", "b"}, {}},
   };
 
   // Constraint "fixed!=only" is trivially false for the only possible value.
@@ -699,7 +681,7 @@ TEST(ConstraintParserEdgeCaseTest, SingleValueParamNotEquals) {
 
 TEST(ConstraintParserEdgeCaseTest, NegativeNumberRelational) {
   std::vector<Parameter> params = {
-      {"temp", {"-10", "-1", "0", "1", "10"}},
+      {"temp", {"-10", "-1", "0", "1", "10"}, {}},
   };
 
   // temp > -5 => values 0, 1, 10 satisfy (indices 2, 3, 4)
@@ -720,7 +702,7 @@ TEST(ConstraintParserEdgeCaseTest, NegativeNumberRelational) {
 
 TEST(ConstraintParserEdgeCaseTest, NegativeNumberGreaterEqual) {
   std::vector<Parameter> params = {
-      {"temp", {"-10", "-1", "0", "1", "10"}},
+      {"temp", {"-10", "-1", "0", "1", "10"}, {}},
   };
 
   // temp >= -1 => values -1, 0, 1, 10 satisfy (indices 1, 2, 3, 4)
@@ -744,7 +726,7 @@ TEST(ConstraintParserEdgeCaseTest, NegativeNumberGreaterEqual) {
 // ---------------------------------------------------------------------------
 
 TEST(ConstraintParserEdgeCaseTest, InWithExtraSpaces) {
-  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}}};
+  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}, {}}};
 
   // Extra spaces around values in braces.
   auto result = ParseConstraint("env IN { staging , prod }", params);
@@ -756,7 +738,7 @@ TEST(ConstraintParserEdgeCaseTest, InWithExtraSpaces) {
 }
 
 TEST(ConstraintParserEdgeCaseTest, InWithNoSpaces) {
-  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}}};
+  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}, {}}};
 
   // No spaces around values in braces.
   auto result = ParseConstraint("env IN {staging,prod}", params);
@@ -772,7 +754,7 @@ TEST(ConstraintParserEdgeCaseTest, InWithNoSpaces) {
 // ---------------------------------------------------------------------------
 
 TEST(ConstraintParserEdgeCaseTest, EmptyInSet) {
-  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}}};
+  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}, {}}};
 
   // Empty set should produce a parse error.
   auto result = ParseConstraint("env IN {}", params);
@@ -847,14 +829,13 @@ TEST(ConstraintParserEdgeCaseTest, NestedParensWithOperators) {
 
 TEST(ConstraintParserEdgeCaseTest, JapaneseParameterNames) {
   std::vector<Parameter> params = {
-      {"OS", {"Windows", "macOS"}},
+      {"OS", {"Windows", "macOS"}, {}},
       {"\xE3\x83\x96\xE3\x83\xA9\xE3\x82\xA6\xE3\x82\xB6",  // "ブラウザ" (browser)
        {"Chrome", "Safari"}},
   };
 
   // Constraint using Japanese parameter name: ブラウザ=Chrome
-  auto result = ParseConstraint(
-      "\xE3\x83\x96\xE3\x83\xA9\xE3\x82\xA6\xE3\x82\xB6=Chrome", params);
+  auto result = ParseConstraint("\xE3\x83\x96\xE3\x83\xA9\xE3\x82\xA6\xE3\x82\xB6=Chrome", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
 
   // ブラウザ=Chrome => kTrue
@@ -865,13 +846,12 @@ TEST(ConstraintParserEdgeCaseTest, JapaneseParameterNames) {
 
 TEST(ConstraintParserEdgeCaseTest, JapaneseParameterAndValues) {
   std::vector<Parameter> params = {
-      {"\xE7\x92\xB0\xE5\xA2\x83",                    // "環境"
+      {"\xE7\x92\xB0\xE5\xA2\x83",                                 // "環境"
        {"\xE9\x96\x8B\xE7\x99\xBA", "\xE6\x9C\xAC\xE7\x95\xAA"}},  // "開発", "本番"
   };
 
   // 環境=本番
-  auto result = ParseConstraint(
-      "\xE7\x92\xB0\xE5\xA2\x83=\xE6\x9C\xAC\xE7\x95\xAA", params);
+  auto result = ParseConstraint("\xE7\x92\xB0\xE5\xA2\x83=\xE6\x9C\xAC\xE7\x95\xAA", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
 
   // 環境=開発 => kFalse
@@ -882,9 +862,9 @@ TEST(ConstraintParserEdgeCaseTest, JapaneseParameterAndValues) {
 
 TEST(ConstraintParserEdgeCaseTest, JapaneseWithLogicalOperators) {
   std::vector<Parameter> params = {
-      {"\xE7\x92\xB0\xE5\xA2\x83",                    // "環境"
+      {"\xE7\x92\xB0\xE5\xA2\x83",                                 // "環境"
        {"\xE9\x96\x8B\xE7\x99\xBA", "\xE6\x9C\xAC\xE7\x95\xAA"}},  // "開発", "本番"
-      {"region", {"us", "jp"}},
+      {"region", {"us", "jp"}, {}},
   };
 
   // IF 環境=本番 THEN region=jp
@@ -906,7 +886,7 @@ TEST(ConstraintParserEdgeCaseTest, JapaneseWithLogicalOperators) {
 
 TEST(ConstraintParserEdgeCaseTest, DotInValues) {
   std::vector<Parameter> params = {
-      {"version", {"1.0", "2.5", "3.14"}},
+      {"version", {"1.0", "2.5", "3.14"}, {}},
   };
 
   // version=3.14 should parse the dot as part of the identifier.
@@ -925,7 +905,7 @@ TEST(ConstraintParserEdgeCaseTest, DotInValues) {
 TEST(ConstraintParserEdgeCaseTest, RelationalOnNonNumericValues) {
   // Non-numeric values with relational operator: should evaluate to kFalse.
   std::vector<Parameter> params = {
-      {"name", {"alice", "bob", "charlie"}},
+      {"name", {"alice", "bob", "charlie"}, {}},
   };
 
   auto result = ParseConstraint("name > 5", params);
@@ -955,8 +935,7 @@ TEST(ConstraintParserEdgeCaseTest, ContradictoryConstraint) {
   auto mac = MakeAssignment(params, {{"os", "mac"}, {"browser", "chrome"}, {"arch", "x64"}});
   EXPECT_EQ(result.constraint->Evaluate(mac), ConstraintResult::kFalse);
 
-  auto linux_a =
-      MakeAssignment(params, {{"os", "linux"}, {"browser", "chrome"}, {"arch", "x64"}});
+  auto linux_a = MakeAssignment(params, {{"os", "linux"}, {"browser", "chrome"}, {"arch", "x64"}});
   EXPECT_EQ(result.constraint->Evaluate(linux_a), ConstraintResult::kFalse);
 }
 
@@ -977,8 +956,7 @@ TEST(ConstraintParserEdgeCaseTest, TautologyOrConstraint) {
   auto mac = MakeAssignment(params, {{"os", "mac"}, {"browser", "chrome"}, {"arch", "x64"}});
   EXPECT_EQ(result.constraint->Evaluate(mac), ConstraintResult::kTrue);
 
-  auto linux_a =
-      MakeAssignment(params, {{"os", "linux"}, {"browser", "chrome"}, {"arch", "x64"}});
+  auto linux_a = MakeAssignment(params, {{"os", "linux"}, {"browser", "chrome"}, {"arch", "x64"}});
   EXPECT_EQ(result.constraint->Evaluate(linux_a), ConstraintResult::kTrue);
 }
 
@@ -1003,7 +981,7 @@ TEST(ConstraintParserEdgeCaseTest, TautologyImplies) {
 TEST(ConstraintParserEdgeCaseTest, VersionStringComparison) {
   // Values with dots should tokenize correctly.
   std::vector<Parameter> params = {
-      {"version", {"1.0", "2.0", "3.0"}},
+      {"version", {"1.0", "2.0", "3.0"}, {}},
   };
 
   auto result = ParseConstraint("version > 1.5", params);
@@ -1076,7 +1054,7 @@ TEST(ConstraintParserEdgeCaseTest, NestedNotWithParensAndLogical) {
 }
 
 TEST(ConstraintParserEdgeCaseTest, InWithSingleValue) {
-  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}}};
+  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}, {}}};
 
   // IN with just one value is like =.
   auto result = ParseConstraint("env IN {prod}", params);
@@ -1088,7 +1066,7 @@ TEST(ConstraintParserEdgeCaseTest, InWithSingleValue) {
 }
 
 TEST(ConstraintParserEdgeCaseTest, InWithAllValues) {
-  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}}};
+  std::vector<Parameter> params = {{"env", {"dev", "staging", "prod"}, {}}};
 
   // IN with all values is always true.
   auto result = ParseConstraint("env IN {dev, staging, prod}", params);

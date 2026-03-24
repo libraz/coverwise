@@ -1,6 +1,6 @@
-#include <gtest/gtest.h>
-
 #include "model/test_case.h"
+
+#include <gtest/gtest.h>
 
 using coverwise::model::GenerateResult;
 using coverwise::model::TestCase;

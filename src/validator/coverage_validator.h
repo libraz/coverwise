@@ -27,8 +27,7 @@ struct CoverageReport {
 /// This validator enumerates all t-tuples from scratch (not using any
 /// generator internals) and checks each against the test suite.
 CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
-                                const std::vector<model::TestCase>& tests,
-                                uint32_t strength);
+                                const std::vector<model::TestCase>& tests, uint32_t strength);
 
 }  // namespace validator
 }  // namespace coverwise

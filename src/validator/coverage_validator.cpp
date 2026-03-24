@@ -53,8 +53,7 @@ std::vector<std::vector<uint32_t>> GenerateCombinations(uint32_t n, uint32_t k) 
 /// @param param_indices The parameter indices in the tuple.
 /// @param value_indices The expected value indices for each parameter.
 /// @return true if the test case matches all values in the tuple.
-bool TestCovers(const model::TestCase& test,
-                const std::vector<uint32_t>& param_indices,
+bool TestCovers(const model::TestCase& test, const std::vector<uint32_t>& param_indices,
                 const std::vector<uint32_t>& value_indices) {
   for (size_t i = 0; i < param_indices.size(); ++i) {
     uint32_t pi = param_indices[i];
@@ -68,8 +67,7 @@ bool TestCovers(const model::TestCase& test,
 }  // namespace
 
 CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
-                                const std::vector<model::TestCase>& tests,
-                                uint32_t strength) {
+                                const std::vector<model::TestCase>& tests, uint32_t strength) {
   CoverageReport report;
   uint32_t n = static_cast<uint32_t>(params.size());
 

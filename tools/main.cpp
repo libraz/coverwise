@@ -407,10 +407,13 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
       error = "parameter '" + param.name + "' missing 'values' array";
       return false;
     }
+    bool has_any_invalid = false;
+    std::vector<bool> invalid_flags;
     for (size_t j = 0; j < values_val.array_val.size(); ++j) {
       const auto& v = values_val.array_val[j];
       if (v.type == JsonType::kString) {
         param.values.push_back(v.string_val);
+        invalid_flags.push_back(false);
       } else if (v.type == JsonType::kNumber) {
         // Convert number to string representation.
         if (v.number_val == static_cast<int64_t>(v.number_val)) {
@@ -420,13 +423,45 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
           oss << v.number_val;
           param.values.push_back(oss.str());
         }
+        invalid_flags.push_back(false);
       } else if (v.type == JsonType::kBool) {
         param.values.push_back(v.bool_val ? "true" : "false");
+        invalid_flags.push_back(false);
+      } else if (v.type == JsonType::kObject) {
+        // Object form: {"value": "...", "invalid": true}
+        const auto& val_field = v["value"];
+        std::string val_str;
+        if (val_field.type == JsonType::kString) {
+          val_str = val_field.string_val;
+        } else if (val_field.type == JsonType::kNumber) {
+          if (val_field.number_val == static_cast<int64_t>(val_field.number_val)) {
+            val_str = std::to_string(static_cast<int64_t>(val_field.number_val));
+          } else {
+            std::ostringstream oss;
+            oss << val_field.number_val;
+            val_str = oss.str();
+          }
+        } else if (val_field.type == JsonType::kBool) {
+          val_str = val_field.bool_val ? "true" : "false";
+        } else {
+          error = "parameter '" + param.name + "' value " + std::to_string(j) +
+                  " object missing 'value' field";
+          return false;
+        }
+        param.values.push_back(val_str);
+        const auto& inv_field = v["invalid"];
+        bool is_invalid = (inv_field.type == JsonType::kBool && inv_field.bool_val);
+        invalid_flags.push_back(is_invalid);
+        if (is_invalid) has_any_invalid = true;
       } else {
         error = "parameter '" + param.name + "' value " + std::to_string(j) +
-                " must be a string, number, or boolean";
+                " must be a string, number, boolean, or {value, invalid} object";
         return false;
       }
+    }
+    // Set invalid flags only if any value is actually invalid.
+    if (has_any_invalid) {
+      param.set_invalid(std::move(invalid_flags));
     }
     if (param.values.empty()) {
       error = "parameter '" + param.name + "' has no values";
@@ -523,6 +558,22 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
     w.EndObject();
   }
   w.EndArray();
+
+  // negativeTests
+  if (!result.negative_tests.empty()) {
+    w.Key("negativeTests");
+    w.BeginArray();
+    for (const auto& tc : result.negative_tests) {
+      w.Sep();
+      w.BeginObject();
+      for (size_t i = 0; i < params.size() && i < tc.values.size(); ++i) {
+        w.Key(params[i].name);
+        w.WriteString(params[i].values[tc.values[i]]);
+      }
+      w.EndObject();
+    }
+    w.EndArray();
+  }
 
   // coverage
   w.Key("coverage");

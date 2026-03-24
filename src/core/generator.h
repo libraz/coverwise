@@ -15,6 +15,16 @@
 namespace coverwise {
 namespace core {
 
+/// @brief A sub-model: a subset of parameters with a specific coverage strength.
+///
+/// Sub-models allow specifying higher coverage strength for critical parameter
+/// groups. Parameters not in any sub-model are covered at the global strength.
+/// A parameter may appear in multiple sub-models.
+struct SubModel {
+  std::vector<std::string> parameter_names;  ///< Resolved to indices internally
+  uint32_t strength = 2;                     ///< Coverage strength for this group
+};
+
 /// @brief Options for test generation.
 struct GenerateOptions {
   std::vector<model::Parameter> parameters;
@@ -23,6 +33,7 @@ struct GenerateOptions {
   uint64_t seed = 0;                                ///< RNG seed for deterministic output
   uint32_t max_tests = 0;                           ///< 0 = no limit
   std::vector<model::TestCase> seeds;               ///< Existing tests to build upon
+  std::vector<SubModel> sub_models;                 ///< Mixed-strength sub-models
 };
 
 /// @brief Mode for extendTests operation.

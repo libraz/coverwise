@@ -1,8 +1,9 @@
+#include "core/coverage_engine.h"
+
 #include <gtest/gtest.h>
 
 #include <limits>
 
-#include "core/coverage_engine.h"
 #include "model/parameter.h"
 
 using coverwise::core::CoverageEngine;
@@ -21,8 +22,8 @@ TEST(CoverageEngineTest, EmptyParametersFullCoverage) {
 TEST(CoverageEngineTest, TwoParamsPairwise) {
   // 2 params x 2 values. C(2,2) = 1 combination, 2*2 = 4 tuples.
   std::vector<Parameter> params = {
-      {"A", {"0", "1"}},
-      {"B", {"0", "1"}},
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
   };
   auto [engine, err] = CoverageEngine::Create(params, 2);
   ASSERT_TRUE(err.ok());
@@ -51,9 +52,9 @@ TEST(CoverageEngineTest, TwoParamsPairwise) {
 TEST(CoverageEngineTest, ThreeParamsPairwise) {
   // 3 binary params. C(3,2) = 3 combinations, each 2*2 = 4 tuples. Total = 12.
   std::vector<Parameter> params = {
-      {"A", {"0", "1"}},
-      {"B", {"0", "1"}},
-      {"C", {"0", "1"}},
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
   };
   auto [engine, err] = CoverageEngine::Create(params, 2);
   ASSERT_TRUE(err.ok());
@@ -90,8 +91,8 @@ TEST(CoverageEngineTest, ThreeParamsPairwise) {
 TEST(CoverageEngineTest, ScoreValueCorrectness) {
   // 2 binary params, pairwise. 4 total tuples.
   std::vector<Parameter> params = {
-      {"A", {"0", "1"}},
-      {"B", {"0", "1"}},
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
   };
   auto [engine, err] = CoverageEngine::Create(params, 2);
   ASSERT_TRUE(err.ok());
@@ -119,9 +120,9 @@ TEST(CoverageEngineTest, ScoreValueCorrectness) {
 TEST(CoverageEngineTest, ScoreCandidateCorrectness) {
   // 3 binary params, pairwise. 12 total tuples.
   std::vector<Parameter> params = {
-      {"A", {"0", "1"}},
-      {"B", {"0", "1"}},
-      {"C", {"0", "1"}},
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
   };
   auto [engine, err] = CoverageEngine::Create(params, 2);
   ASSERT_TRUE(err.ok());
@@ -162,8 +163,8 @@ TEST(CoverageEngineTest, TupleExplosionLimit) {
 TEST(CoverageEngineTest, GetUncoveredTuplesContents) {
   // 2 binary params, verify uncovered tuples contain readable strings.
   std::vector<Parameter> params = {
-      {"OS", {"win", "mac"}},
-      {"Browser", {"chrome", "firefox"}},
+      {"OS", {"win", "mac"}, {}},
+      {"Browser", {"chrome", "firefox"}, {}},
   };
   auto [engine, err] = CoverageEngine::Create(params, 2);
   ASSERT_TRUE(err.ok());
@@ -192,8 +193,8 @@ TEST(CoverageEngineTest, GetUncoveredTuplesContents) {
 TEST(CoverageEngineTest, DuplicateTestCaseNoop) {
   // Adding the same test case twice should not change coverage count.
   std::vector<Parameter> params = {
-      {"A", {"0", "1"}},
-      {"B", {"0", "1"}},
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
   };
   auto [engine, err] = CoverageEngine::Create(params, 2);
   ASSERT_TRUE(err.ok());
@@ -208,7 +209,7 @@ TEST(CoverageEngineTest, DuplicateTestCaseNoop) {
 TEST(CoverageEngineTest, SingleParamStrengthOne) {
   // Edge case: 1 parameter, strength 1. Each value is a 1-tuple.
   std::vector<Parameter> params = {
-      {"Color", {"red", "green", "blue"}},
+      {"Color", {"red", "green", "blue"}, {}},
   };
   auto [engine, err] = CoverageEngine::Create(params, 1);
   ASSERT_TRUE(err.ok());
