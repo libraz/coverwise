@@ -65,11 +65,13 @@ export class Rng {
     }
     const range = (max - min + 1) >>> 0;
     // Use rejection sampling to avoid modulo bias.
-    const limit = (0x100000000 - (0x100000000 % range)) >>> 0;
+    // Standard debiasing: threshold = (2^32 - range) % range = (-range) % range.
+    // Values below threshold map unevenly; reject them.
+    const threshold = ((-range >>> 0) % range) >>> 0;
     let r: number;
     do {
       r = this.next();
-    } while (r >= limit);
+    } while (r < threshold);
     return min + (r % range);
   }
 

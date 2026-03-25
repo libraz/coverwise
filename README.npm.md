@@ -65,6 +65,15 @@ const result = cw.generate({
 });
 ```
 
+### Pure TypeScript (no WASM)
+
+```typescript
+import { Coverwise } from '@libraz/coverwise/pure';
+
+const cw = await Coverwise.create(); // no WASM loading, returns immediately
+const result = cw.generate({ parameters: [/* ... */] });
+```
+
 ### Browser (CDN)
 
 ```html

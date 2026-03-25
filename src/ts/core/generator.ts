@@ -201,7 +201,9 @@ function resolveWeights(params: Parameter[], config: WeightConfig): number[][] {
 function applyBoundaryExpansion(opts: GenerateOptions): Parameter[] {
   const params: Parameter[] = [];
   for (const p of opts.parameters) {
-    const param = new Parameter(p.name, p.values);
+    const param = p.invalid
+      ? new Parameter(p.name, p.values, p.invalid)
+      : new Parameter(p.name, p.values);
     const bc = opts.boundaryConfigs[p.name];
     if (bc) {
       params.push(expandBoundaryValues(param, bc));

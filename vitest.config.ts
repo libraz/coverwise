@@ -4,13 +4,13 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   resolve: {
     alias: {
-      './coverwise.js': path.resolve(__dirname, 'dist/coverwise.js'),
+      '../coverwise.js': path.resolve(__dirname, 'dist/coverwise.js'),
     },
   },
   test: {
     globals: true,
     environment: 'node',
-    include: ['js/**/*.test.ts', 'tests/wasm/**/*.test.ts'],
+    include: ['js/**/*.test.ts', 'tests/wasm/**/*.test.ts', 'src/ts/**/*.test.ts'],
 
     coverage: {
       provider: 'v8',

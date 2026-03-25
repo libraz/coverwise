@@ -84,31 +84,41 @@ coverwise is built as a **test design API**, not just a generation tool:
 
 All configurations achieve **100% t-wise coverage**, verified by an independent coverage validator. Test counts fall within known theoretical bounds from covering array research.
 
-### Pairwise (2-wise) Generation
+### Pairwise (2-wise)
 
-| Configuration | Params | Values | Tuples | Tests | Theoretical Min | Time |
-|---------------|--------|--------|--------|-------|-----------------|------|
-| 5 × 3 uniform | 5 | 3 | 90 | 16 | 9 (OA) | < 1 ms |
-| 10 × 3 uniform | 10 | 3 | 405 | 20 | 9 (OA) | < 1 ms |
-| 13 × 3 uniform | 13 | 3 | 702 | 21 | 9 (OA) | < 1 ms |
-| 10 × 5 uniform | 10 | 5 | 1,125 | 52 | 25 | 1 ms |
-| 15 × 4 uniform | 15 | 4 | 1,680 | 40 | 16 | 1 ms |
-| 20 × 2 uniform | 20 | 2 | 760 | 12 | 4 | < 1 ms |
-| 20 × 5 uniform | 20 | 5 | 4,750 | 66 | 25 | 4 ms |
-| 30 × 5 uniform | 30 | 5 | 10,875 | 76 | 25 | 9 ms |
-| 50 × 3 uniform | 50 | 3 | 11,025 | 33 | 9 (OA) | 6 ms |
-| 5 × 20 high-card | 5 | 20 | 4,000 | 514 | 400 | 9 ms |
-| 3⁴ × 2³ mixed | 7 | 2–3 | 138 | 14 | 9 | < 1 ms |
-| 5¹ × 3³ × 2⁴ mixed | 8 | 2–5 | 208 | 19 | 15 | < 1 ms |
+| Configuration | Tuples | Tests | Theoretical Min | WASM | Pure TS |
+|---------------|--------|-------|-----------------|------|---------|
+| 5 × 3 uniform | 90 | 16 | 9 (OA) | < 1 ms | 1 ms |
+| 10 × 3 uniform | 405 | 20 | 9 (OA) | < 1 ms | 1 ms |
+| 13 × 3 uniform | 702 | 21 | 9 (OA) | < 1 ms | 1 ms |
+| 10 × 5 uniform | 1,125 | 52 | 25 | 1 ms | 1 ms |
+| 15 × 4 uniform | 1,680 | 40 | 16 | 1 ms | 1 ms |
+| 20 × 2 uniform | 760 | 12 | 4 | < 1 ms | < 1 ms |
+| 20 × 5 uniform | 4,750 | 66 | 25 | 4 ms | 2 ms |
+| 30 × 5 uniform | 10,875 | 76 | 25 | 9 ms | 5 ms |
+| 50 × 3 uniform | 11,025 | 33 | 9 (OA) | 6 ms | 4 ms |
+| 5 × 20 high-card | 4,000 | 514 | 400 | 9 ms | 4 ms |
 
-### Higher-Strength Generation
+### Higher strength
 
-| Configuration | Params | Values | Strength | Tuples | Tests | Time |
-|---------------|--------|--------|----------|--------|-------|------|
-| 15 × 3 | 15 | 3 | 3-wise | 12,285 | 100 | 11 ms |
-| 8 × 3 | 8 | 3 | 4-wise | 5,670 | 236 | 8 ms |
+| Configuration | Strength | Tuples | Tests | WASM | Pure TS |
+|---------------|----------|--------|-------|------|---------|
+| 15 × 3 | 3-wise | 12,285 | 100 | 11 ms | 9 ms |
+| 8 × 3 | 4-wise | 5,670 | 236 | 8 ms | 4 ms |
 
-Measured on Apple M-series (seed=42). "Theoretical Min" refers to known lower bounds from orthogonal array (OA) theory or v² bounds. Greedy algorithms typically produce 1.5–2.5× the theoretical minimum — this is expected and consistent with published results for covering array generators.
+### High strength (stress test)
+
+| Configuration | Strength | Tuples | Tests | WASM | Pure TS |
+|---------------|----------|--------|-------|------|---------|
+| 10 × 3 | 5-wise | 61,236 | 885 | 16 ms | 49 ms |
+| 8 × 4 | 5-wise | 57,344 | 2,749 | 18 ms | 52 ms |
+| 12 × 3 | 6-wise | 673,596 | 3,334 | 218 ms | 789 ms |
+| 15 × 3 | 5-wise | 729,729 | 1,277 | 220 ms | 761 ms |
+| 20 × 3 | 5-wise | 3,767,472 | 1,581 | 1.4 s | 4.2 s |
+
+Measured on Apple M-series (seed=42). Theoretical Min is from orthogonal array (OA) theory or v² bounds. Greedy algorithms typically produce 1.5–2.5× the theoretical minimum. WASM and Pure TS use different RNG implementations, so test counts may differ slightly.
+
+For pairwise testing (the most common use case), WASM and Pure TS perform equally. WASM shows a ~3× advantage only in high-strength configurations with > 60,000 tuples.
 
 ## Next Steps
 
