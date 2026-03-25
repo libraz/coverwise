@@ -5,7 +5,7 @@
 [![codecov](https://codecov.io/gh/libraz/coverwise/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/coverwise)
 [![License](https://img.shields.io/github/license/libraz/coverwise)](https://github.com/libraz/coverwise/blob/main/LICENSE)
 
-A modern combinatorial testing engine via WebAssembly. Design high-quality test suites with full coverage guarantees — no native dependencies.
+Combinatorial test coverage engine via WebAssembly. Analyzes existing tests for coverage gaps, generates minimal test suites, and extends tests incrementally — no native dependencies.
 
 ## Install
 
@@ -13,22 +13,46 @@ A modern combinatorial testing engine via WebAssembly. Design high-quality test 
 npm install @libraz/coverwise
 ```
 
-## Why Coverwise?
-
-- **Prove your test quality** — exact coverage metrics with every missing combination identified
-- **Design better tests** — analyze existing suites and extend them incrementally
-- **Zero native dependencies** — pure WASM, works in browsers and Node.js
-
-For QA engineers, SDETs, and developers who need systematic coverage without combinatorial explosion.
-
 ## Usage
 
+### Analyze existing tests
+
 ```typescript
-import { Coverwise, when } from '@libraz/coverwise';
+import { Coverwise } from '@libraz/coverwise';
 
 const cw = await Coverwise.create();
 
-// Generate a minimal test suite with full pairwise coverage
+const report = cw.analyzeCoverage({
+  parameters: [
+    { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
+    { name: 'browser', values: ['Chrome', 'Firefox', 'Safari'] },
+    { name: 'env',     values: ['staging', 'production'] },
+  ],
+  tests: myExistingTests,
+});
+
+report.coverageRatio;  // 0.72
+report.uncovered;      // ["os=Linux, browser=Safari", "os=Linux, env=production", ...]
+```
+
+### Extend with missing coverage
+
+```typescript
+const result = cw.extendTests({
+  parameters,
+  existing: myExistingTests,
+});
+
+result.tests.length - myExistingTests.length;  // 3 tests added
+result.coverage;   // 1.0
+result.uncovered;  // []
+```
+
+### Generate from scratch
+
+```typescript
+import { when } from '@libraz/coverwise';
+
 const result = cw.generate({
   parameters: [
     { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
@@ -39,17 +63,6 @@ const result = cw.generate({
     when('os').eq('Windows').then(when('browser').ne('Safari')).toString(),
   ],
 });
-console.log(result.tests);    // 10 tests, 100% coverage
-console.log(result.uncovered); // [] — nothing missing
-
-// Already have tests? Measure what they actually cover
-const report = cw.analyzeCoverage(parameters, myExistingTests);
-console.log(report.coverageRatio); // 0.72
-console.log(report.uncovered);     // ["os=Linux, browser=Safari", ...]
-
-// Fill only the gaps — no need to regenerate from scratch
-const extended = cw.extendTests(myExistingTests, { parameters, constraints });
-console.log(extended.tests.length - myExistingTests.length); // 3 new tests added
 ```
 
 ### Browser (CDN)
@@ -62,8 +75,22 @@ console.log(extended.tests.length - myExistingTests.length); // 3 new tests adde
 </script>
 ```
 
+## API
+
+| Method | Description |
+|--------|-------------|
+| `Coverwise.create()` | Create instance (loads WASM once) |
+| `cw.analyzeCoverage(params, tests, strength?)` | Measure t-wise coverage, list uncovered combinations |
+| `cw.extendTests(existing, input)` | Add only the tests needed to close coverage gaps |
+| `cw.generate(input)` | Generate minimal covering array from scratch |
+| `cw.estimateModel(input)` | Preview model statistics |
+
+Function-based API (`init()` + `generate()`, `analyzeCoverage()`, ...) is also available.
+
 ## Features
 
+- **Coverage analysis** — Measure any test suite's t-wise coverage and list every uncovered combination
+- **Incremental extension** — Add only the tests needed to close coverage gaps
 - **Pairwise & t-wise** — 2-wise through arbitrary strength
 - **Constraints** — `IF/THEN/ELSE`, `AND/OR/NOT`, relational, `IN`, `LIKE`
 - **Negative testing** — Auto-generate single-fault tests from `invalid` values
@@ -71,20 +98,7 @@ console.log(extended.tests.length - myExistingTests.length); // 3 new tests adde
 - **Boundary values** — Auto-expand integer/float ranges
 - **Equivalence classes** — Class-level coverage tracking
 - **Seed tests** — Build on existing tests incrementally
-- **Coverage analysis** — Validate any test suite independently
 - **Deterministic** — Same input + seed = same output
-
-## API
-
-| Method | Description |
-|--------|-------------|
-| `Coverwise.create()` | Create instance (loads WASM once) |
-| `cw.generate(input)` | Generate minimal covering array |
-| `cw.analyzeCoverage(params, tests, strength?)` | Analyze t-wise coverage |
-| `cw.extendTests(existing, input)` | Extend tests for full coverage |
-| `cw.estimateModel(input)` | Preview model statistics |
-
-Function-based API (`init()` + `generate()`, `analyzeCoverage()`, ...) is also available.
 
 ## Requirements
 

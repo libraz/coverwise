@@ -52,6 +52,6 @@
     }
   },
   "files": {
-    "includes": ["js/**/*.ts", "js/**/*.js", "tests/wasm/**/*.ts"]
+    "includes": ["js/**/*.ts", "js/**/*.js", "tests/wasm/**/*.ts", "src/ts/**/*.ts"]
   }
 }

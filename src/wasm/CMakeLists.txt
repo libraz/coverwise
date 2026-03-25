@@ -12,6 +12,7 @@ if(BUILD_WASM)
 
   target_link_options(coverwise_wasm PRIVATE
     "SHELL:-s MODULARIZE=1"
+    "SHELL:-s EXPORT_ES6=1"
     "SHELL:-s EXPORT_NAME='createCoverwise'"
     "SHELL:-s ENVIRONMENT='web,node'"
     "SHELL:-s ALLOW_MEMORY_GROWTH=1"

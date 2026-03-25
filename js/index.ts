@@ -7,8 +7,8 @@
 
 // --- Re-exports ---
 
-export type { Condition, ConditionStart, Constraint } from './constraint';
-export { allOf, anyOf, not, when } from './constraint';
+export type { Condition, ConditionStart, Constraint } from './constraint.js';
+export { allOf, anyOf, not, when } from './constraint.js';
 
 // --- Public Types ---
 

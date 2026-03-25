@@ -6,44 +6,73 @@
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue?logo=c%2B%2B)](https://en.cppreference.com/w/cpp/17)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20WebAssembly-lightgrey)](https://github.com/libraz/coverwise)
 
-A modern combinatorial testing engine for designing high-quality test suites with full coverage guarantees.
+Combinatorial test coverage engine. Analyzes existing tests for coverage gaps, generates minimal test suites, and extends tests incrementally — in browsers, Node.js, and native C++.
 
-Generate, analyze, and evolve test cases — in browsers, Node.js, and native C++.
+## Overview
 
-## Why Coverwise?
+coverwise provides three operations that form a test design loop:
 
-Most bugs come from unexpected interactions between components. Coverwise ensures those interactions are systematically covered.
-
-- **Prove your test quality** — exact coverage metrics with every missing combination identified
-- **Design better tests** — don't just generate, analyze existing suites and extend them incrementally
-- **Works everywhere** — browser, CI, backend — zero native dependencies via WASM
-
-For QA engineers, SDETs, and developers who need systematic coverage without combinatorial explosion.
-
-## How It Works
+- **`analyze`** — Measure an existing test suite's t-wise coverage and list uncovered combinations
+- **`extend`** — Generate only the tests needed to close coverage gaps
+- **`generate`** — Create a minimal test suite from scratch with full coverage
 
 ```mermaid
 graph LR
-    A["Parameters\n+ Constraints\n+ Strength"] --> B["Coverwise\nEngine"]
-    B --> C["generate\nMinimal tests"]
-    B --> D["analyze\nCoverage gaps"]
-    D --> E["extend\nDelta tests"]
+    A["Existing tests"] --> B["analyze"]
+    B --> C{"100%?"}
+    C -- No --> D["extend"]
+    D --> A
+    C -- Yes --> E["Done"]
+    F["No tests"] --> G["generate"]
+    G --> A
 ```
 
-## Quick Start
+Most combinatorial tools only support `generate`. coverwise treats `analyze` and `extend` as first-class operations.
 
-### JavaScript / TypeScript
+## Quick Start
 
 ```bash
 npm install @libraz/coverwise
 ```
 
+### Analyze existing tests
+
 ```typescript
-import { Coverwise, when } from '@libraz/coverwise';
+import { Coverwise } from '@libraz/coverwise';
 
 const cw = await Coverwise.create();
 
-// Generate a minimal test suite with full pairwise coverage
+const report = cw.analyzeCoverage({
+  parameters: [
+    { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
+    { name: 'browser', values: ['Chrome', 'Firefox', 'Safari'] },
+    { name: 'env',     values: ['staging', 'production'] },
+  ],
+  tests: myExistingTests,
+});
+
+report.coverageRatio;  // 0.72
+report.uncovered;      // ["os=Linux, browser=Safari", "os=Linux, env=production", ...]
+```
+
+### Extend with missing coverage
+
+```typescript
+const result = cw.extendTests({
+  parameters,
+  existing: myExistingTests,
+});
+
+result.tests.length - myExistingTests.length;  // 3 tests added
+result.coverage;   // 1.0
+result.uncovered;  // []
+```
+
+### Generate from scratch
+
+```typescript
+import { when } from '@libraz/coverwise';
+
 const result = cw.generate({
   parameters: [
     { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
@@ -54,57 +83,46 @@ const result = cw.generate({
     when('os').eq('Windows').then(when('browser').ne('Safari')).toString(),
   ],
 });
-console.log(result.tests);    // 10 tests, 100% coverage
-console.log(result.uncovered); // [] — nothing missing
-
-// Already have tests? Measure what they actually cover
-const report = cw.analyzeCoverage(parameters, myExistingTests);
-console.log(report.coverageRatio); // 0.72
-console.log(report.uncovered);     // ["os=Linux, browser=Safari", ...]
-
-// Fill only the gaps — no need to regenerate from scratch
-const extended = cw.extendTests(myExistingTests, { parameters, constraints });
-console.log(extended.tests.length - myExistingTests.length); // 3 new tests added
 ```
-
-## What You Can Do
-
-| Capability | Description |
-|-----------|-------------|
-| **Pairwise & t-wise** | 2-wise through arbitrary strength covering arrays |
-| **Constraints** | `IF/THEN/ELSE`, `AND/OR/NOT`, relational (`<`, `>=`), `IN`, `LIKE` |
-| **Negative testing** | Mark values as `invalid` to auto-generate single-fault negative tests |
-| **Mixed strength** | Sub-models let critical parameter groups get higher coverage |
-| **Boundary values** | Auto-expand integer/float ranges into boundary classes |
-| **Equivalence classes** | Group values into classes and track class-level coverage |
-| **Seed tests** | Build on existing tests instead of starting from scratch |
-| **Weight hints** | Prefer specific values when coverage is otherwise equivalent |
-| **Coverage analysis** | Validate any test suite's t-wise coverage independently |
-| **Deterministic** | Same input + seed = identical output, every time |
 
 ## CLI
 
 ```bash
-# Generate tests from a JSON spec
-coverwise generate input.json > tests.json
-
 # Analyze existing test coverage
 coverwise analyze --params params.json --tests tests.json
 
-# Extend existing tests
+# Extend existing tests with missing coverage
 coverwise extend --existing tests.json input.json
 
-# Preview model statistics
+# Generate a full test suite from scratch
+coverwise generate input.json > tests.json
+
+# Preview model complexity
 coverwise stats input.json
 ```
 
 Exit codes: `0` OK, `1` constraint error, `2` insufficient coverage, `3` invalid input.
 
+## Capabilities
+
+| Capability | Description |
+|------------|-------------|
+| **Coverage analysis** | Measure any test suite's t-wise coverage. List every uncovered combination. |
+| **Incremental extension** | Add only the tests needed to close coverage gaps. Preserve existing tests. |
+| **Pairwise & t-wise** | 2-wise through arbitrary strength covering arrays. |
+| **Constraints** | `IF/THEN/ELSE`, `AND/OR/NOT`, relational (`<`, `>=`), `IN`, `LIKE`. |
+| **Negative testing** | Mark values as `invalid` for automatic single-fault negative tests. |
+| **Mixed strength** | Sub-models for higher coverage on critical parameter groups. |
+| **Boundary values** | Auto-expand numeric ranges into boundary value classes. |
+| **Equivalence classes** | Group values into classes and track class-level coverage. |
+| **Seed tests** | Build on mandatory tests instead of starting from scratch. |
+| **Deterministic** | Same input + seed = identical output, every time. |
+
 ## Performance
 
-All configurations achieve **100% t-wise coverage**, verified by an independent coverage validator. Test counts fall within known theoretical bounds from covering array research.
+All configurations achieve 100% t-wise coverage, verified by an independent coverage validator. Test counts fall within known theoretical bounds from covering array research.
 
-### Pairwise (2-wise) Generation
+### Pairwise (2-wise)
 
 | Configuration | Params | Values | Tuples | Tests | Theoretical Min | Time |
 |---------------|--------|--------|--------|-------|-----------------|------|
@@ -121,14 +139,14 @@ All configurations achieve **100% t-wise coverage**, verified by an independent 
 | 3⁴ × 2³ mixed | 7 | 2–3 | 138 | 14 | 9 | < 1 ms |
 | 5¹ × 3³ × 2⁴ mixed | 8 | 2–5 | 208 | 19 | 15 | < 1 ms |
 
-### Higher-Strength Generation
+### Higher strength
 
 | Configuration | Params | Values | Strength | Tuples | Tests | Time |
 |---------------|--------|--------|----------|--------|-------|------|
 | 15 × 3 | 15 | 3 | 3-wise | 12,285 | 100 | 11 ms |
 | 8 × 3 | 8 | 3 | 4-wise | 5,670 | 236 | 8 ms |
 
-Measured on Apple M-series (seed=42). "Theoretical Min" refers to known lower bounds from orthogonal array (OA) theory or v² bounds. Greedy algorithms typically produce 1.5–2.5× the theoretical minimum — this is expected and consistent with published results for covering array generators.
+Measured on Apple M-series (seed=42). Theoretical Min is from orthogonal array (OA) theory or v² bounds. Greedy algorithms typically produce 1.5–2.5× the theoretical minimum.
 
 ## Build
 

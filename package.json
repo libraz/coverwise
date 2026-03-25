@@ -1,9 +1,9 @@
 {
   "name": "@libraz/coverwise",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "packageManager": "yarn@4.12.0",
-  "description": "WASM-first pairwise / t-wise combinatorial test generation engine",
+  "description": "Combinatorial test coverage engine — analyze, generate, and extend t-wise test suites via WASM",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -19,9 +19,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "preinstall": "npx only-allow yarn",
-    "postinstall": "simple-git-hooks",
-    "prepare": "simple-git-hooks",
+    "prepare": "test -z \"$npm_config_production\" && simple-git-hooks || true",
     "build": "yarn build:wasm && yarn build:js",
     "build:wasm": "emcmake cmake -B build-wasm -DBUILD_WASM=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build-wasm -j",
     "build:js": "tsc",
@@ -31,8 +29,8 @@
     "format": "biome format --write js/ tests/wasm/",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepack": "cp README.md README.md.bak && cp README.npm.md README.md",
-    "postpack": "mv README.md.bak README.md",
+    "prepack": "cp README.md /tmp/coverwise-readme-bak && cp README.npm.md README.md",
+    "postpack": "mv /tmp/coverwise-readme-bak README.md",
     "prepublishOnly": "yarn clean && yarn build && yarn lint && yarn test"
   },
   "keywords": [
