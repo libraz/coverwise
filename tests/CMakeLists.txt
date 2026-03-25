@@ -43,3 +43,4 @@ coverwise_add_test(equivalence_class_test validator/equivalence_class_test.cpp)
 
 # Integration tests
 coverwise_add_test(integration_test integration/generate_and_validate_test.cpp)
+coverwise_add_test(benchmark_test integration/benchmark_test.cpp)
