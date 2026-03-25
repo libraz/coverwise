@@ -59,7 +59,6 @@ export class CoverageEngine {
     engine.strength_ = strength;
     engine.initCombinations();
     engine.totalTuples_ = engine.computeTotalTuples();
-    engine.buildLookupTables();
 
     if (engine.totalTuples_ > CoverageEngine.MAX_TUPLES) {
       return {
@@ -68,6 +67,7 @@ export class CoverageEngine {
       };
     }
 
+    engine.buildLookupTables();
     engine.covered_ = new DynamicBitset(engine.totalTuples_);
     return { engine, error: okError() };
   }
@@ -91,7 +91,6 @@ export class CoverageEngine {
     engine.paramSubset_ = paramSubset.slice();
     engine.initCombinationsFromSubset();
     engine.totalTuples_ = engine.computeTotalTuples();
-    engine.buildLookupTables();
 
     if (engine.totalTuples_ > CoverageEngine.MAX_TUPLES) {
       return {
@@ -100,6 +99,7 @@ export class CoverageEngine {
       };
     }
 
+    engine.buildLookupTables();
     engine.covered_ = new DynamicBitset(engine.totalTuples_);
     return { engine, error: okError() };
   }
@@ -194,54 +194,26 @@ export class CoverageEngine {
 
     const numParams = this.params_.length;
 
-    for (let ci = 0; ci < this.paramCombinations_.length; ++ci) {
-      const combo = this.paramCombinations_[ci];
-
-      // Compute product for this combination.
-      let product = 1;
-      for (const pi of combo) {
-        product *= this.params_[pi].size;
+    this.forEachTuple((ci, vi, combo, valueIndices) => {
+      // Build partial assignment with only this tuple's parameters set.
+      const assignment = new Array<number>(numParams);
+      for (let i = 0; i < numParams; i++) {
+        assignment[i] = UNASSIGNED;
+      }
+      for (let j = 0; j < combo.length; ++j) {
+        assignment[combo[j]] = valueIndices[j];
       }
 
-      // Enumerate all value tuples.
-      for (let vi = 0; vi < product; ++vi) {
-        const globalIndex = this.combinationOffsets_[ci] + vi;
-        if (this.covered_.test(globalIndex)) {
-          continue; // Already marked.
-        }
-
-        // Decode mixed-radix index into value indices.
-        const radixes: number[] = new Array(combo.length);
-        for (let j = 0; j < combo.length; ++j) {
-          radixes[j] = this.params_[combo[j]].size;
-        }
-        const valueIndices = decodeMixedRadix(vi, radixes);
-
-        // Build partial assignment with only this tuple's parameters set.
-        const assignment = new Array<number>(numParams);
-        for (let i = 0; i < numParams; i++) {
-          assignment[i] = UNASSIGNED;
-        }
-        for (let j = 0; j < combo.length; ++j) {
-          assignment[combo[j]] = valueIndices[j];
-        }
-
-        // Evaluate all constraints against this partial assignment.
-        let invalid = false;
-        for (const constraint of constraints) {
-          const result = constraint.evaluate(assignment);
-          if (result === ConstraintResult.False) {
-            invalid = true;
-            break;
-          }
-        }
-
-        if (invalid) {
-          this.covered_.set(globalIndex);
+      // Evaluate all constraints against this partial assignment.
+      for (const constraint of constraints) {
+        const result = constraint.evaluate(assignment);
+        if (result === ConstraintResult.False) {
+          this.covered_.set(this.combinationOffsets_[ci] + vi);
           ++this.invalidTuples_;
+          return;
         }
       }
-    }
+    });
   }
 
   /// Exclude tuples that contain values marked as invalid in parameters.
@@ -253,44 +225,15 @@ export class CoverageEngine {
       return;
     }
 
-    for (let ci = 0; ci < this.paramCombinations_.length; ++ci) {
-      const combo = this.paramCombinations_[ci];
-
-      // Compute product for this combination.
-      let product = 1;
-      for (const pi of combo) {
-        product *= this.params_[pi].size;
-      }
-
-      // Enumerate all value tuples.
-      for (let vi = 0; vi < product; ++vi) {
-        const globalIndex = this.combinationOffsets_[ci] + vi;
-        if (this.covered_.test(globalIndex)) {
-          continue;
-        }
-
-        // Decode mixed-radix index into value indices.
-        const radixes: number[] = new Array(combo.length);
-        for (let j = 0; j < combo.length; ++j) {
-          radixes[j] = this.params_[combo[j]].size;
-        }
-        const valueIndices = decodeMixedRadix(vi, radixes);
-
-        // Check if any decoded value is invalid.
-        let containsInvalid = false;
-        for (let j = 0; j < combo.length; ++j) {
-          if (this.params_[combo[j]].isInvalid(valueIndices[j])) {
-            containsInvalid = true;
-            break;
-          }
-        }
-
-        if (containsInvalid) {
-          this.covered_.set(globalIndex);
+    this.forEachTuple((ci, vi, combo, valueIndices) => {
+      for (let j = 0; j < combo.length; ++j) {
+        if (this.params_[combo[j]].isInvalid(valueIndices[j])) {
+          this.covered_.set(this.combinationOffsets_[ci] + vi);
           ++this.invalidTuples_;
+          return;
         }
       }
-    }
+    });
   }
 
   /// Return the total number of valid t-wise tuples.
@@ -319,47 +262,58 @@ export class CoverageEngine {
   /// Collect all uncovered tuples as human-readable objects.
   /// @param params Parameter definitions (for resolving names and values).
   getUncoveredTuples(params: Parameter[]): UncoveredTuple[] {
-    const result: UncoveredTuple[] = [];
+    const uncovered: UncoveredTuple[] = [];
 
+    this.forEachTuple((_ci, _vi, combo, valueIndices) => {
+      const tuple: string[] = [];
+      const paramNames: string[] = [];
+      for (let j = 0; j < combo.length; ++j) {
+        const pi = combo[j];
+        paramNames.push(params[pi].name);
+        tuple.push(`${params[pi].name}=${params[pi].values[valueIndices[j]]}`);
+      }
+      uncovered.push({ tuple, params: paramNames, reason: 'never covered' });
+    });
+
+    return uncovered;
+  }
+
+  // --- Private methods ---
+
+  /// Iterate over all uncovered tuples, calling fn for each.
+  ///
+  /// Pre-allocates the radixes array once per combination (not per value tuple)
+  /// to reduce allocation pressure. Skips already-covered tuples.
+  private forEachTuple(
+    fn: (ci: number, vi: number, combo: number[], valueIndices: number[]) => void,
+  ): void {
     for (let ci = 0; ci < this.paramCombinations_.length; ++ci) {
       const combo = this.paramCombinations_[ci];
 
-      // Compute the number of value tuples for this combination.
-      let product = 1;
-      for (const pi of combo) {
-        product *= params[pi].size;
+      // Pre-allocate radixes array once per combination.
+      const radixes: number[] = new Array(combo.length);
+      for (let j = 0; j < combo.length; ++j) {
+        radixes[j] = this.params_[combo[j]].size;
       }
 
-      // Enumerate all value tuples using mixed-radix decoding.
+      // Compute product for this combination.
+      let product = 1;
+      for (let j = 0; j < radixes.length; ++j) {
+        product *= radixes[j];
+      }
+
+      // Enumerate all value tuples.
       for (let vi = 0; vi < product; ++vi) {
         const globalIndex = this.combinationOffsets_[ci] + vi;
         if (this.covered_.test(globalIndex)) {
           continue;
         }
 
-        // Decode the mixed-radix index into value indices.
-        const radixes: number[] = new Array(combo.length);
-        for (let j = 0; j < combo.length; ++j) {
-          radixes[j] = params[combo[j]].size;
-        }
         const valueIndices = decodeMixedRadix(vi, radixes);
-
-        const tuple: string[] = [];
-        const paramNames: string[] = [];
-        for (let j = 0; j < combo.length; ++j) {
-          const pi = combo[j];
-          paramNames.push(params[pi].name);
-          tuple.push(`${params[pi].name}=${params[pi].values[valueIndices[j]]}`);
-        }
-
-        result.push({ tuple, params: paramNames, reason: 'never covered' });
+        fn(ci, vi, combo, valueIndices);
       }
     }
-
-    return result;
   }
-
-  // --- Private methods ---
 
   private initCombinations(): void {
     const n = this.params_.length;
@@ -425,8 +379,18 @@ export class CoverageEngine {
       let product = 1;
       for (const pi of combo) {
         product *= this.params_[pi].size;
+        if (product > Number.MAX_SAFE_INTEGER) {
+          throw new Error(
+            `Tuple count overflow: product exceeds Number.MAX_SAFE_INTEGER (${Number.MAX_SAFE_INTEGER})`,
+          );
+        }
       }
       total += product;
+      if (total > Number.MAX_SAFE_INTEGER) {
+        throw new Error(
+          `Tuple count overflow: total exceeds Number.MAX_SAFE_INTEGER (${Number.MAX_SAFE_INTEGER})`,
+        );
+      }
     }
     return total;
   }

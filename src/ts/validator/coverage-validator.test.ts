@@ -141,6 +141,32 @@ describe('validateCoverage', () => {
   });
 });
 
+describe('validateCoverage with invalid value indices', () => {
+  it('handles test case with out-of-range value index gracefully', () => {
+    const params = [
+      new Parameter('os', ['win', 'mac', 'linux']),
+      new Parameter('browser', ['chrome', 'firefox', 'safari']),
+    ];
+
+    // Test case with invalid value index 999 for browser (only 3 values exist).
+    const tests: TestCase[] = [
+      { values: [0, 999] },
+      { values: [0, 0] }, // valid: win, chrome
+    ];
+
+    // Should not crash.
+    const report = validateCoverage(params, tests, 2);
+
+    // The invalid test case should not cover any tuples because value 999
+    // does not match any valid value index (0, 1, or 2).
+    // Only the valid test (win, chrome) covers 1 tuple.
+    expect(report.totalTuples).toBe(9); // C(2,2) * 3 * 3 = 9
+    expect(report.coveredTuples).toBe(1);
+    expect(report.coverageRatio).toBeCloseTo(1 / 9);
+    expect(report.uncovered).toHaveLength(8);
+  });
+});
+
 describe('computeClassCoverage', () => {
   it('params with equivalence classes: verify class tuple coverage', () => {
     // os: win and linux are "desktop", mac is "apple"

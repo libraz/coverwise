@@ -153,6 +153,73 @@ class JsonParser {
           case 'r':
             val.string_val += '\r';
             break;
+          case 'b':
+            val.string_val += '\b';
+            break;
+          case 'f':
+            val.string_val += '\f';
+            break;
+          case 'u': {
+            // Parse 4 hex digits for a Unicode codepoint.
+            if (pos_ + 4 > input_.size()) {
+              error_ = "incomplete \\u escape at position " + std::to_string(pos_);
+              return {};
+            }
+            auto parse_hex4 = [this]() -> uint32_t {
+              uint32_t cp = 0;
+              for (int h = 0; h < 4; ++h) {
+                char hc = input_[pos_++];
+                cp <<= 4;
+                if (hc >= '0' && hc <= '9') {
+                  cp |= static_cast<uint32_t>(hc - '0');
+                } else if (hc >= 'a' && hc <= 'f') {
+                  cp |= static_cast<uint32_t>(hc - 'a' + 10);
+                } else if (hc >= 'A' && hc <= 'F') {
+                  cp |= static_cast<uint32_t>(hc - 'A' + 10);
+                } else {
+                  error_ = "invalid hex digit in \\u escape at position " +
+                           std::to_string(pos_ - 1);
+                  return 0xFFFFFFFF;
+                }
+              }
+              return cp;
+            };
+            uint32_t codepoint = parse_hex4();
+            if (!error_.empty()) return {};
+            // Handle surrogate pairs (high surrogate 0xD800-0xDBFF).
+            if (codepoint >= 0xD800 && codepoint <= 0xDBFF) {
+              if (pos_ + 6 > input_.size() || input_[pos_] != '\\' || input_[pos_ + 1] != 'u') {
+                error_ = "missing low surrogate after high surrogate at position " +
+                         std::to_string(pos_);
+                return {};
+              }
+              pos_ += 2;  // skip \u
+              uint32_t low = parse_hex4();
+              if (!error_.empty()) return {};
+              if (low < 0xDC00 || low > 0xDFFF) {
+                error_ = "invalid low surrogate at position " + std::to_string(pos_ - 4);
+                return {};
+              }
+              codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00);
+            }
+            // Encode as UTF-8.
+            if (codepoint <= 0x7F) {
+              val.string_val += static_cast<char>(codepoint);
+            } else if (codepoint <= 0x7FF) {
+              val.string_val += static_cast<char>(0xC0 | (codepoint >> 6));
+              val.string_val += static_cast<char>(0x80 | (codepoint & 0x3F));
+            } else if (codepoint <= 0xFFFF) {
+              val.string_val += static_cast<char>(0xE0 | (codepoint >> 12));
+              val.string_val += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+              val.string_val += static_cast<char>(0x80 | (codepoint & 0x3F));
+            } else if (codepoint <= 0x10FFFF) {
+              val.string_val += static_cast<char>(0xF0 | (codepoint >> 18));
+              val.string_val += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+              val.string_val += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+              val.string_val += static_cast<char>(0x80 | (codepoint & 0x3F));
+            }
+            break;
+          }
           default:
             val.string_val += esc;
             break;

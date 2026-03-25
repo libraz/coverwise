@@ -1,5 +1,6 @@
 /// Boundary value expansion for numeric parameters.
 
+import { isNumeric } from '../util/string_util.js';
 import { Parameter } from './parameter.js';
 
 /** Boundary value type: integer or float. */
@@ -25,14 +26,6 @@ export function createBoundaryConfig(params?: Partial<BoundaryConfig>): Boundary
     maxValue: params?.maxValue ?? 0,
     step: params?.step ?? 1.0,
   };
-}
-
-/** Check if a string can be parsed as a finite number. */
-function isNumeric(s: string): boolean {
-  if (s.trim().length === 0) {
-    return false;
-  }
-  return Number.isFinite(Number(s));
 }
 
 /** Format an integer value as a string. */

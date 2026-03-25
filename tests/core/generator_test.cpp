@@ -5,8 +5,12 @@
 #include <string>
 #include <vector>
 
+#include "model/constraint_ast.h"
+#include "model/constraint_parser.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
+#include "validator/constraint_validator.h"
+#include "validator/coverage_validator.h"
 
 using coverwise::core::EstimateModel;
 using coverwise::core::Extend;
@@ -216,6 +220,60 @@ TEST(GeneratorTest, SubModelHigherStrength) {
   opts_no_sub.sub_models.clear();
   auto result_no_sub = Generate(opts_no_sub);
   EXPECT_GE(result.tests.size(), result_no_sub.tests.size());
+}
+
+TEST(GeneratorTest, ConstraintsAndSubModelsCombined) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari"}, {}},
+      {"db", {"mysql", "postgres"}, {}},
+      {"size", {"small", "large"}, {}},
+  };
+  opts.constraint_expressions = {"IF os=mac THEN browser!=safari"};
+  opts.strength = 2;
+  opts.seed = 42;
+
+  SubModel sm;
+  sm.parameter_names = {"os", "browser", "db"};
+  sm.strength = 3;
+  opts.sub_models = {sm};
+
+  auto result = Generate(opts);
+
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(result.uncovered.empty());
+  EXPECT_TRUE(result.warnings.empty());
+
+  // Verify no test case violates the constraint: os=mac AND browser=safari.
+  for (const auto& tc : result.tests) {
+    bool is_mac = (tc.values[0] == 1);
+    bool is_safari = (tc.values[1] == 2);
+    EXPECT_FALSE(is_mac && is_safari)
+        << "Constraint violation: os=mac, browser=safari";
+  }
+
+  // Independently validate pairwise coverage using the validator.
+  // The validator does not know about constraints, so constraint-excluded tuples
+  // (e.g. os=mac,browser=safari) will appear uncovered. Verify that the only
+  // uncovered tuples are those involving the constrained combination.
+  auto cov_report = coverwise::validator::ValidateCoverage(opts.parameters, result.tests, 2);
+  // All non-constrained tuples must be covered. The constraint excludes
+  // os=mac + browser=safari, which removes 1 pair from the (os, browser)
+  // combination. The remaining pairs among other parameter combos are unaffected.
+  // Total pairwise tuples = C(4,2) sums: (3*3)+(3*2)+(3*2)+(3*2)+(3*2)+(2*2) = 9+6+6+6+6+4 = 37.
+  // Only os=mac,browser=safari is excluded -> at most 1 tuple may be uncovered.
+  EXPECT_LE(cov_report.uncovered.size(), 1u);
+
+  // Independently validate constraints using the constraint validator.
+  std::vector<coverwise::model::Constraint> constraints;
+  for (const auto& expr : opts.constraint_expressions) {
+    auto parse_result = coverwise::model::ParseConstraint(expr, opts.parameters);
+    ASSERT_TRUE(parse_result.error.ok()) << parse_result.error.message;
+    constraints.push_back(std::move(parse_result.constraint));
+  }
+  auto con_report = coverwise::validator::ValidateConstraints(result.tests, constraints);
+  EXPECT_EQ(con_report.violations, 0u);
 }
 
 TEST(GeneratorTest, NegativeTesting) {
@@ -442,6 +500,22 @@ TEST(GeneratorEdgeCaseTest, SingleParameter) {
   opts.strength = 2;
   auto result = Generate(opts);
   EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_EQ(result.stats.total_tuples, 0u);
+}
+
+// Edge: strength = 0 → vacuous coverage, 0 tests
+TEST(GeneratorEdgeCaseTest, StrengthZero) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"a", {"1", "2", "3"}, {}},
+      {"b", {"x", "y", "z"}, {}},
+      {"c", {"p", "q", "r"}, {}},
+  };
+  opts.strength = 0;
+  opts.seed = 42;
+  auto result = Generate(opts);
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(result.tests.empty());
   EXPECT_EQ(result.stats.total_tuples, 0u);
 }
 

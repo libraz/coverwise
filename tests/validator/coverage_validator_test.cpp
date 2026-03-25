@@ -197,7 +197,36 @@ TEST(CoverageValidatorTest, StrengthExceedsParamCount) {
 }
 
 // ---------------------------------------------------------------------------
-// 7. ThreeWiseCoverage
+// 7. OutOfBoundsValueIndex
+//
+// A TestCase contains a value index >= the parameter's value count.
+// The validator should handle this gracefully: the out-of-bounds value
+// simply won't match any expected tuple, so those tuples remain uncovered.
+// The validator must not crash or produce undefined behavior.
+// ---------------------------------------------------------------------------
+TEST(CoverageValidatorTest, OutOfBoundsValueIndex) {
+  std::vector<Parameter> params = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  // Test case with B=99 (out of bounds: only 0 and 1 are valid indices).
+  std::vector<TestCase> tests = {
+      TestCase{{0, 99}},
+  };
+
+  auto report = ValidateCoverage(params, tests, 2);
+
+  // The validator should enumerate all 4 tuples.
+  EXPECT_EQ(report.total_tuples, 4u);
+  // The out-of-bounds value (B=99) cannot match any expected tuple (B=0 or B=1),
+  // so no tuples should be covered.
+  EXPECT_EQ(report.covered_tuples, 0u);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 0.0);
+  EXPECT_EQ(report.uncovered.size(), 4u);
+}
+
+// ---------------------------------------------------------------------------
+// 8. ThreeWiseCoverage
 //
 // 3 params with 2 values each, strength=3: C(3,3)*2^3 = 8 tuples.
 // Providing all 8 combinations yields 100% 3-wise coverage.

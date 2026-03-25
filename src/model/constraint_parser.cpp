@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "util/string_util.h"
+
 namespace coverwise {
 namespace model {
 namespace {
@@ -163,7 +165,7 @@ TokenizeResult Tokenize(const std::string& expr) {
     if (expr[i] == '-' && i + 1 < len && std::isdigit(static_cast<unsigned char>(expr[i + 1]))) {
       // Check if this looks like a negative number (after an operator token)
       bool is_negative_num = tokens.empty();
-      if (!is_negative_num && !tokens.empty()) {
+      if (!tokens.empty()) {
         TokenType prev = tokens.back().type;
         is_negative_num = (prev == TokenType::kEquals || prev == TokenType::kNotEquals ||
                            prev == TokenType::kLess || prev == TokenType::kLessEqual ||
@@ -265,14 +267,7 @@ bool NamesEqual(const std::string& a, const std::string& b, bool case_sensitive)
   if (case_sensitive) {
     return a == b;
   }
-  if (a.size() != b.size()) return false;
-  for (size_t i = 0; i < a.size(); ++i) {
-    if (std::tolower(static_cast<unsigned char>(a[i])) !=
-        std::tolower(static_cast<unsigned char>(b[i]))) {
-      return false;
-    }
-  }
-  return true;
+  return util::CaseInsensitiveEqual(a, b);
 }
 
 struct ResolvedParam {

@@ -3,6 +3,7 @@
 #include "core/coverage_engine.h"
 
 #include <algorithm>
+#include <cassert>
 #include <vector>
 
 #include "model/parameter.h"
@@ -32,12 +33,12 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
   engine.strength_ = strength;
   engine.InitCombinations();
   engine.total_tuples_ = engine.ComputeTotalTuples();
-  engine.BuildLookupTables();
 
   if (engine.total_tuples_ > kMaxTuples) {
     return {CoverageEngine{}, MakeTupleExplosionError(engine.total_tuples_, kMaxTuples)};
   }
 
+  engine.BuildLookupTables();
   engine.covered_ = util::DynamicBitset(engine.total_tuples_);
   return {std::move(engine), model::Error{}};
 }
@@ -51,12 +52,12 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
   engine.param_subset_ = param_subset;
   engine.InitCombinationsFromSubset();
   engine.total_tuples_ = engine.ComputeTotalTuples();
-  engine.BuildLookupTables();
 
   if (engine.total_tuples_ > kMaxTuples) {
     return {CoverageEngine{}, MakeTupleExplosionError(engine.total_tuples_, kMaxTuples)};
   }
 
+  engine.BuildLookupTables();
   engine.covered_ = util::DynamicBitset(engine.total_tuples_);
   return {std::move(engine), model::Error{}};
 }
@@ -114,22 +115,29 @@ void CoverageEngine::BuildLookupTables() {
 }
 
 uint32_t CoverageEngine::ComputeTotalTuples() {
-  uint32_t total = 0;
+  uint64_t total = 0;
   combination_offsets_.clear();
   combination_offsets_.reserve(param_combinations_.size());
 
   for (const auto& combo : param_combinations_) {
-    combination_offsets_.push_back(total);
-    uint32_t product = 1;
+    combination_offsets_.push_back(static_cast<uint32_t>(total));
+    uint64_t product = 1;
     for (uint32_t pi : combo) {
       product *= params_[pi].size();
+      if (product > kMaxTuples) {
+        return static_cast<uint32_t>(std::min(total + product, static_cast<uint64_t>(UINT32_MAX)));
+      }
     }
     total += product;
+    if (total > kMaxTuples) {
+      return static_cast<uint32_t>(std::min(total, static_cast<uint64_t>(UINT32_MAX)));
+    }
   }
-  return total;
+  return static_cast<uint32_t>(total);
 }
 
 void CoverageEngine::AddTestCase(const model::TestCase& test_case) {
+  assert(test_case.values.size() >= params_.size());
   for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
     const auto& combo = param_combinations_[ci];
     const auto& mults = combo_multipliers_[ci];
@@ -145,6 +153,7 @@ void CoverageEngine::AddTestCase(const model::TestCase& test_case) {
 
 uint32_t CoverageEngine::ScoreValue(const model::TestCase& partial, uint32_t param_index,
                                     uint32_t value_index) const {
+  assert(partial.values.size() >= params_.size());
   uint32_t score = 0;
   const auto& relevant_combos = param_to_combos_[param_index];
   const auto& positions = param_position_in_combo_[param_index];
@@ -179,6 +188,7 @@ uint32_t CoverageEngine::ScoreValue(const model::TestCase& partial, uint32_t par
 }
 
 uint32_t CoverageEngine::ScoreCandidate(const model::TestCase& candidate) const {
+  assert(candidate.values.size() >= params_.size());
   uint32_t score = 0;
 
   for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
@@ -202,38 +212,16 @@ std::vector<model::UncoveredTuple> CoverageEngine::GetUncoveredTuples(
     const std::vector<model::Parameter>& params) const {
   std::vector<model::UncoveredTuple> result;
 
-  for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
-    const auto& combo = param_combinations_[ci];
-
-    // Compute the number of value tuples for this combination.
-    uint32_t product = 1;
-    for (uint32_t pi : combo) {
-      product *= params[pi].size();
+  ForEachTuple([&](uint32_t /*global_index*/, const std::vector<uint32_t>& combo,
+                   const std::vector<uint32_t>& value_indices) {
+    model::UncoveredTuple ut;
+    for (uint32_t j = 0; j < combo.size(); ++j) {
+      uint32_t pi = combo[j];
+      ut.params.push_back(params[pi].name);
+      ut.tuple.push_back(params[pi].name + "=" + params[pi].values[value_indices[j]]);
     }
-
-    // Enumerate all value tuples using mixed-radix decoding.
-    for (uint32_t vi = 0; vi < product; ++vi) {
-      uint32_t global_index = combination_offsets_[ci] + vi;
-      if (covered_.Test(global_index)) continue;
-
-      // Decode the mixed-radix index into value indices.
-      model::UncoveredTuple ut;
-      std::vector<uint32_t> radixes(combo.size());
-      for (size_t j = 0; j < combo.size(); ++j) {
-        radixes[j] = params[combo[j]].size();
-      }
-      std::vector<uint32_t> value_indices(combo.size());
-      util::DecodeMixedRadix(vi, radixes, value_indices);
-
-      for (uint32_t j = 0; j < combo.size(); ++j) {
-        uint32_t pi = combo[j];
-        ut.params.push_back(params[pi].name);
-        ut.tuple.push_back(params[pi].name + "=" + params[pi].values[value_indices[j]]);
-      }
-
-      result.push_back(std::move(ut));
-    }
-  }
+    result.push_back(std::move(ut));
+  });
 
   return result;
 }
@@ -242,93 +230,56 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
   if (constraints.empty()) return;
 
   uint32_t num_params = static_cast<uint32_t>(params_.size());
+  std::vector<uint32_t> assignment(num_params, model::kUnassigned);
 
-  for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
-    const auto& combo = param_combinations_[ci];
-
-    // Compute product for this combination.
-    uint32_t product = 1;
-    for (uint32_t pi : combo) {
-      product *= params_[pi].size();
+  ForEachTuple([&](uint32_t global_index, const std::vector<uint32_t>& combo,
+                   const std::vector<uint32_t>& value_indices) {
+    // Build partial assignment with only this tuple's parameters set.
+    for (uint32_t j = 0; j < combo.size(); ++j) {
+      assignment[combo[j]] = value_indices[j];
     }
 
-    // Enumerate all value tuples.
-    for (uint32_t vi = 0; vi < product; ++vi) {
-      uint32_t global_index = combination_offsets_[ci] + vi;
-      if (covered_.Test(global_index)) continue;  // Already marked.
-
-      // Decode mixed-radix index into value indices.
-      std::vector<uint32_t> radixes(combo.size());
-      for (size_t j = 0; j < combo.size(); ++j) {
-        radixes[j] = params_[combo[j]].size();
-      }
-      std::vector<uint32_t> value_indices(combo.size());
-      util::DecodeMixedRadix(vi, radixes, value_indices);
-
-      // Build partial assignment with only this tuple's parameters set.
-      std::vector<uint32_t> assignment(num_params, model::kUnassigned);
-      for (uint32_t j = 0; j < combo.size(); ++j) {
-        assignment[combo[j]] = value_indices[j];
-      }
-
-      // Evaluate all constraints against this partial assignment.
-      bool invalid = false;
-      for (const auto& constraint : constraints) {
-        auto result = constraint->Evaluate(assignment);
-        if (result == model::ConstraintResult::kFalse) {
-          invalid = true;
-          break;
-        }
-      }
-
-      if (invalid) {
-        covered_.Set(global_index);
-        ++invalid_tuples_;
+    // Evaluate all constraints against this partial assignment.
+    bool invalid = false;
+    for (const auto& constraint : constraints) {
+      auto eval_result = constraint->Evaluate(assignment);
+      if (eval_result == model::ConstraintResult::kFalse) {
+        invalid = true;
+        break;
       }
     }
-  }
+
+    if (invalid) {
+      covered_.Set(global_index);
+      ++invalid_tuples_;
+    }
+
+    // Reset assignment for reuse.
+    for (uint32_t j = 0; j < combo.size(); ++j) {
+      assignment[combo[j]] = model::kUnassigned;
+    }
+  });
 }
 
 void CoverageEngine::ExcludeInvalidValues() {
   if (!model::HasInvalidValues(params_)) return;
 
-  for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
-    const auto& combo = param_combinations_[ci];
-
-    // Compute product for this combination.
-    uint32_t product = 1;
-    for (uint32_t pi : combo) {
-      product *= params_[pi].size();
-    }
-
-    // Enumerate all value tuples.
-    for (uint32_t vi = 0; vi < product; ++vi) {
-      uint32_t global_index = combination_offsets_[ci] + vi;
-      if (covered_.Test(global_index)) continue;
-
-      // Decode mixed-radix index into value indices.
-      std::vector<uint32_t> radixes(combo.size());
-      for (size_t j = 0; j < combo.size(); ++j) {
-        radixes[j] = params_[combo[j]].size();
-      }
-      std::vector<uint32_t> value_indices(combo.size());
-      util::DecodeMixedRadix(vi, radixes, value_indices);
-
-      // Check if any decoded value is invalid.
-      bool contains_invalid = false;
-      for (size_t j = 0; j < combo.size(); ++j) {
-        if (params_[combo[j]].is_invalid(value_indices[j])) {
-          contains_invalid = true;
-          break;
-        }
-      }
-
-      if (contains_invalid) {
-        covered_.Set(global_index);
-        ++invalid_tuples_;
+  ForEachTuple([&](uint32_t global_index, const std::vector<uint32_t>& combo,
+                   const std::vector<uint32_t>& value_indices) {
+    // Check if any decoded value is invalid.
+    bool contains_invalid = false;
+    for (size_t j = 0; j < combo.size(); ++j) {
+      if (params_[combo[j]].is_invalid(value_indices[j])) {
+        contains_invalid = true;
+        break;
       }
     }
-  }
+
+    if (contains_invalid) {
+      covered_.Set(global_index);
+      ++invalid_tuples_;
+    }
+  });
 }
 
 double CoverageEngine::CoverageRatio() const {

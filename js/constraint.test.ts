@@ -153,10 +153,10 @@ describe('or()', () => {
     expect(c.toString()).toBe('os = win OR os = linux');
   });
 
-  it('three chained conditions (left side wrapped)', () => {
+  it('three chained conditions (no unnecessary wrapping)', () => {
     const c = when('a').eq('1').or(when('b').eq('2')).or(when('c').eq('3'));
-    // or() wraps left operand containing OR in parens for unambiguous grouping
-    expect(c.toString()).toBe('(a = 1 OR b = 2) OR c = 3');
+    // or() does not wrap left operand — OR is already the lowest precedence binary op
+    expect(c.toString()).toBe('a = 1 OR b = 2 OR c = 3');
   });
 });
 
@@ -358,10 +358,10 @@ describe('unicode and emoji', () => {
 });
 
 describe('escape and quoting edge cases', () => {
-  it('value containing double quotes (no escaping — raw passthrough)', () => {
+  it('value containing double quotes (inner quotes escaped)', () => {
     const result = when('x').eq('say "hello"').toString();
-    // Contains space → quoted, but inner quotes are not escaped
-    expect(result).toBe('x = "say "hello""');
+    // Contains space → quoted, inner quotes are escaped
+    expect(result).toBe('x = "say \\"hello\\""');
   });
 
   it('value containing backslash', () => {
@@ -513,5 +513,45 @@ describe('string[] interop', () => {
   it('constraint in array works with String()', () => {
     const c = when('os').eq('win').then(when('browser').ne('ie'));
     expect(String(c)).toBe('IF os = win THEN browser != ie');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Double-quote escaping
+// ---------------------------------------------------------------------------
+
+describe('double-quote escaping through the builder', () => {
+  it('value with double quotes is properly escaped in IF/THEN constraint', () => {
+    const constraint = when('name').eq('say "hello"').then(when('other').eq('value'));
+    const str = constraint.toString();
+    // The value has spaces so it must be quoted, with inner quotes escaped.
+    expect(str).toContain('\\"hello\\"');
+    expect(str).toBe('IF name = "say \\"hello\\"" THEN other = value');
+  });
+
+  it('escaped constraint string has balanced outer quotes', () => {
+    const condition = when('msg').eq('she said "yes"');
+    const str = condition.toString();
+    // Value has spaces -> outer quotes, inner quotes escaped.
+    expect(str).toBe('msg = "she said \\"yes\\""');
+    // Verify the outer quoting: starts with `"` after `= ` and ends with `"`.
+    const afterEq = str.split('= ')[1];
+    expect(afterEq[0]).toBe('"');
+    expect(afterEq[afterEq.length - 1]).toBe('"');
+  });
+
+  it('value with only a double quote character is output bare (no quoting trigger)', () => {
+    // A lone `"` does not match NEEDS_QUOTE_RE (/[\s=!<>(),{}]/), so it is
+    // output without outer quotes. This verifies current builder behavior.
+    const condition = when('x').eq('"');
+    const str = condition.toString();
+    expect(str).toBe('x = "');
+  });
+
+  it('double quotes inside IN set values with spaces are escaped', () => {
+    const condition = when('title').in('say "hi"', 'plain');
+    const str = condition.toString();
+    // 'say "hi"' has spaces -> quoted with inner quotes escaped.
+    expect(str).toBe('title IN {"say \\"hi\\"", plain}');
   });
 });

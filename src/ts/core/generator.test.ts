@@ -206,6 +206,25 @@ describe('generate', () => {
   });
 });
 
+describe('generate edge cases', () => {
+  it('strength=0 produces coverage 1.0 with 0 tests (vacuous coverage)', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'a', values: ['a1', 'a2', 'a3'] },
+        { name: 'b', values: ['b1', 'b2', 'b3'] },
+        { name: 'c', values: ['c1', 'c2', 'c3'] },
+      ],
+      strength: 0,
+      seed: 42,
+    });
+    const result = generate(opts);
+    expect(result.coverage).toBe(1.0);
+    expect(result.tests).toHaveLength(0);
+    expect(result.stats.totalTuples).toBe(0);
+    expect(result.uncovered).toHaveLength(0);
+  });
+});
+
 describe('extend', () => {
   it('extends an existing test suite to achieve full coverage', () => {
     const opts = createGenerateOptions({

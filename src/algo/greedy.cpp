@@ -104,8 +104,31 @@ model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params, Sco
     }
 
     if (best_values.empty()) {
-      // Fallback: pick the first allowed value, or 0 if no mask.
-      if (!allowed_values.empty()) {
+      // Fallback: pick the first allowed value that satisfies constraints.
+      uint32_t fallback = model::kUnassigned;
+      for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
+        if (!allowed_values.empty() && !allowed_values[pi][vi]) continue;
+
+        tc.values[pi] = vi;
+        bool pruned = false;
+        for (const auto& constraint : constraints) {
+          auto result = constraint->Evaluate(tc.values);
+          if (result == model::ConstraintResult::kFalse) {
+            pruned = true;
+            break;
+          }
+        }
+        tc.values[pi] = model::kUnassigned;
+
+        if (!pruned) {
+          fallback = vi;
+          break;
+        }
+      }
+      if (fallback != model::kUnassigned) {
+        tc.values[pi] = fallback;
+      } else if (!allowed_values.empty()) {
+        // All allowed values violate constraints; pick first allowed as last resort.
         for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
           if (allowed_values[pi][vi]) {
             tc.values[pi] = vi;

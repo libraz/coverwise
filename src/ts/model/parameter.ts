@@ -1,7 +1,8 @@
 /// Parameter definition for combinatorial test generation.
 
-/** Sentinel value indicating an unassigned parameter (matches C++ UINT32_MAX). */
-export const UNASSIGNED = 0xffffffff;
+import { UNASSIGNED } from './test-case.js';
+
+export { UNASSIGNED };
 
 /**
  * A test parameter with a name and a set of discrete values.

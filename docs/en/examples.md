@@ -73,7 +73,7 @@ const result = cw.generate({
 });
 
 console.log('Positive tests:', result.tests.length);
-console.log('Negative tests:', result.negativeTests?.length);
+console.log('Negative tests:', result.negativeTests.length);
 
 // Positive tests cover valid combinations only.
 // Negative tests each have exactly 1 invalid value.

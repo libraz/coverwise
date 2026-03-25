@@ -132,7 +132,12 @@ coverwise::model::TestCase ParseTestCase(val js_test,
   for (uint32_t i = 0; i < params.size(); ++i) {
     if (js_test.hasOwnProperty(params[i].name.c_str())) {
       std::string val_str = JsValueToString(js_test[params[i].name]);
-      tc.values[i] = params[i].find_value_index(val_str);
+      uint32_t idx = params[i].find_value_index(val_str);
+      if (idx == UINT32_MAX) {
+        throw std::runtime_error("Unknown value '" + val_str + "' for parameter '" +
+                                 params[i].name + "'");
+      }
+      tc.values[i] = idx;
     }
   }
   return tc;
@@ -203,6 +208,9 @@ coverwise::model::GenerateOptions ParseGenerateOptions(val input) {
   coverwise::model::GenerateOptions opts;
 
   // Parameters (required)
+  if (!input.hasOwnProperty("parameters")) {
+    throw std::runtime_error("Missing required field 'parameters'");
+  }
   opts.parameters = ParseParameters(input["parameters"]);
 
   // Strength (default 2)

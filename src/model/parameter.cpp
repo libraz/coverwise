@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <unordered_set>
+
+#include "util/string_util.h"
 
 namespace coverwise {
 namespace model {
@@ -66,14 +69,7 @@ bool StringsEqual(const std::string& a, const std::string& b, bool case_sensitiv
   if (case_sensitive) {
     return a == b;
   }
-  if (a.size() != b.size()) return false;
-  for (size_t i = 0; i < a.size(); ++i) {
-    if (std::tolower(static_cast<unsigned char>(a[i])) !=
-        std::tolower(static_cast<unsigned char>(b[i]))) {
-      return false;
-    }
-  }
-  return true;
+  return util::CaseInsensitiveEqual(a, b);
 }
 
 }  // namespace
@@ -109,8 +105,9 @@ bool Parameter::has_equivalence_classes() const {
 
 std::vector<std::string> Parameter::unique_classes() const {
   std::vector<std::string> result;
+  std::unordered_set<std::string> seen;
   for (const auto& c : equivalence_classes_) {
-    if (!c.empty() && std::find(result.begin(), result.end(), c) == result.end()) {
+    if (!c.empty() && seen.insert(c).second) {
       result.push_back(c);
     }
   }

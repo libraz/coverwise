@@ -146,19 +146,35 @@ export function greedyConstruct(
     }
 
     if (bestValues.length === 0) {
-      // Fallback: pick the first allowed value, or 0 if no mask.
-      if (allowedValues.length > 0) {
-        for (let vi = 0; vi < params[pi].size; ++vi) {
-          if (allowedValues[pi][vi]) {
-            tc.values[pi] = vi;
+      // Fallback: pick the first allowed value that satisfies constraints.
+      let assigned = false;
+      const candidates =
+        allowedValues.length > 0
+          ? Array.from({ length: params[pi].size }, (_, i) => i).filter(
+              (vi) => allowedValues[pi][vi],
+            )
+          : Array.from({ length: params[pi].size }, (_, i) => i);
+
+      for (const vi of candidates) {
+        tc.values[pi] = vi;
+        let pruned = false;
+        for (const constraint of constraints) {
+          const result = constraint.evaluate(tc.values);
+          if (result === ConstraintResult.False) {
+            pruned = true;
             break;
           }
         }
-        if (tc.values[pi] === UNASSIGNED) {
-          tc.values[pi] = 0;
+        if (!pruned) {
+          assigned = true;
+          break;
         }
-      } else {
-        tc.values[pi] = 0;
+        tc.values[pi] = UNASSIGNED;
+      }
+
+      if (!assigned) {
+        // No value satisfies constraints; pick the first allowed value anyway.
+        tc.values[pi] = candidates.length > 0 ? candidates[0] : 0;
       }
     } else {
       tc.values[pi] = breakTieWithWeights(bestValues, weights, pi, rng);

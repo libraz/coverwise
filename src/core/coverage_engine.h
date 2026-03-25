@@ -4,6 +4,7 @@
 #ifndef COVERWISE_CORE_COVERAGE_ENGINE_H_
 #define COVERWISE_CORE_COVERAGE_ENGINE_H_
 
+#include <cassert>
 #include <cstdint>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "model/parameter.h"
 #include "model/test_case.h"
 #include "util/bitset.h"
+#include "util/combinatorics.h"
 
 namespace coverwise {
 namespace core {
@@ -75,7 +77,10 @@ class CoverageEngine {
   uint32_t TotalTuples() const { return total_tuples_ - invalid_tuples_; }
 
   /// @brief Return the number of covered valid tuples.
-  uint32_t CoveredCount() const { return covered_.Count() - invalid_tuples_; }
+  uint32_t CoveredCount() const {
+    assert(covered_.Count() >= invalid_tuples_);
+    return covered_.Count() - invalid_tuples_;
+  }
 
   /// @brief Return coverage ratio [0.0, 1.0].
   double CoverageRatio() const;
@@ -122,6 +127,38 @@ class CoverageEngine {
   void InitCombinationsFromSubset();
   void BuildLookupTables();
   uint32_t ComputeTotalTuples();
+
+  /// @brief Iterate over all uncovered tuples, calling fn for each.
+  ///
+  /// Pre-allocates radixes and value_indices once per combination (not per tuple).
+  /// @param fn Callback with signature:
+  ///   fn(uint32_t global_index, const std::vector<uint32_t>& combo,
+  ///      const std::vector<uint32_t>& value_indices)
+  template <typename Fn>
+  void ForEachTuple(Fn fn) const {
+    std::vector<uint32_t> radixes(strength_);
+    std::vector<uint32_t> value_indices(strength_);
+
+    for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
+      const auto& combo = param_combinations_[ci];
+
+      // Compute radixes once per combination.
+      uint32_t product = 1;
+      for (uint32_t j = 0; j < combo.size(); ++j) {
+        radixes[j] = params_[combo[j]].size();
+        product *= radixes[j];
+      }
+
+      // Enumerate all value tuples.
+      for (uint32_t vi = 0; vi < product; ++vi) {
+        uint32_t global_index = combination_offsets_[ci] + vi;
+        if (covered_.Test(global_index)) continue;
+
+        util::DecodeMixedRadix(vi, radixes, value_indices);
+        fn(global_index, combo, value_indices);
+      }
+    }
+  }
 };
 
 }  // namespace core

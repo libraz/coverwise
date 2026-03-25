@@ -69,7 +69,7 @@ coverwise is built as a **test design API**, not just a generation tool:
 - **Stateless** — `generate(input) → output`, no session management
 - **Decomposable** — Separate functions for generate, analyze, extend
 - **Explainable** — Every result includes coverage proof and uncovered tuples in human-readable format
-- **Deterministic** — Same input + seed = same output, every time
+- **Deterministic** — Same input + seed = same output, every time (within the same engine; WASM and Pure TS use different RNG algorithms, so the same seed may produce different test orderings across engines while maintaining identical coverage)
 
 ## Platform Support
 

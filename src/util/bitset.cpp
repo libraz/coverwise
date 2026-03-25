@@ -3,7 +3,6 @@
 
 #include "util/bitset.h"
 
-#include <bitset>
 #include <cassert>
 
 namespace coverwise {
@@ -30,7 +29,7 @@ bool DynamicBitset::Test(uint32_t index) const {
 uint32_t DynamicBitset::Count() const {
   uint32_t count = 0;
   for (auto block : blocks_) {
-    count += static_cast<uint32_t>(std::bitset<64>(block).count());
+    count += static_cast<uint32_t>(__builtin_popcountll(block));
   }
   return count;
 }
@@ -39,7 +38,7 @@ uint32_t DynamicBitset::CountAndNot(const DynamicBitset& other) const {
   assert(num_bits_ == other.num_bits_);
   uint32_t count = 0;
   for (size_t i = 0; i < blocks_.size(); ++i) {
-    count += static_cast<uint32_t>(std::bitset<64>(blocks_[i] & ~other.blocks_[i]).count());
+    count += static_cast<uint32_t>(__builtin_popcountll(blocks_[i] & ~other.blocks_[i]));
   }
   return count;
 }

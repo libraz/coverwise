@@ -24,7 +24,7 @@ const result = generate({ parameters: [...] });
 
 ## `init()`
 
-WASM モジュールを初期化します。他の関数を呼ぶ前に必ず呼んでください。複数回呼んでも安全です。モジュールは一度だけロードされます。
+WASM モジュールを初期化します。他の関数を呼ぶ前に必ず呼んでください。複数回呼んでも安全です。モジュールは一度だけロードされます。初期化に失敗した場合（例：WASMファイルが見つからない）、以降の呼び出しは失敗をキャッシュせずリトライします。
 
 ```typescript
 async function init(): Promise<void>
@@ -44,8 +44,8 @@ function generate(input: GenerateInput): GenerateResult
 interface GenerateInput {
   parameters: Parameter[];       // 必須。1つ以上のパラメータ。
   constraints?: string[];        // 制約式。
-  strength?: number;             // 相互作用の強度。デフォルト: 2（ペアワイズ）。
-  seed?: number;                 // 決定性のためのRNGシード。デフォルト: 0。
+  strength?: number;             // 相互作用の強度（正の整数）。デフォルト: 2（ペアワイズ）。
+  seed?: number;                 // 決定性のためのRNGシード（有限数値）。デフォルト: 0。
   maxTests?: number;             // 最大テスト数。0 = 無制限（デフォルト）。
   weights?: WeightConfig;        // 値の重み付けヒント。
   seeds?: TestCase[];            // 既存テストケース。
@@ -146,12 +146,12 @@ generate({
 ```typescript
 interface GenerateResult {
   tests: TestCase[];                // 正常テストケース（無効値なし）。
-  negativeTests?: TestCase[];       // ネガティブテスト（無効値が正確に1つ）。
+  negativeTests: TestCase[];        // ネガティブテスト（無効値が正確に1つ）。該当なしの場合は空配列。
   coverage: number;                 // カバレッジ比率（0.0 – 1.0）。
   uncovered: UncoveredTuple[];      // 未カバータプルと理由。
   stats: GenerateStats;
   suggestions: Suggestion[];        // 改善の提案。
-  warnings: string[];               // パフォーマンス/設定の警告。
+  warnings: string[];               // 警告（例：カバレッジ100%未達、シード数がmaxTestsを超過）。
   strength: number;                 // 使用された強度。
   classCoverage?: ClassCoverage;    // 同値クラス定義時に存在。
 }
@@ -287,6 +287,17 @@ const result = cw.generate({
 ```
 
 詳細は[制約構文](constraints.md)を参照してください。
+
+## 入力バリデーション
+
+Pure TypeScript API は入力を検証し、不正な値に対して説明的なエラーをスローします：
+
+- `strength`: 正の整数である必要があります。非整数、負、ゼロは拒否されます。
+- `seed`: 有限な数値である必要があります。`NaN` と `Infinity` は拒否されます。
+- `maxTests`: 指定する場合は非負の整数である必要があります。
+- `parameters`: 空でない配列である必要があります。
+
+WASM API は C++ 側の境界で同等のバリデーションを行います。
 
 ## エラーハンドリング
 

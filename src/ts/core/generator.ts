@@ -302,6 +302,13 @@ export function generate(options: GenerateOptions): GenerateResult {
     result.tests.push(seedTest);
   }
 
+  // Warn if seed tests already exceed maxTests.
+  if (options.maxTests > 0 && result.tests.length >= options.maxTests) {
+    result.warnings.push(
+      `Seed tests (${result.tests.length}) already meet or exceed maxTests (${options.maxTests})`,
+    );
+  }
+
   // Build scoring function that sums across all engines.
   let scoreFn: ScoreFn;
   if (subEngines.length === 0) {
@@ -339,6 +346,15 @@ export function generate(options: GenerateOptions): GenerateResult {
       eng.addTestCase(tc);
     }
     result.tests.push(tc);
+  }
+
+  // Warn if coverage is incomplete after greedy generation.
+  if (!allComplete(coverage, subEngines)) {
+    const minCov = Math.min(coverage.coverageRatio, ...subEngines.map((e) => e.coverageRatio));
+    result.warnings.push(
+      `Generation ended with incomplete coverage (${(minCov * 100).toFixed(1)}%). ` +
+        `${result.tests.length} test(s) generated.`,
+    );
   }
 
   // Generate negative tests if any parameter has invalid values.

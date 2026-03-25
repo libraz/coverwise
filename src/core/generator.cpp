@@ -267,6 +267,12 @@ model::GenerateResult Generate(const GenerateOptions& options) {
 
   // Pre-load seed tests into all engines.
   for (const auto& seed_test : opts.seeds) {
+    if (opts.max_tests > 0 && result.tests.size() >= static_cast<size_t>(opts.max_tests)) {
+      result.warnings.push_back("Seed test count (" + std::to_string(opts.seeds.size()) +
+                                ") exceeds max_tests (" + std::to_string(opts.max_tests) +
+                                "); some seeds were dropped");
+      break;
+    }
     coverage.AddTestCase(seed_test);
     for (auto& eng : sub_engines) {
       eng.AddTestCase(seed_test);
@@ -274,30 +280,29 @@ model::GenerateResult Generate(const GenerateOptions& options) {
     result.tests.push_back(seed_test);
   }
 
-  // Build scoring function that sums across all engines.
-  auto make_score_fn = [&]() -> algo::ScoreFn {
-    if (sub_engines.empty()) {
-      return [&](const model::TestCase& partial, uint32_t pi, uint32_t vi) {
-        return coverage.ScoreValue(partial, pi, vi);
-      };
-    }
-    return [&](const model::TestCase& partial, uint32_t pi, uint32_t vi) -> uint32_t {
-      uint32_t score = coverage.ScoreValue(partial, pi, vi);
-      for (const auto& eng : sub_engines) {
-        score += eng.ScoreValue(partial, pi, vi);
-      }
-      return score;
-    };
+  // Scoring lambdas: avoid std::function wrapper on the hot path.
+  auto simple_score_fn = [&](const model::TestCase& partial, uint32_t pi, uint32_t vi) {
+    return coverage.ScoreValue(partial, pi, vi);
   };
-  auto score_fn = make_score_fn();
+  auto combined_score_fn = [&](const model::TestCase& partial, uint32_t pi,
+                               uint32_t vi) -> uint32_t {
+    uint32_t score = coverage.ScoreValue(partial, pi, vi);
+    for (const auto& eng : sub_engines) {
+      score += eng.ScoreValue(partial, pi, vi);
+    }
+    return score;
+  };
 
   // Constructive greedy generation loop (positive tests only).
   constexpr uint32_t kMaxRetries = 50;
   uint32_t retries = 0;
   while (!AllComplete(coverage, sub_engines) &&
          (opts.max_tests == 0 || result.tests.size() < static_cast<size_t>(opts.max_tests))) {
-    auto tc = algo::GreedyConstruct(opts.parameters, score_fn, constraints, rng, valid_mask,
-                                    resolved_weights);
+    auto tc = sub_engines.empty()
+                  ? algo::GreedyConstruct(opts.parameters, simple_score_fn, constraints, rng,
+                                          valid_mask, resolved_weights)
+                  : algo::GreedyConstruct(opts.parameters, combined_score_fn, constraints, rng,
+                                          valid_mask, resolved_weights);
     uint32_t score = TotalScore(coverage, sub_engines, tc);
     if (score == 0) {
       if (++retries >= kMaxRetries) break;
@@ -309,6 +314,19 @@ model::GenerateResult Generate(const GenerateOptions& options) {
       eng.AddTestCase(tc);
     }
     result.tests.push_back(std::move(tc));
+  }
+
+  // Warn if generation stopped before reaching full coverage.
+  if (!AllComplete(coverage, sub_engines)) {
+    if (opts.max_tests > 0 && result.tests.size() >= static_cast<size_t>(opts.max_tests)) {
+      result.warnings.push_back("Generation stopped at max_tests (" +
+                                std::to_string(opts.max_tests) +
+                                ") before reaching 100% coverage");
+    } else {
+      result.warnings.push_back(
+          "Generation stopped before reaching 100% coverage after " +
+          std::to_string(kMaxRetries) + " consecutive zero-score candidates");
+    }
   }
 
   // Generate negative tests if any parameter has invalid values.
@@ -397,11 +415,13 @@ ModelStats EstimateModel(const GenerateOptions& options) {
   if (stats.parameter_count == 0) {
     stats.estimated_tests = 0;
   } else if (stats.parameter_count <= stats.strength) {
-    uint32_t product = 1;
+    uint64_t product = 1;
     for (const auto& p : opts.parameters) {
       product *= p.size();
+      if (product > UINT32_MAX) break;
     }
-    stats.estimated_tests = product;
+    stats.estimated_tests =
+        static_cast<uint32_t>(std::min(product, static_cast<uint64_t>(UINT32_MAX)));
   } else {
     uint64_t estimate = 1;
     for (uint32_t i = 0; i < stats.strength; ++i) {

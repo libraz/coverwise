@@ -1,5 +1,10 @@
 /// @file rng.ts
 /// @brief Seeded PRNG for deterministic generation using xoshiro128**.
+///
+/// This implementation uses xoshiro128** with SplitMix32 seeding.
+/// The C++ engine uses std::mt19937_64, which produces different output
+/// for the same seed. Seed portability across C++/TS is not guaranteed
+/// by design; both engines are independently deterministic.
 
 /// SplitMix32: used to initialize xoshiro128** state from a single seed.
 function splitmix32(seed: number): () => number {

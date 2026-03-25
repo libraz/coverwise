@@ -21,114 +21,37 @@ import {
   extend as tsExtendRaw,
   generate as tsGenerateRaw,
 } from '../src/ts/core/generator.js';
-import {
-  createGenerateOptions,
-  createWeightConfig,
-  type GenerateOptions,
-  type SubModel as InternalSubModel,
-  type WeightConfig as InternalWeightConfig,
-} from '../src/ts/model/generate-options.js';
-import { Parameter as InternalParameter } from '../src/ts/model/parameter.js';
+import type { GenerateOptions } from '../src/ts/model/generate-options.js';
+import type { Parameter as InternalParameter } from '../src/ts/model/parameter.js';
 import type { TestCase as InternalTestCase } from '../src/ts/model/test-case.js';
 import { validateCoverage } from '../src/ts/validator/coverage-validator.js';
 
+// --- Adapter imports (shared conversion logic) ---
+
+import {
+  toInternalOptions,
+  toInternalParams,
+  toInternalTestCase,
+  toPublicTestCase,
+} from './pure/adapter.js';
+
 // ---------------------------------------------------------------------------
-// Adapter helpers: convert between WASM JSON format and TS internal format
+// Thin wrappers around adapter functions for compat-test convenience
 // ---------------------------------------------------------------------------
 
-interface ParameterValueObj {
-  value: string | number | boolean;
-  invalid?: boolean;
-  aliases?: string[];
-}
-
-function toStringValue(v: string | number | boolean): string {
-  return String(v);
-}
-
-function convertParameters(wasmParams: Parameter[]): InternalParameter[] {
-  return wasmParams.map((wp) => {
-    const values: string[] = [];
-    const invalid: boolean[] = [];
-    const aliases: string[][] = [];
-    let hasInvalid = false;
-    let hasAliases = false;
-
-    for (const v of wp.values) {
-      if (typeof v === 'object' && v !== null && 'value' in v) {
-        const pv = v as ParameterValueObj;
-        values.push(toStringValue(pv.value));
-        invalid.push(pv.invalid === true);
-        aliases.push(pv.aliases ?? []);
-        if (pv.invalid) {
-          hasInvalid = true;
-        }
-        if (pv.aliases && pv.aliases.length > 0) {
-          hasAliases = true;
-        }
-      } else {
-        values.push(toStringValue(v as string | number | boolean));
-        invalid.push(false);
-        aliases.push([]);
-      }
-    }
-
-    const param = hasInvalid
-      ? new InternalParameter(wp.name, values, invalid)
-      : new InternalParameter(wp.name, values);
-    if (hasAliases) {
-      param.setAliases(aliases);
-    }
-    return param;
-  });
-}
-
+/** Convert public TestCase to internal, delegating to adapter. */
 function namedTestToInternal(namedTest: TestCase, params: InternalParameter[]): InternalTestCase {
-  const values: number[] = new Array(params.length);
-  for (let i = 0; i < params.length; ++i) {
-    const rawVal = namedTest[params[i].name];
-    const strVal = toStringValue(rawVal);
-    const idx = params[i].findValueIndex(strVal);
-    values[i] = idx;
-  }
-  return { values };
+  return toInternalTestCase(namedTest, params);
 }
 
+/** Convert internal TestCase to public, using adapter with rotation=0. */
 function internalTestToNamed(tc: InternalTestCase, params: InternalParameter[]): TestCase {
-  const result: TestCase = {};
-  for (let i = 0; i < params.length; ++i) {
-    result[params[i].name] = params[i].values[tc.values[i]];
-  }
-  return result;
+  return toPublicTestCase(tc, params, 0);
 }
 
+/** Build GenerateOptions from GenerateInput, delegating to adapter. */
 function buildGenerateOptions(input: GenerateInput, params: InternalParameter[]): GenerateOptions {
-  const subModels: InternalSubModel[] = (input.subModels ?? []).map((sm) => ({
-    parameterNames: sm.parameters,
-    strength: sm.strength,
-  }));
-
-  let weights: InternalWeightConfig = createWeightConfig();
-  if (input.weights) {
-    weights = { entries: { ...input.weights } };
-  }
-
-  const seeds: InternalTestCase[] = (input.seeds ?? []).map((s) => namedTestToInternal(s, params));
-
-  return createGenerateOptions({
-    parameters: params.map((p) => ({
-      name: p.name,
-      values: p.values,
-      ...(p.hasInvalidValues ? { invalid: p.invalid } : {}),
-    })),
-    constraintExpressions: input.constraints ?? [],
-    strength: input.strength ?? 2,
-    seed: input.seed ?? 0,
-    maxTests: input.maxTests ?? 0,
-    seeds,
-    subModels,
-    weights,
-  });
+  return toInternalOptions(input, params);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +71,7 @@ function tsGenerate(input: GenerateInput): GenerateResult {
       strength: input.strength ?? 2,
     };
   }
-  const params = convertParameters(input.parameters);
+  const params = toInternalParams(input.parameters);
   const opts = buildGenerateOptions(input, params);
   const result = tsGenerateRaw(opts);
 
@@ -179,7 +102,7 @@ function tsAnalyzeCoverage(
   tests: TestCase[],
   strength?: number,
 ): CoverageReport {
-  const params = convertParameters(parameters);
+  const params = toInternalParams(parameters);
   const internalTests: InternalTestCase[] = tests.map((t) => namedTestToInternal(t, params));
   const report = validateCoverage(params, internalTests, strength ?? 2);
   // Match WASM behavior: 0 tuples => coverageRatio 1.0
@@ -190,7 +113,7 @@ function tsAnalyzeCoverage(
 }
 
 function tsExtendTests(existing: TestCase[], input: GenerateInput): GenerateResult {
-  const params = convertParameters(input.parameters);
+  const params = toInternalParams(input.parameters);
   const existingInternal = existing.map((t) => namedTestToInternal(t, params));
   const opts = buildGenerateOptions(input, params);
   const result = tsExtendRaw(existingInternal, opts);
@@ -211,7 +134,7 @@ function tsExtendTests(existing: TestCase[], input: GenerateInput): GenerateResu
 }
 
 function tsEstimateModel(input: GenerateInput): ModelStats {
-  const params = convertParameters(input.parameters);
+  const params = toInternalParams(input.parameters);
   const opts = buildGenerateOptions(input, params);
   return tsEstimateModelRaw(opts);
 }
@@ -405,11 +328,11 @@ describe('WASM / TS compatibility', () => {
       });
     }
 
-    // Exact output match tests are skipped because the C++ and TypeScript
-    // engines use different RNG implementations (both xoshiro128** but with
-    // different internal sequencing due to algorithm-level differences in
-    // candidate generation and value iteration order). Both produce correct
-    // covering arrays but with different test orderings and counts.
+    // Exact output match tests are skipped because the C++ / WASM engine uses
+    // std::mt19937_64 (Mersenne Twister 64-bit) while the TypeScript engine
+    // uses xoshiro128**. The same seed produces different sequences across
+    // engines, but both are deterministic within their own engine.
+    // Compatibility tests compare coverage completeness, not exact output.
     for (const { name, input } of scenarios) {
       it.skip(`${name}: exact test output match`, () => {
         const wasmResult = generate(input);

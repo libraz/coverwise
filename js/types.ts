@@ -66,7 +66,7 @@ export interface GenerateStats {
 
 export interface GenerateResult {
   tests: TestCase[];
-  negativeTests?: TestCase[];
+  negativeTests: TestCase[];
   coverage: number;
   /** Uncovered tuples with context. Empty when coverage is 1.0. */
   uncovered: UncoveredTuple[];

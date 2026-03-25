@@ -496,6 +496,46 @@ describe('estimateModel()', () => {
   });
 });
 
+describe('constraints + sub-models combined', () => {
+  it('achieves full coverage with both constraints and sub-models', () => {
+    const result = tsGenerate({
+      parameters: [
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+        { name: 'browser', values: ['chrome', 'firefox', 'safari'] },
+        { name: 'db', values: ['mysql', 'postgres'] },
+        { name: 'size', values: ['small', 'large'] },
+      ],
+      constraints: ['IF os = mac THEN browser != safari'],
+      strength: 2,
+      subModels: [{ parameters: ['os', 'browser', 'db'], strength: 3 }],
+    });
+
+    // Full coverage across global pairwise and sub-model 3-wise.
+    expect(result.coverage).toBe(1.0);
+    expect(result.uncovered).toHaveLength(0);
+
+    // No constraint violations: mac + safari must never appear together.
+    for (const test of result.tests) {
+      if (test.os === 'mac') {
+        expect(test.browser).not.toBe('safari');
+      }
+    }
+
+    // All test cases must have valid values for every parameter.
+    const validValues: Record<string, Set<string>> = {
+      os: new Set(['win', 'mac', 'linux']),
+      browser: new Set(['chrome', 'firefox', 'safari']),
+      db: new Set(['mysql', 'postgres']),
+      size: new Set(['small', 'large']),
+    };
+    for (const test of result.tests) {
+      for (const [param, allowed] of Object.entries(validValues)) {
+        expect(allowed.has(test[param] as string)).toBe(true);
+      }
+    }
+  });
+});
+
 describe('edge cases', () => {
   it('empty parameters -> coverage 1.0, no tests', () => {
     const result = tsGenerate({ parameters: [] });

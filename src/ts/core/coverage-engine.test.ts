@@ -34,6 +34,23 @@ describe('CoverageEngine', () => {
       expect(result.error.code).toBe(ErrorCode.TupleExplosion);
       expect(result.error.message).toContain('tuple count exceeds safety limit');
     });
+
+    it('returns TupleExplosion error for 10 params x 100 values at strength 5', () => {
+      // 10 params x 100 values, strength=5: C(10,5) * 100^5 = 252 * 10^10 >> 16M
+      const params: Parameter[] = [];
+      for (let i = 0; i < 10; ++i) {
+        const values: string[] = [];
+        for (let j = 0; j < 100; ++j) {
+          values.push(`v${j}`);
+        }
+        params.push(new Parameter(`p${i}`, values));
+      }
+      const result = CoverageEngine.create(params, 5);
+      expect(result.error.code).toBe(ErrorCode.TupleExplosion);
+      expect(result.error.message).toBeTruthy();
+      expect(result.error.message.length).toBeGreaterThan(0);
+      expect(result.error.detail).toBeTruthy();
+    });
   });
 
   describe('addTestCase()', () => {

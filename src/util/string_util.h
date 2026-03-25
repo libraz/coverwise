@@ -9,6 +9,12 @@
 namespace coverwise {
 namespace util {
 
+/// @brief Compare two strings case-insensitively.
+/// @param a First string.
+/// @param b Second string.
+/// @return true if the strings are equal ignoring case.
+bool CaseInsensitiveEqual(const std::string& a, const std::string& b);
+
 /// @brief Check if a string can be parsed as a double.
 /// @param s The string to check.
 /// @return true if s is a valid double representation.

@@ -2,6 +2,8 @@
 
 #include "util/combinatorics.h"
 
+#include <cassert>
+
 namespace coverwise {
 namespace util {
 
@@ -37,6 +39,7 @@ std::vector<std::vector<uint32_t>> GenerateCombinations(uint32_t n, uint32_t k) 
 
 void DecodeMixedRadix(uint32_t flat_index, const std::vector<uint32_t>& radixes,
                       std::vector<uint32_t>& out) {
+  assert(out.size() == radixes.size());
   uint32_t remainder = flat_index;
   for (int i = static_cast<int>(radixes.size()) - 1; i >= 0; --i) {
     out[i] = remainder % radixes[i];

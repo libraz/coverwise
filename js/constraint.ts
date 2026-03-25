@@ -26,7 +26,7 @@ function formatValue(value: string | number | boolean): string {
     return String(value);
   }
   if (NEEDS_QUOTE_RE.test(value) || KEYWORDS.has(value.toUpperCase())) {
-    return `"${value}"`;
+    return `"${value.replace(/"/g, '\\"')}"`;
   }
   return value;
 }
@@ -47,7 +47,7 @@ function formatSetValue(value: string | number | boolean): string {
     return String(value);
   }
   if (NEEDS_QUOTE_RE.test(value) || KEYWORDS.has(value.toUpperCase())) {
-    return `"${value}"`;
+    return `"${value.replace(/"/g, '\\"')}"`;
   }
   return value;
 }
@@ -95,7 +95,7 @@ class ConditionImpl implements Condition {
   }
 
   or(other: Condition): Condition {
-    return new ConditionImpl(`${this.wrap()} OR ${wrapCondition(other)}`);
+    return new ConditionImpl(`${this.expr} OR ${wrapCondition(other)}`);
   }
 
   // biome-ignore lint/suspicious/noThenProperty: fluent API requires .then() for IF...THEN syntax

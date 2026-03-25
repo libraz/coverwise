@@ -1,5 +1,6 @@
 /// Parser for human-readable constraint expressions.
 
+import { isNumeric as isNumericString } from '../util/string_util.js';
 import {
   AndNode,
   type ConstraintNode,
@@ -437,14 +438,6 @@ function isValueOfParam(
   caseSensitive: boolean,
 ): boolean {
   return params[paramIndex].findValueIndex(name, caseSensitive) !== NOT_FOUND;
-}
-
-function isNumericString(s: string): boolean {
-  if (s.length === 0) {
-    return false;
-  }
-  const n = Number(s);
-  return !Number.isNaN(n) && Number.isFinite(n);
 }
 
 // --- Recursive descent parser ---

@@ -56,6 +56,49 @@ import {
   toPublicResult,
 } from './adapter.js';
 
+// --- Input Validation ---
+
+function validateStrength(strength: unknown): number {
+  if (strength === undefined || strength === null) {
+    return 2;
+  }
+  if (typeof strength !== 'number' || !Number.isInteger(strength) || strength <= 0) {
+    throw new Error(`Invalid strength: ${String(strength)}. Must be a positive integer.`);
+  }
+  return strength;
+}
+
+function validateMaxTests(maxTests: unknown): void {
+  if (maxTests === undefined || maxTests === null) {
+    return;
+  }
+  if (typeof maxTests !== 'number' || !Number.isInteger(maxTests) || maxTests < 0) {
+    throw new Error(`Invalid maxTests: ${String(maxTests)}. Must be a non-negative integer.`);
+  }
+}
+
+function validateSeed(seed: unknown): void {
+  if (seed === undefined || seed === null) {
+    return;
+  }
+  if (typeof seed !== 'number' || !Number.isFinite(seed)) {
+    throw new Error(`Invalid seed: ${String(seed)}. Must be a finite number.`);
+  }
+}
+
+function validateParameters(parameters: unknown): void {
+  if (!Array.isArray(parameters) || parameters.length === 0) {
+    throw new Error('Invalid parameters: must be a non-empty array.');
+  }
+}
+
+function validateGenerateInput(input: GenerateInput): void {
+  validateParameters(input.parameters);
+  validateStrength(input.strength);
+  validateMaxTests(input.maxTests);
+  validateSeed(input.seed);
+}
+
 // --- Core API ---
 
 /**
@@ -74,6 +117,7 @@ import {
  * // result.coverage: 1.0
  */
 export function generate(input: GenerateInput): GenerateResult {
+  validateGenerateInput(input);
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);
   const result = internalGenerate(opts);
@@ -101,7 +145,8 @@ export function analyzeCoverage(
   tests: TestCase[],
   strength?: number,
 ): CoverageReport {
-  const s = strength ?? 2;
+  validateParameters(parameters);
+  const s = validateStrength(strength);
   const params = toInternalParams(parameters);
   const internalTests = tests.map((tc) => toInternalTestCase(tc, params));
   const report = internalValidateCoverage(params, internalTests, s);
@@ -120,6 +165,7 @@ export function analyzeCoverage(
  * Only "strict" mode is supported (existing tests are kept as-is).
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
+  validateGenerateInput(input);
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);
   const internalExisting = existing.map((tc) => toInternalTestCase(tc, params));

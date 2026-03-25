@@ -41,9 +41,6 @@ function valueToString(v: string | number | boolean): string {
     return v ? 'true' : 'false';
   }
   // number
-  if (Number.isInteger(v) && Math.abs(v) <= 1e15) {
-    return v.toString();
-  }
   return v.toString();
 }
 
@@ -109,7 +106,7 @@ export function toInternalTestCase(
   const values: number[] = new Array(params.length).fill(UNASSIGNED);
   for (let i = 0; i < params.length; ++i) {
     const paramName = params[i].name;
-    if (paramName in tc) {
+    if (Object.hasOwn(tc, paramName)) {
       const valStr = valueToString(tc[paramName]);
       values[i] = params[i].findValueIndex(valStr);
     }
@@ -127,11 +124,18 @@ export function toInternalOptions(
   const weights = createWeightConfig();
   if (input.weights) {
     for (const paramName of Object.keys(input.weights)) {
-      const paramWeights = input.weights[paramName];
-      weights.entries[paramName] = {};
-      for (const valueName of Object.keys(paramWeights)) {
-        weights.entries[paramName][valueName] = paramWeights[valueName];
+      if (!Object.hasOwn(input.weights, paramName)) {
+        continue;
       }
+      const paramWeights = input.weights[paramName];
+      const inner: Record<string, number> = Object.create(null);
+      for (const valueName of Object.keys(paramWeights)) {
+        if (!Object.hasOwn(paramWeights, valueName)) {
+          continue;
+        }
+        inner[valueName] = paramWeights[valueName];
+      }
+      weights.entries[paramName] = inner;
     }
   }
 
@@ -197,9 +201,9 @@ export function toPublicResult(
   const negativeTests = result.negativeTests.map((tc, i) => toPublicTestCase(tc, params, i));
   const uncovered = result.uncovered.map(toPublicUncoveredTuple);
 
-  const suggestions = result.suggestions.map((s, i) => ({
+  const suggestions = result.suggestions.map((s) => ({
     description: s.description,
-    testCase: toPublicTestCase(s.testCase, params, i) as Record<string, string>,
+    testCase: toPublicTestCase(s.testCase, params, 0) as Record<string, string>,
   }));
 
   const pubResult: PublicGenerateResult = {

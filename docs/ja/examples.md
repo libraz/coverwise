@@ -73,7 +73,7 @@ const result = cw.generate({
 });
 
 console.log('正常テスト:', result.tests.length);
-console.log('ネガティブテスト:', result.negativeTests?.length);
+console.log('ネガティブテスト:', result.negativeTests.length);
 
 // 正常テストは有効な組み合わせのみ。
 // ネガティブテストはそれぞれ無効値が正確に1つ。

@@ -15,7 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: mymindstorm/setup-emsdk@v14
-      - uses: volta-cli/action@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm install -g npm@latest
+      - run: corepack enable
+      - run: corepack prepare yarn@4.12.0 --activate
 
       - uses: actions/cache@v4
         with:
@@ -46,6 +54,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --access public --provenance

@@ -24,7 +24,7 @@ Both styles share the same WASM singleton and are interchangeable.
 
 ## `init()`
 
-Initialize the WASM module. Must be called before any other function. Safe to call multiple times — the module loads only once.
+Initialize the WASM module. Must be called before any other function. Safe to call multiple times — the module loads only once. If initialization fails (e.g., WASM file not found), subsequent calls will retry instead of caching the failure.
 
 ```typescript
 async function init(): Promise<void>
@@ -44,8 +44,8 @@ function generate(input: GenerateInput): GenerateResult
 interface GenerateInput {
   parameters: Parameter[];       // Required. At least 1 parameter.
   constraints?: string[];        // Constraint expressions.
-  strength?: number;             // Interaction strength. Default: 2 (pairwise).
-  seed?: number;                 // RNG seed for determinism. Default: 0.
+  strength?: number;             // Interaction strength (positive integer). Default: 2 (pairwise).
+  seed?: number;                 // RNG seed for determinism (finite number). Default: 0.
   maxTests?: number;             // Max test count. 0 = no limit (default).
   weights?: WeightConfig;        // Value weight hints.
   seeds?: TestCase[];            // Existing test cases to build upon.
@@ -146,12 +146,12 @@ generate({
 ```typescript
 interface GenerateResult {
   tests: TestCase[];                // Positive test cases (no invalid values).
-  negativeTests?: TestCase[];       // Negative tests (exactly 1 invalid value each).
+  negativeTests: TestCase[];        // Negative tests (exactly 1 invalid value each). Empty array if none.
   coverage: number;                 // Coverage ratio (0.0 – 1.0).
   uncovered: UncoveredTuple[];      // Uncovered tuples with reasons.
   stats: GenerateStats;
   suggestions: Suggestion[];        // Actionable suggestions.
-  warnings: string[];               // Performance/configuration warnings.
+  warnings: string[];               // Warnings (e.g., coverage < 100%, seed count exceeds maxTests).
   strength: number;                 // Actual strength used.
   classCoverage?: ClassCoverage;    // Present when equivalence classes are defined.
 }
@@ -287,6 +287,17 @@ const result = cw.generate({
 ```
 
 See [Constraint Syntax](constraints.md) for the full builder API reference.
+
+## Input Validation
+
+The Pure TypeScript API validates inputs and throws descriptive errors for:
+
+- `strength`: Must be a positive integer. Non-integer, negative, or zero values are rejected.
+- `seed`: Must be a finite number. `NaN` and `Infinity` are rejected.
+- `maxTests`: Must be a non-negative integer when provided.
+- `parameters`: Must be a non-empty array.
+
+The WASM API performs equivalent validation at the C++ boundary.
 
 ## Error Handling
 

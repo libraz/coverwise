@@ -206,6 +206,32 @@ TEST(CoverageEngineTest, DuplicateTestCaseNoop) {
   EXPECT_EQ(engine.CoveredCount(), 1u);  // No change
 }
 
+TEST(CoverageEngineTest, TupleExplosionOverflowUint32) {
+  // 10 parameters x 100 values each at strength 5.
+  // A single combination's product = 100^5 = 10^10 > 4.3 billion (UINT32_MAX).
+  // ComputeTotalTuples must detect overflow and return an error.
+  std::vector<Parameter> params;
+  for (int i = 0; i < 10; ++i) {
+    Parameter p;
+    p.name = "P" + std::to_string(i);
+    for (int j = 0; j < 100; ++j) {
+      p.values.push_back(std::to_string(j));
+    }
+    params.push_back(std::move(p));
+  }
+
+  auto [engine, err] = CoverageEngine::Create(params, 5);
+  EXPECT_FALSE(err.ok());
+  EXPECT_EQ(err.code, coverwise::model::Error::Code::kTupleExplosion);
+
+  // The returned engine should be in a safe default state (not corrupted).
+  // Verify it reports zero tuples and is trivially complete.
+  auto [engine2, err2] = CoverageEngine::Create({}, 2);
+  ASSERT_TRUE(err2.ok());
+  EXPECT_TRUE(engine2.IsComplete());
+  EXPECT_EQ(engine2.TotalTuples(), 0u);
+}
+
 TEST(CoverageEngineTest, SingleParamStrengthOne) {
   // Edge case: 1 parameter, strength 1. Each value is a 1-tuple.
   std::vector<Parameter> params = {

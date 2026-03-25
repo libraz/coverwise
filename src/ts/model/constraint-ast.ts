@@ -1,27 +1,15 @@
 /// AST-based constraint representation for combinatorial test generation.
 
-/** Sentinel value indicating an unassigned parameter. */
-export const UNASSIGNED = 0xffffffff;
+import { isNumeric, toDouble } from '../util/string_util.js';
+import { UNASSIGNED } from './test-case.js';
+
+export { UNASSIGNED };
 
 /** Result of evaluating a constraint against a partial assignment. */
 export enum ConstraintResult {
   True = 'true',
   False = 'false',
   Unknown = 'unknown',
-}
-
-/** Check if a string can be parsed as a finite number. */
-function isNumeric(s: string): boolean {
-  if (s.length === 0) {
-    return false;
-  }
-  const n = Number(s);
-  return !Number.isNaN(n) && Number.isFinite(n);
-}
-
-/** Parse a string as a number. */
-function toDouble(s: string): number {
-  return Number(s);
 }
 
 /** Base interface for constraint AST nodes. */

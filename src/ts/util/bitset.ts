@@ -58,10 +58,13 @@ export class DynamicBitset {
   }
 
   /// Count bits set in (this AND NOT other).
+  /// If other is shorter, missing blocks are treated as 0.
   countAndNot(other: DynamicBitset): number {
     let total = 0;
+    const otherLen = other.blocks.length;
     for (let i = 0; i < this.blocks.length; i++) {
-      total += popcount32((this.blocks[i] & ~other.blocks[i]) >>> 0);
+      const otherBlock = i < otherLen ? other.blocks[i] : 0;
+      total += popcount32((this.blocks[i] & ~otherBlock) >>> 0);
     }
     return total;
   }
