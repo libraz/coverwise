@@ -50,8 +50,12 @@ struct Token {
 
 std::string ToUpper(const std::string& s) {
   std::string result = s;
-  std::transform(result.begin(), result.end(), result.begin(),
-                 [](unsigned char c) { return std::toupper(c); });
+  for (auto& c : result) {
+    auto uc = static_cast<unsigned char>(c);
+    if (uc < 0x80) {
+      c = static_cast<char>(std::toupper(uc));
+    }
+  }
   return result;
 }
 
@@ -219,6 +223,26 @@ TokenizeResult Tokenize(const std::string& expr) {
         expect_pattern = false;
         continue;
       }
+    }
+
+    // Quoted string: "..." or '...'
+    if (expr[i] == '"' || expr[i] == '\'') {
+      char quote = expr[i];
+      size_t j = i + 1;
+      while (j < len && expr[j] != quote) {
+        ++j;
+      }
+      if (j >= len) {
+        return {{},
+                {Error::Code::kConstraintError,
+                 "Unterminated string literal starting at position " + std::to_string(start),
+                 ""}};
+      }
+      std::string content = expr.substr(i + 1, j - i - 1);
+      tokens.push_back({TokenType::kIdentifier, content, start});
+      i = j + 1;
+      expect_pattern = false;
+      continue;
     }
 
     if (IsIdentChar(expr[i])) {

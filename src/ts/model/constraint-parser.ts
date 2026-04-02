@@ -284,6 +284,30 @@ function tokenize(expr: string): TokenizeResult {
       }
     }
 
+    // Quoted string: "..." or '...'
+    if (expr[i] === '"' || expr[i] === "'") {
+      const quote = expr[i];
+      let j = i + 1;
+      while (j < len && expr[j] !== quote) {
+        j++;
+      }
+      if (j >= len) {
+        return {
+          tokens: [],
+          error: {
+            code: ErrorCode.ConstraintError,
+            message: `Unterminated string literal starting at position ${start}`,
+            detail: '',
+          },
+        };
+      }
+      const content = expr.substring(i + 1, j);
+      tokens.push({ type: TokenType.Identifier, text: content, position: start });
+      i = j + 1;
+      expectPattern = false;
+      continue;
+    }
+
     if (isIdentChar(expr[i])) {
       let j = i;
       while (j < len && isIdentChar(expr[j])) {

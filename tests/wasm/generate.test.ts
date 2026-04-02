@@ -204,4 +204,103 @@ describe('coverwise WASM', () => {
       expect(stats.estimatedTests).toBeGreaterThan(0);
     });
   });
+
+  describe('Japanese and emoji support', () => {
+    it('generates with Japanese parameter names and constraints (unquoted)', () => {
+      const result = generate({
+        parameters: [
+          { name: 'OS', values: ['win', 'mac', 'linux'] },
+          { name: 'ブラウザ', values: ['chrome', 'safari', 'edge'] },
+        ],
+        constraints: ['IF OS = mac THEN ブラウザ != edge'],
+        seed: 1,
+      });
+      expect(result.coverage).toBe(1.0);
+      for (const tc of result.tests) {
+        if (tc['OS'] === 'mac') {
+          expect(tc['ブラウザ']).not.toBe('edge');
+        }
+      }
+    });
+
+    it('constraints with quoted Japanese values', () => {
+      const result = generate({
+        parameters: [
+          { name: 'OS', values: ['ウィンドウズ', 'マック', 'リナックス'] },
+          { name: 'ブラウザ', values: ['クローム', 'サファリ', 'エッジ'] },
+        ],
+        constraints: ['IF OS = "マック" THEN ブラウザ != "エッジ"'],
+        seed: 1,
+      });
+      expect(result.coverage).toBe(1.0);
+      for (const tc of result.tests) {
+        if (tc['OS'] === 'マック') {
+          expect(tc['ブラウザ']).not.toBe('エッジ');
+        }
+      }
+    });
+
+    it('constraints with values containing spaces (quoted)', () => {
+      const result = generate({
+        parameters: [
+          { name: 'OS', values: ['Windows 10', 'macOS', 'Ubuntu'] },
+          { name: 'browser', values: ['chrome', 'edge'] },
+        ],
+        constraints: ['IF OS = "Windows 10" THEN browser != "edge"'],
+        seed: 1,
+      });
+      expect(result.coverage).toBe(1.0);
+      for (const tc of result.tests) {
+        if (tc['OS'] === 'Windows 10') {
+          expect(tc['browser']).not.toBe('edge');
+        }
+      }
+    });
+
+    it('analyzeCoverage with Japanese parameter names', () => {
+      const params: Parameter[] = [
+        { name: 'OS', values: ['win', 'mac'] },
+        { name: 'ブラウザ', values: ['chrome', 'firefox'] },
+      ];
+      const tests: TestCase[] = [
+        { OS: 'win', ブラウザ: 'chrome' },
+        { OS: 'win', ブラウザ: 'firefox' },
+        { OS: 'mac', ブラウザ: 'chrome' },
+        { OS: 'mac', ブラウザ: 'firefox' },
+      ];
+      const report = analyzeCoverage(params, tests, 2);
+      expect(report.coverageRatio).toBe(1.0);
+      expect(report.uncovered).toHaveLength(0);
+    });
+
+    it('generates with emoji parameter names', () => {
+      const result = generate({
+        parameters: [
+          { name: '🖥️', values: ['💻', '🖥️'] },
+          { name: '🌐', values: ['🔥', '🧊'] },
+        ],
+        seed: 1,
+      });
+      expect(result.coverage).toBe(1.0);
+      for (const tc of result.tests) {
+        expect(tc).toHaveProperty('🖥️');
+        expect(tc).toHaveProperty('🌐');
+      }
+    });
+
+    it('analyzeCoverage with emoji keys', () => {
+      const params: Parameter[] = [
+        { name: '🎯', values: ['hit', 'miss'] },
+        { name: '🎲', values: ['1', '2'] },
+      ];
+      const tests: TestCase[] = [
+        { '🎯': 'hit', '🎲': '1' },
+        { '🎯': 'miss', '🎲': '2' },
+        { '🎯': 'hit', '🎲': '2' },
+        { '🎯': 'miss', '🎲': '1' },
+      ];
+      const report = analyzeCoverage(params, tests, 2);
+      expect(report.coverageRatio).toBe(1.0);
+    });
+  });
 });

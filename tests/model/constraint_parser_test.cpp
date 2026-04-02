@@ -1078,3 +1078,158 @@ TEST(ConstraintParserEdgeCaseTest, InWithAllValues) {
   EXPECT_EQ(result.constraint->Evaluate({1}), ConstraintResult::kTrue);
   EXPECT_EQ(result.constraint->Evaluate({2}), ConstraintResult::kTrue);
 }
+
+// --- Quoted string value tests ---
+
+TEST(ConstraintParserTest, QuotedDoubleQuoteValue) {
+  auto params = MakeParams();
+  auto result = ParseConstraint("os = \"mac\"", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  auto t = MakeAssignment(params, {{"os", "mac"}, {"browser", "chrome"}, {"arch", "x64"}});
+  auto f = MakeAssignment(params, {{"os", "win"}, {"browser", "chrome"}, {"arch", "x64"}});
+  EXPECT_EQ(result.constraint->Evaluate(t), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(f), ConstraintResult::kFalse);
+}
+
+TEST(ConstraintParserTest, QuotedSingleQuoteValue) {
+  auto params = MakeParams();
+  auto result = ParseConstraint("os = 'mac'", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  auto t = MakeAssignment(params, {{"os", "mac"}, {"browser", "chrome"}, {"arch", "x64"}});
+  EXPECT_EQ(result.constraint->Evaluate(t), ConstraintResult::kTrue);
+}
+
+TEST(ConstraintParserTest, QuotedValueWithSpaces) {
+  std::vector<Parameter> params = {
+      {"os", {"Windows 10", "macOS", "Ubuntu"}, {}},
+      {"browser", {"chrome", "edge", "firefox"}, {}},
+  };
+  auto result = ParseConstraint("IF os = \"Windows 10\" THEN browser != \"edge\"", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+
+  std::vector<uint32_t> a1 = {0, 1};  // Windows 10, edge
+  std::vector<uint32_t> a2 = {0, 0};  // Windows 10, chrome
+  std::vector<uint32_t> a3 = {1, 1};  // macOS, edge
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kFalse);
+  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(a3), ConstraintResult::kTrue);
+}
+
+// --- Japanese (UTF-8 multi-byte) tests ---
+
+TEST(ConstraintParserTest, JapaneseParameterNames) {
+  std::vector<Parameter> params = {
+      {"OS", {"win", "mac", "linux"}, {}},
+      {"\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6",
+       {"chrome", "safari", "edge"},
+       {}},
+  };
+  auto result = ParseConstraint(
+      "IF OS = mac THEN \xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6 != edge", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+
+  std::vector<uint32_t> a1 = {1, 2};  // mac, edge — violates constraint
+  std::vector<uint32_t> a2 = {1, 0};  // mac, chrome
+  std::vector<uint32_t> a3 = {0, 2};  // win, edge — antecedent false
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kFalse);
+  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(a3), ConstraintResult::kTrue);
+}
+
+TEST(ConstraintParserTest, JapaneseValues) {
+  std::vector<Parameter> params = {
+      {"OS",
+       {"\xe3\x82\xa6\xe3\x82\xa3\xe3\x83\xb3\xe3\x83\x89\xe3\x82\xa6\xe3\x82\xba",
+        "\xe3\x83\x9e\xe3\x83\x83\xe3\x82\xaf",
+        "\xe3\x83\xaa\xe3\x83\x8a\xe3\x83\x83\xe3\x82\xaf\xe3\x82\xb9"},
+       {}},
+      {"\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6",
+       {"\xe3\x82\xaf\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa0",
+        "\xe3\x82\xb5\xe3\x83\x95\xe3\x82\xa1\xe3\x83\xaa",
+        "\xe3\x82\xa8\xe3\x83\x83\xe3\x82\xb8"},
+       {}},
+  };
+  auto result = ParseConstraint(
+      "IF OS = \xe3\x83\x9e\xe3\x83\x83\xe3\x82\xaf THEN "
+      "\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6 != "
+      "\xe3\x82\xa8\xe3\x83\x83\xe3\x82\xb8",
+      params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+
+  std::vector<uint32_t> a1 = {1, 2};  // マック, エッジ
+  std::vector<uint32_t> a2 = {1, 0};  // マック, クローム
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kFalse);
+  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kTrue);
+}
+
+TEST(ConstraintParserTest, QuotedJapaneseValues) {
+  std::vector<Parameter> params = {
+      {"OS",
+       {"\xe3\x82\xa6\xe3\x82\xa3\xe3\x83\xb3\xe3\x83\x89\xe3\x82\xa6\xe3\x82\xba",
+        "\xe3\x83\x9e\xe3\x83\x83\xe3\x82\xaf"},
+       {}},
+      {"\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6",
+       {"\xe3\x82\xaf\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa0",
+        "\xe3\x82\xa8\xe3\x83\x83\xe3\x82\xb8"},
+       {}},
+  };
+  auto result = ParseConstraint(
+      "IF OS = \"\xe3\x83\x9e\xe3\x83\x83\xe3\x82\xaf\" THEN "
+      "\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6 != "
+      "\"\xe3\x82\xa8\xe3\x83\x83\xe3\x82\xb8\"",
+      params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+
+  std::vector<uint32_t> a1 = {1, 1};  // マック, エッジ
+  std::vector<uint32_t> a2 = {1, 0};  // マック, クローム
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kFalse);
+  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kTrue);
+}
+
+// --- Emoji tests ---
+
+TEST(ConstraintParserTest, EmojiParameterNames) {
+  std::vector<Parameter> params = {
+      {"\xf0\x9f\x96\xa5\xef\xb8\x8f",
+       {"\xf0\x9f\x92\xbb", "\xf0\x9f\x96\xa5\xef\xb8\x8f"},
+       {}},
+      {"\xf0\x9f\x8c\x90", {"\xf0\x9f\x94\xa5", "\xf0\x9f\xa7\x8a"}, {}},
+  };
+  auto result =
+      ParseConstraint("\xf0\x9f\x96\xa5\xef\xb8\x8f = \xf0\x9f\x92\xbb", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+
+  std::vector<uint32_t> a1 = {0, 0};  // laptop, fire
+  std::vector<uint32_t> a2 = {1, 0};  // desktop, fire
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kFalse);
+}
+
+// --- IN operator with Japanese values ---
+
+TEST(ConstraintParserTest, InOperatorWithJapaneseValues) {
+  std::vector<Parameter> params = {
+      {"\xe8\x89\xb2",
+       {"\xe8\xb5\xa4", "\xe9\x9d\x92", "\xe7\xb7\x91", "\xe9\xbb\x84"},
+       {}},
+  };
+  auto result =
+      ParseConstraint("\xe8\x89\xb2 IN {\xe8\xb5\xa4, \xe9\x9d\x92}", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+
+  std::vector<uint32_t> a1 = {0};  // 赤
+  std::vector<uint32_t> a2 = {1};  // 青
+  std::vector<uint32_t> a3 = {2};  // 緑
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(a3), ConstraintResult::kFalse);
+}
+
+// --- Error handling for unterminated quotes ---
+
+TEST(ConstraintParserTest, UnterminatedQuoteError) {
+  auto params = MakeParams();
+  auto result = ParseConstraint("os = \"mac", params);
+  EXPECT_FALSE(result.error.ok());
+  EXPECT_NE(result.error.message.find("Unterminated"), std::string::npos);
+}

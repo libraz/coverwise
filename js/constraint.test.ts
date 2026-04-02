@@ -555,3 +555,18 @@ describe('double-quote escaping through the builder', () => {
     expect(str).toBe('title IN {"say \\"hi\\"", plain}');
   });
 });
+
+describe('quoted string support', () => {
+  it('value with spaces produces quoted output', () => {
+    expect(when('os').eq('Windows 10').toString()).toBe('os = "Windows 10"');
+  });
+
+  it('Japanese value with spaces is quoted', () => {
+    expect(when('名前').eq('山田 太郎').toString()).toBe('名前 = "山田 太郎"');
+  });
+
+  it('quoted constraint roundtrip in then/else', () => {
+    const constraint = when('os').eq('Windows 10').then(when('browser').ne('edge'));
+    expect(constraint.toString()).toContain('"Windows 10"');
+  });
+});

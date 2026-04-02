@@ -129,15 +129,27 @@ coverwise::model::TestCase ParseTestCase(val js_test,
                                          const std::vector<coverwise::model::Parameter>& params) {
   coverwise::model::TestCase tc;
   tc.values.resize(params.size(), coverwise::model::kUnassigned);
-  for (uint32_t i = 0; i < params.size(); ++i) {
-    if (js_test.hasOwnProperty(params[i].name.c_str())) {
-      std::string val_str = JsValueToString(js_test[params[i].name]);
-      uint32_t idx = params[i].find_value_index(val_str);
-      if (idx == UINT32_MAX) {
-        throw std::runtime_error("Unknown value '" + val_str + "' for parameter '" +
-                                 params[i].name + "'");
+
+  // Build a map from JS object keys to their values.
+  // Using Object.keys() avoids hasOwnProperty(const char*) which
+  // can fail with non-ASCII (UTF-8) property names in Emscripten.
+  val keys = val::global("Object").call<val>("keys", js_test);
+  uint32_t key_count = keys["length"].as<uint32_t>();
+
+  for (uint32_t k = 0; k < key_count; ++k) {
+    std::string key = keys[k].as<std::string>();
+    // Find matching parameter
+    for (uint32_t i = 0; i < params.size(); ++i) {
+      if (params[i].name == key) {
+        std::string val_str = JsValueToString(js_test[key]);
+        uint32_t idx = params[i].find_value_index(val_str);
+        if (idx == UINT32_MAX) {
+          throw std::runtime_error("Unknown value '" + val_str + "' for parameter '" +
+                                   params[i].name + "'");
+        }
+        tc.values[i] = idx;
+        break;
       }
-      tc.values[i] = idx;
     }
   }
   return tc;
