@@ -320,12 +320,10 @@ model::GenerateResult Generate(const GenerateOptions& options) {
   if (!AllComplete(coverage, sub_engines)) {
     if (opts.max_tests > 0 && result.tests.size() >= static_cast<size_t>(opts.max_tests)) {
       result.warnings.push_back("Generation stopped at max_tests (" +
-                                std::to_string(opts.max_tests) +
-                                ") before reaching 100% coverage");
+                                std::to_string(opts.max_tests) + ") before reaching 100% coverage");
     } else {
-      result.warnings.push_back(
-          "Generation stopped before reaching 100% coverage after " +
-          std::to_string(kMaxRetries) + " consecutive zero-score candidates");
+      result.warnings.push_back("Generation stopped before reaching 100% coverage after " +
+                                std::to_string(kMaxRetries) + " consecutive zero-score candidates");
     }
   }
 

@@ -35,7 +35,8 @@ bool TestCovers(const model::TestCase& test, const std::vector<uint32_t>& param_
 }  // namespace
 
 CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
-                                const std::vector<model::TestCase>& tests, uint32_t strength) {
+                                const std::vector<model::TestCase>& tests, uint32_t strength,
+                                const std::vector<model::Constraint>& constraints) {
   CoverageReport report;
   uint32_t n = static_cast<uint32_t>(params.size());
 
@@ -48,6 +49,9 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
 
   // Step 1: Generate all C(n, strength) combinations of parameter indices.
   auto combinations = util::GenerateCombinations(n, strength);
+
+  // Reusable assignment buffer for constraint evaluation.
+  std::vector<uint32_t> assignment(n, model::kUnassigned);
 
   for (const auto& combo : combinations) {
     // Step 2: Enumerate all value tuples (cartesian product) for this combination.
@@ -66,6 +70,29 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
         uint32_t radix = params[combo[i]].size();
         value_indices[i] = remainder % radix;
         remainder /= radix;
+      }
+
+      // Step 2b: If any constraint marks this partial assignment as kFalse,
+      // exclude this tuple from the coverage universe entirely (matches the
+      // generator's CoverageEngine::ExcludeInvalidTuples semantics).
+      if (!constraints.empty()) {
+        for (uint32_t j = 0; j < strength; ++j) {
+          assignment[combo[j]] = value_indices[j];
+        }
+        bool excluded = false;
+        for (const auto& c : constraints) {
+          if (c->Evaluate(assignment) == model::ConstraintResult::kFalse) {
+            excluded = true;
+            break;
+          }
+        }
+        // Reset assignment for reuse.
+        for (uint32_t j = 0; j < strength; ++j) {
+          assignment[combo[j]] = model::kUnassigned;
+        }
+        if (excluded) {
+          continue;
+        }
       }
 
       ++report.total_tuples;

@@ -185,7 +185,7 @@ interface ClassCoverage {
 }
 ```
 
-## `analyzeCoverage(parameters, tests, strength?)`
+## `analyzeCoverage(parameters, tests, strength?, constraints?)`
 
 Analyze the t-wise coverage of an existing test suite. Independent of the generator — validates any set of tests.
 
@@ -194,8 +194,11 @@ function analyzeCoverage(
   parameters: Parameter[],
   tests: TestCase[],
   strength?: number,        // Default: 2
+  constraints?: string[],   // Optional constraint DSL strings
 ): CoverageReport
 ```
+
+When `constraints` is supplied, tuples that violate any constraint are **removed from the coverage universe entirely** — they do not count toward `totalTuples`, `coveredTuples`, or `uncovered`. This matches the generator's semantics, so analyzing a generated suite always yields `coverageRatio === 1.0`.
 
 ### CoverageReport
 

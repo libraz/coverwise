@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "model/constraint_ast.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
 
@@ -33,8 +34,15 @@ struct ClassCoverageReport {
 ///
 /// This validator enumerates all t-tuples from scratch (not using any
 /// generator internals) and checks each against the test suite.
+///
+/// @param constraints Optional constraint AST list. Tuples whose partial
+///                    assignment evaluates any constraint to kFalse are
+///                    excluded from the coverage universe entirely (they
+///                    do not count toward total_tuples or uncovered), matching
+///                    the generator's ExcludeInvalidTuples semantics.
 CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
-                                const std::vector<model::TestCase>& tests, uint32_t strength);
+                                const std::vector<model::TestCase>& tests, uint32_t strength,
+                                const std::vector<model::Constraint>& constraints = {});
 
 /// @brief Compute equivalence class coverage for a test suite.
 ///

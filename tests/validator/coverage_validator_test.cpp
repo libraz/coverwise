@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "model/constraint_ast.h"
+#include "model/constraint_parser.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
 
@@ -249,4 +251,40 @@ TEST(CoverageValidatorTest, ThreeWiseCoverage) {
   EXPECT_EQ(report.covered_tuples, 8u);
   EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
   EXPECT_TRUE(report.uncovered.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Constraint-aware coverage analysis
+// ---------------------------------------------------------------------------
+
+TEST(CoverageValidatorTest, ConstraintsExcludeTuplesFromUniverse) {
+  // Two parameters, 2 values each: 4 tuples total.
+  //   os       = {win, mac}
+  //   browser  = {chrome, ie}
+  // Constraint: IF os=mac THEN browser!=ie
+  //   -> excludes (os=mac, browser=ie) from the universe, leaving 3 valid tuples.
+  std::vector<Parameter> params = {
+      Parameter{"os", {"win", "mac"}},
+      Parameter{"browser", {"chrome", "ie"}},
+  };
+
+  auto parse = coverwise::model::ParseConstraint("IF os=mac THEN browser!=ie", params);
+  ASSERT_TRUE(parse.error.ok()) << parse.error.message << ": " << parse.error.detail;
+  std::vector<coverwise::model::Constraint> constraints;
+  constraints.push_back(std::move(parse.constraint));
+
+  // Provide 2 tests covering 2 of the 3 valid tuples.
+  //   {win, chrome} and {mac, chrome}
+  // Missing valid tuple: {win, ie}.
+  std::vector<TestCase> tests = {
+      TestCase{{0, 0}},  // win, chrome
+      TestCase{{1, 0}},  // mac, chrome
+  };
+
+  auto report = ValidateCoverage(params, tests, 2, constraints);
+
+  EXPECT_EQ(report.total_tuples, 3u);
+  EXPECT_EQ(report.covered_tuples, 2u);
+  ASSERT_EQ(report.uncovered.size(), 1u);
+  EXPECT_TRUE(UncoveredContains(report.uncovered, {"os=win", "browser=ie"}));
 }

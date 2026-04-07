@@ -33,6 +33,8 @@ import {
   extend as internalExtend,
   generate as internalGenerate,
 } from '../../src/ts/core/generator.js';
+import type { ConstraintNode } from '../../src/ts/model/constraint-ast.js';
+import { parseConstraint } from '../../src/ts/model/constraint-parser.js';
 import {
   annotateClassCoverage,
   validateCoverage as internalValidateCoverage,
@@ -144,12 +146,30 @@ export function analyzeCoverage(
   parameters: Parameter[],
   tests: TestCase[],
   strength?: number,
+  constraints?: string[],
 ): CoverageReport {
   validateParameters(parameters);
   const s = validateStrength(strength);
   const params = toInternalParams(parameters);
   const internalTests = tests.map((tc) => toInternalTestCase(tc, params));
-  const report = internalValidateCoverage(params, internalTests, s);
+
+  // Parse optional constraint expressions.
+  const parsedConstraints: ConstraintNode[] = [];
+  if (constraints && constraints.length > 0) {
+    for (const expr of constraints) {
+      const parseResult = parseConstraint(expr, params);
+      if (parseResult.error.code !== 0 || !parseResult.constraint) {
+        throw new Error(
+          `Invalid constraint "${expr}": ${parseResult.error.message}${
+            parseResult.error.detail ? ` — ${parseResult.error.detail}` : ''
+          }`,
+        );
+      }
+      parsedConstraints.push(parseResult.constraint);
+    }
+  }
+
+  const report = internalValidateCoverage(params, internalTests, s, parsedConstraints);
   const result = toPublicCoverageReport(report);
   // When there are no tuples, coverage is vacuously 1.0.
   if (result.totalTuples === 0) {
@@ -219,8 +239,13 @@ export class Coverwise {
   /**
    * Analyze t-wise coverage of an existing test suite.
    */
-  analyzeCoverage(parameters: Parameter[], tests: TestCase[], strength?: number): CoverageReport {
-    return analyzeCoverage(parameters, tests, strength);
+  analyzeCoverage(
+    parameters: Parameter[],
+    tests: TestCase[],
+    strength?: number,
+    constraints?: string[],
+  ): CoverageReport {
+    return analyzeCoverage(parameters, tests, strength, constraints);
   }
 
   /**

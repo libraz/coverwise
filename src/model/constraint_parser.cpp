@@ -235,8 +235,7 @@ TokenizeResult Tokenize(const std::string& expr) {
       if (j >= len) {
         return {{},
                 {Error::Code::kConstraintError,
-                 "Unterminated string literal starting at position " + std::to_string(start),
-                 ""}};
+                 "Unterminated string literal starting at position " + std::to_string(start), ""}};
       }
       std::string content = expr.substr(i + 1, j - i - 1);
       tokens.push_back({TokenType::kIdentifier, content, start});

@@ -197,6 +197,23 @@ describe('analyzeCoverage()', () => {
     // 2-wise for 2 params = 4 tuples
     expect(report.totalTuples).toBe(4);
   });
+
+  it('excludes constraint-invalid tuples from the coverage universe', () => {
+    const params: Parameter[] = [
+      { name: 'os', values: ['win', 'mac'] },
+      { name: 'browser', values: ['chrome', 'ie'] },
+    ];
+    // IF os=mac THEN browser!=ie -> removes (mac, ie). 3 valid tuples remain.
+    const tests: TestCase[] = [
+      { os: 'win', browser: 'chrome' },
+      { os: 'mac', browser: 'chrome' },
+    ];
+    const report = analyzeCoverage(params, tests, 2, ['IF os=mac THEN browser!=ie']);
+    expect(report.totalTuples).toBe(3);
+    expect(report.coveredTuples).toBe(2);
+    expect(report.uncovered).toHaveLength(1);
+    expect(report.uncovered[0].tuple).toEqual(expect.arrayContaining(['os=win', 'browser=ie']));
+  });
 });
 
 describe('extendTests()', () => {

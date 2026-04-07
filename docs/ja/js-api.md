@@ -185,7 +185,7 @@ interface ClassCoverage {
 }
 ```
 
-## `analyzeCoverage(parameters, tests, strength?)`
+## `analyzeCoverage(parameters, tests, strength?, constraints?)`
 
 既存テストスイートの t-wise カバレッジを分析します。ジェネレータとは独立しており、任意のテストセットを検証できます。
 
@@ -194,8 +194,11 @@ function analyzeCoverage(
   parameters: Parameter[],
   tests: TestCase[],
   strength?: number,        // デフォルト: 2
+  constraints?: string[],   // 制約 DSL 文字列(省略可)
 ): CoverageReport
 ```
+
+`constraints` を渡すと、制約に違反する tuple は **カバレッジ universe から完全に除外**されます(`totalTuples` / `coveredTuples` / `uncovered` のいずれにも計上されません)。これはジェネレータと同じセマンティクスで、生成済みテスト集合を解析すると常に `coverageRatio === 1.0` になります。
 
 ### CoverageReport
 

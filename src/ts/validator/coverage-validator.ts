@@ -1,7 +1,13 @@
 /// Independent coverage validation (does NOT depend on generator/core).
 
+import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
 import type { Parameter } from '../model/parameter.js';
-import type { GenerateResult, TestCase, UncoveredTuple } from '../model/test-case.js';
+import {
+  type GenerateResult,
+  type TestCase,
+  UNASSIGNED,
+  type UncoveredTuple,
+} from '../model/test-case.js';
 
 /** Coverage validation report with human-readable uncovered tuples. */
 export interface CoverageReport {
@@ -68,6 +74,7 @@ export function validateCoverage(
   params: Parameter[],
   tests: TestCase[],
   strength: number,
+  constraints: ConstraintNode[] = [],
 ): CoverageReport {
   const report: CoverageReport = {
     totalTuples: 0,
@@ -88,6 +95,9 @@ export function validateCoverage(
   // Step 1: Generate all C(n, strength) combinations of parameter indices.
   const combinations = generateCombinations(n, strength);
 
+  // Reusable assignment buffer for constraint evaluation.
+  const assignment = new Array<number>(n).fill(UNASSIGNED);
+
   for (const combo of combinations) {
     // Step 2: Enumerate all value tuples (cartesian product) for this combination.
     let numTuples = 1;
@@ -104,6 +114,27 @@ export function validateCoverage(
         const radix = params[combo[i]].size;
         valueIndices[i] = remainder % radix;
         remainder = Math.trunc(remainder / radix);
+      }
+
+      // Step 2b: Exclude constraint-invalid tuples from the universe entirely
+      // (matches CoverageEngine.excludeInvalidTuples).
+      if (constraints.length > 0) {
+        for (let i = 0; i < strength; ++i) {
+          assignment[combo[i]] = valueIndices[i];
+        }
+        let excluded = false;
+        for (const c of constraints) {
+          if (c.evaluate(assignment) === ConstraintResult.False) {
+            excluded = true;
+            break;
+          }
+        }
+        for (let i = 0; i < strength; ++i) {
+          assignment[combo[i]] = UNASSIGNED;
+        }
+        if (excluded) {
+          continue;
+        }
       }
 
       ++report.totalTuples;

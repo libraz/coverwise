@@ -89,7 +89,7 @@ const result = cw.generate({ parameters: [/* ... */] });
 | Method | Description |
 |--------|-------------|
 | `Coverwise.create()` | Create instance (loads WASM once) |
-| `cw.analyzeCoverage(params, tests, strength?)` | Measure t-wise coverage, list uncovered combinations |
+| `cw.analyzeCoverage(params, tests, strength?, constraints?)` | Measure t-wise coverage, list uncovered combinations (constraint-excluded tuples are removed from the universe) |
 | `cw.extendTests(existing, input)` | Add only the tests needed to close coverage gaps |
 | `cw.generate(input)` | Generate minimal covering array from scratch |
 | `cw.estimateModel(input)` | Preview model statistics |

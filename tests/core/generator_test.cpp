@@ -249,8 +249,7 @@ TEST(GeneratorTest, ConstraintsAndSubModelsCombined) {
   for (const auto& tc : result.tests) {
     bool is_mac = (tc.values[0] == 1);
     bool is_safari = (tc.values[1] == 2);
-    EXPECT_FALSE(is_mac && is_safari)
-        << "Constraint violation: os=mac, browser=safari";
+    EXPECT_FALSE(is_mac && is_safari) << "Constraint violation: os=mac, browser=safari";
   }
 
   // Independently validate pairwise coverage using the validator.

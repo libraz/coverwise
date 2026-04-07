@@ -49,10 +49,8 @@ void ValidateBenchmarkResult(const GenerateOptions& opts, const GenerateResult& 
   EXPECT_EQ(result.stats.covered_tuples, expected_tuples);
 
   // 2. Test count bounds
-  EXPECT_GE(result.tests.size(), min_tests)
-      << "Too few tests: expected at least " << min_tests;
-  EXPECT_LE(result.tests.size(), max_tests)
-      << "Too many tests: expected at most " << max_tests;
+  EXPECT_GE(result.tests.size(), min_tests) << "Too few tests: expected at least " << min_tests;
+  EXPECT_LE(result.tests.size(), max_tests) << "Too many tests: expected at most " << max_tests;
 
   // 3. Structural validity: every test case has all params, values in range
   for (size_t ti = 0; ti < result.tests.size(); ++ti) {
@@ -155,7 +153,8 @@ TEST(BenchmarkTest, Mixed_3pow4_2pow3) {
   GenerateOptions opts;
   // 4 params with 3 values + 3 params with 2 values
   for (uint32_t i = 0; i < 4; ++i) {
-    opts.parameters.emplace_back("A" + std::to_string(i), std::vector<std::string>{"v0", "v1", "v2"});
+    opts.parameters.emplace_back("A" + std::to_string(i),
+                                 std::vector<std::string>{"v0", "v1", "v2"});
   }
   for (uint32_t i = 0; i < 3; ++i) {
     opts.parameters.emplace_back("B" + std::to_string(i), std::vector<std::string>{"v0", "v1"});
@@ -175,7 +174,8 @@ TEST(BenchmarkTest, Mixed_5_333_2222) {
   opts.parameters.emplace_back("X0", std::vector<std::string>{"v0", "v1", "v2", "v3", "v4"});
   // 3 params with 3 values
   for (uint32_t i = 0; i < 3; ++i) {
-    opts.parameters.emplace_back("A" + std::to_string(i), std::vector<std::string>{"v0", "v1", "v2"});
+    opts.parameters.emplace_back("A" + std::to_string(i),
+                                 std::vector<std::string>{"v0", "v1", "v2"});
   }
   // 4 params with 2 values
   for (uint32_t i = 0; i < 4; ++i) {

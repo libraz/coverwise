@@ -49,7 +49,14 @@ export interface UncoveredTuple {
   tuple: string[];
   /** Parameter names involved. */
   params: string[];
-  /** Why this tuple is uncovered. */
+  /**
+   * Why this tuple is uncovered.
+   *
+   * Currently always `"never covered"` — tuples that are impossible due to
+   * constraints are removed from the coverage universe entirely (they do not
+   * appear here and are not counted in `totalTuples`), matching the
+   * generator's `excludeInvalidTuples` semantics.
+   */
   reason: string;
   /** Human-readable display string. */
   display: string;

@@ -50,6 +50,7 @@ interface WasmModule {
     params: Parameter[],
     tests: TestCase[],
     strength: number,
+    constraints?: string[],
   ): CoverageReport | { error: true; code?: string; message?: string };
   extendTests(
     existing: TestCase[],
@@ -151,9 +152,12 @@ export function analyzeCoverage(
   parameters: Parameter[],
   tests: TestCase[],
   strength?: number,
+  constraints?: string[],
 ): CoverageReport {
   const mod = getModule();
-  const result = checkResult<CoverageReport>(mod.analyzeCoverage(parameters, tests, strength ?? 2));
+  const result = checkResult<CoverageReport>(
+    mod.analyzeCoverage(parameters, tests, strength ?? 2, constraints ?? []),
+  );
   // When there are no tuples (e.g. fewer parameters than strength), coverage is vacuously 1.0.
   if (result.totalTuples === 0) {
     result.coverageRatio = 1.0;
@@ -225,9 +229,14 @@ export class Coverwise {
   /**
    * Analyze t-wise coverage of an existing test suite.
    */
-  analyzeCoverage(parameters: Parameter[], tests: TestCase[], strength?: number): CoverageReport {
+  analyzeCoverage(
+    parameters: Parameter[],
+    tests: TestCase[],
+    strength?: number,
+    constraints?: string[],
+  ): CoverageReport {
     const result = checkResult<CoverageReport>(
-      this.module.analyzeCoverage(parameters, tests, strength ?? 2),
+      this.module.analyzeCoverage(parameters, tests, strength ?? 2, constraints ?? []),
     );
     if (result.totalTuples === 0) {
       result.coverageRatio = 1.0;

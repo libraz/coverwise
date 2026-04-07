@@ -453,11 +453,26 @@ val wasmGenerate(val input) {
 /// @param js_tests JS array of test case objects (param_name -> value_string).
 /// @param strength Interaction strength (2 = pairwise).
 /// @return JS object with: totalTuples, coveredTuples, coverageRatio, uncovered.
-val wasmAnalyzeCoverage(val js_params, val js_tests, uint32_t strength) {
+val wasmAnalyzeCoverage(val js_params, val js_tests, uint32_t strength, val js_constraints) {
   try {
     auto params = ParseParameters(js_params);
     auto tests = ParseTestCases(js_tests, params);
-    auto report = coverwise::validator::ValidateCoverage(params, tests, strength);
+
+    // Parse optional constraint expressions. Mirrors ParseGenerateOptions.
+    std::vector<coverwise::model::Constraint> constraints;
+    if (!js_constraints.isUndefined() && !js_constraints.isNull()) {
+      uint32_t count = js_constraints["length"].as<uint32_t>();
+      for (uint32_t i = 0; i < count; ++i) {
+        std::string expr = js_constraints[i].as<std::string>();
+        auto parse_result = coverwise::model::ParseConstraint(expr, params);
+        if (!parse_result.error.ok()) {
+          return MakeError(parse_result.error.message + ": " + parse_result.error.detail);
+        }
+        constraints.push_back(std::move(parse_result.constraint));
+      }
+    }
+
+    auto report = coverwise::validator::ValidateCoverage(params, tests, strength, constraints);
     return CoverageReportToJS(report);
   } catch (const std::exception& e) {
     return MakeError(e.what());

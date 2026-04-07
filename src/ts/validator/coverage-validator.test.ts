@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parseConstraint } from '../model/constraint-parser.js';
 import { Parameter } from '../model/parameter.js';
 import type { GenerateResult, TestCase } from '../model/test-case.js';
 import { createGenerateResult } from '../model/test-case.js';
@@ -137,6 +138,35 @@ describe('validateCoverage', () => {
       expect(u.params).toContain('browser');
       // reason should be present
       expect(u.reason).toBe('never covered');
+    }
+  });
+
+  it('excludes constraint-invalid tuples from the universe', () => {
+    // os = {win, mac}, browser = {chrome, ie}
+    // Constraint: IF os=mac THEN browser!=ie
+    //   removes (os=mac, browser=ie) from the universe -> 3 valid tuples.
+    const params = [
+      new Parameter('os', ['win', 'mac']),
+      new Parameter('browser', ['chrome', 'ie']),
+    ];
+    const parse = parseConstraint('IF os=mac THEN browser!=ie', params);
+    expect(parse.error.code).toBe(0);
+    expect(parse.constraint).toBeDefined();
+
+    // Cover 2 of the 3 valid tuples; (win, ie) is missing.
+    const tests: TestCase[] = [
+      { values: [0, 0] }, // win, chrome
+      { values: [1, 0] }, // mac, chrome
+    ];
+
+    const report = validateCoverage(params, tests, 2, [parse.constraint!]);
+    expect(report.totalTuples).toBe(3);
+    expect(report.coveredTuples).toBe(2);
+    expect(report.uncovered).toHaveLength(1);
+    expect(report.uncovered[0].tuple).toEqual(expect.arrayContaining(['os=win', 'browser=ie']));
+    // The excluded tuple must NOT appear as uncovered.
+    for (const u of report.uncovered) {
+      expect(u.tuple).not.toEqual(expect.arrayContaining(['os=mac', 'browser=ie']));
     }
   });
 });

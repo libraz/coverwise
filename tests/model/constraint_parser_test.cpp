@@ -1120,9 +1120,7 @@ TEST(ConstraintParserTest, QuotedValueWithSpaces) {
 TEST(ConstraintParserTest, JapaneseParameterNames) {
   std::vector<Parameter> params = {
       {"OS", {"win", "mac", "linux"}, {}},
-      {"\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6",
-       {"chrome", "safari", "edge"},
-       {}},
+      {"\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", {"chrome", "safari", "edge"}, {}},
   };
   auto result = ParseConstraint(
       "IF OS = mac THEN \xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6 != edge", params);
@@ -1145,8 +1143,7 @@ TEST(ConstraintParserTest, JapaneseValues) {
        {}},
       {"\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6",
        {"\xe3\x82\xaf\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa0",
-        "\xe3\x82\xb5\xe3\x83\x95\xe3\x82\xa1\xe3\x83\xaa",
-        "\xe3\x82\xa8\xe3\x83\x83\xe3\x82\xb8"},
+        "\xe3\x82\xb5\xe3\x83\x95\xe3\x82\xa1\xe3\x83\xaa", "\xe3\x82\xa8\xe3\x83\x83\xe3\x82\xb8"},
        {}},
   };
   auto result = ParseConstraint(
@@ -1169,8 +1166,7 @@ TEST(ConstraintParserTest, QuotedJapaneseValues) {
         "\xe3\x83\x9e\xe3\x83\x83\xe3\x82\xaf"},
        {}},
       {"\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6",
-       {"\xe3\x82\xaf\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa0",
-        "\xe3\x82\xa8\xe3\x83\x83\xe3\x82\xb8"},
+       {"\xe3\x82\xaf\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa0", "\xe3\x82\xa8\xe3\x83\x83\xe3\x82\xb8"},
        {}},
   };
   auto result = ParseConstraint(
@@ -1190,13 +1186,10 @@ TEST(ConstraintParserTest, QuotedJapaneseValues) {
 
 TEST(ConstraintParserTest, EmojiParameterNames) {
   std::vector<Parameter> params = {
-      {"\xf0\x9f\x96\xa5\xef\xb8\x8f",
-       {"\xf0\x9f\x92\xbb", "\xf0\x9f\x96\xa5\xef\xb8\x8f"},
-       {}},
+      {"\xf0\x9f\x96\xa5\xef\xb8\x8f", {"\xf0\x9f\x92\xbb", "\xf0\x9f\x96\xa5\xef\xb8\x8f"}, {}},
       {"\xf0\x9f\x8c\x90", {"\xf0\x9f\x94\xa5", "\xf0\x9f\xa7\x8a"}, {}},
   };
-  auto result =
-      ParseConstraint("\xf0\x9f\x96\xa5\xef\xb8\x8f = \xf0\x9f\x92\xbb", params);
+  auto result = ParseConstraint("\xf0\x9f\x96\xa5\xef\xb8\x8f = \xf0\x9f\x92\xbb", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
 
   std::vector<uint32_t> a1 = {0, 0};  // laptop, fire
@@ -1209,12 +1202,9 @@ TEST(ConstraintParserTest, EmojiParameterNames) {
 
 TEST(ConstraintParserTest, InOperatorWithJapaneseValues) {
   std::vector<Parameter> params = {
-      {"\xe8\x89\xb2",
-       {"\xe8\xb5\xa4", "\xe9\x9d\x92", "\xe7\xb7\x91", "\xe9\xbb\x84"},
-       {}},
+      {"\xe8\x89\xb2", {"\xe8\xb5\xa4", "\xe9\x9d\x92", "\xe7\xb7\x91", "\xe9\xbb\x84"}, {}},
   };
-  auto result =
-      ParseConstraint("\xe8\x89\xb2 IN {\xe8\xb5\xa4, \xe9\x9d\x92}", params);
+  auto result = ParseConstraint("\xe8\x89\xb2 IN {\xe8\xb5\xa4, \xe9\x9d\x92}", params);
   ASSERT_TRUE(result.error.ok()) << result.error.message;
 
   std::vector<uint32_t> a1 = {0};  // 赤
