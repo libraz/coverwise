@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -192,6 +193,48 @@ TEST(GeneratorTest, SeedTestsIncluded) {
   }
   EXPECT_TRUE(found_seed1) << "Seed test {0,0,0} not found in output";
   EXPECT_TRUE(found_seed2) << "Seed test {1,1,1} not found in output";
+}
+
+TEST(GeneratorTest, InvalidAndConstraintViolatingSeedsIgnored) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win", "mac"}, {}},
+      {"browser", {"chrome", "ie"}, {false, true}},
+  };
+  opts.constraint_expressions = {"IF os=mac THEN browser!=chrome"};
+  opts.strength = 2;
+  opts.seed = 42;
+  opts.seeds = {TestCase{{0, 1}}, TestCase{{1, 0}}};
+
+  auto result = Generate(opts);
+
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  for (const auto& tc : result.tests) {
+    EXPECT_NE(tc.values[1], 1u) << "Positive test contains invalid browser=ie";
+    EXPECT_FALSE(tc.values[0] == 1u && tc.values[1] == 0u)
+        << "Positive test violates os=mac constraint";
+  }
+  ASSERT_GE(result.warnings.size(), 2u);
+  EXPECT_EQ(result.warnings[0], "Seed test 0 ignored: value browser=ie is marked invalid");
+  EXPECT_EQ(result.warnings[1], "Seed test 1 ignored: violates a constraint");
+}
+
+TEST(GeneratorTest, DropsSeedsBeyondMaxTests) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"a", {"0", "1"}, {}},
+      {"b", {"0", "1"}, {}},
+  };
+  opts.max_tests = 1;
+  opts.seeds = {TestCase{{0, 0}}, TestCase{{1, 1}}};
+
+  auto result = Generate(opts);
+
+  ASSERT_EQ(result.tests.size(), 1u);
+  EXPECT_EQ(result.tests[0].values, (std::vector<uint32_t>{0, 0}));
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Seed test count (2) exceeds max_tests (1); some seeds were dropped"),
+            result.warnings.end());
 }
 
 TEST(GeneratorTest, SubModelHigherStrength) {

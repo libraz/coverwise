@@ -3,7 +3,7 @@
 
 import { greedyConstruct, type ScoreFn } from '../algo/greedy.js';
 import { expandBoundaryValues } from '../model/boundary.js';
-import type { ConstraintNode } from '../model/constraint-ast.js';
+import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
 import { parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode } from '../model/error.js';
 import {
@@ -83,6 +83,35 @@ function buildValidOnlyMask(params: Parameter[]): boolean[][] {
     }
   }
   return mask;
+}
+
+/// Validate that a seed can participate in positive coverage.
+function validatePositiveSeed(
+  seed: TestCase,
+  params: Parameter[],
+  constraints: readonly ConstraintNode[],
+): string {
+  if (seed.values.length < params.length) {
+    return `expected ${params.length} value(s), got ${seed.values.length}`;
+  }
+
+  for (let pi = 0; pi < params.length; ++pi) {
+    const vi = seed.values[pi];
+    if (!Number.isInteger(vi) || vi < 0 || vi >= params[pi].size) {
+      return `value index ${vi} is out of range for parameter ${params[pi].name}`;
+    }
+    if (params[pi].isInvalid(vi)) {
+      return `value ${params[pi].name}=${params[pi].values[vi]} is marked invalid`;
+    }
+  }
+
+  for (const constraint of constraints) {
+    if (constraint.evaluate(seed.values) === ConstraintResult.False) {
+      return 'violates a constraint';
+    }
+  }
+
+  return '';
 }
 
 /// Build an allowedValues mask for negative test generation.
@@ -265,7 +294,11 @@ export function generate(options: GenerateOptions): GenerateResult {
       result.warnings.push(`${parseResult.error.message}: ${parseResult.error.detail}`);
       return result;
     }
-    constraints.push(parseResult.constraint!);
+    if (parseResult.constraint == null) {
+      result.warnings.push('Constraint parser returned no constraint');
+      return result;
+    }
+    constraints.push(parseResult.constraint);
   }
 
   // Exclude tuples that are inherently invalid due to constraints.
@@ -294,7 +327,18 @@ export function generate(options: GenerateOptions): GenerateResult {
   const rng = new Rng(options.seed);
 
   // Pre-load seed tests into all engines.
-  for (const seedTest of options.seeds) {
+  let droppedForMaxTests = false;
+  for (let si = 0; si < options.seeds.length; ++si) {
+    const seedTest = options.seeds[si];
+    if (options.maxTests > 0 && result.tests.length >= options.maxTests) {
+      droppedForMaxTests = true;
+      break;
+    }
+    const seedError = validatePositiveSeed(seedTest, params, constraints);
+    if (seedError.length > 0) {
+      result.warnings.push(`Seed test ${si} ignored: ${seedError}`);
+      continue;
+    }
     coverage.addTestCase(seedTest);
     for (const eng of subEngines) {
       eng.addTestCase(seedTest);
@@ -302,10 +346,9 @@ export function generate(options: GenerateOptions): GenerateResult {
     result.tests.push(seedTest);
   }
 
-  // Warn if seed tests already exceed maxTests.
-  if (options.maxTests > 0 && result.tests.length >= options.maxTests) {
+  if (droppedForMaxTests) {
     result.warnings.push(
-      `Seed tests (${result.tests.length}) already meet or exceed maxTests (${options.maxTests})`,
+      `Seed test count (${options.seeds.length}) exceeds maxTests (${options.maxTests}); some seeds were dropped`,
     );
   }
 

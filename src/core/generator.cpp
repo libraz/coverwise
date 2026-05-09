@@ -81,6 +81,35 @@ std::vector<std::vector<bool>> BuildValidOnlyMask(const std::vector<model::Param
   return mask;
 }
 
+/// @brief Validate that a seed can participate in positive coverage.
+std::string ValidatePositiveSeed(const model::TestCase& seed,
+                                 const std::vector<model::Parameter>& params,
+                                 const std::vector<model::Constraint>& constraints) {
+  if (seed.values.size() < params.size()) {
+    return "expected " + std::to_string(params.size()) + " value(s), got " +
+           std::to_string(seed.values.size());
+  }
+
+  for (uint32_t pi = 0; pi < static_cast<uint32_t>(params.size()); ++pi) {
+    uint32_t vi = seed.values[pi];
+    if (vi >= params[pi].size()) {
+      return "value index " + std::to_string(vi) + " is out of range for parameter " +
+             params[pi].name;
+    }
+    if (params[pi].is_invalid(vi)) {
+      return "value " + params[pi].name + "=" + params[pi].values[vi] + " is marked invalid";
+    }
+  }
+
+  for (const auto& constraint : constraints) {
+    if (constraint->Evaluate(seed.values) == model::ConstraintResult::kFalse) {
+      return "violates a constraint";
+    }
+  }
+
+  return {};
+}
+
 /// @brief Build an allowed_values mask for negative test generation.
 ///
 /// The fixed parameter is allowed only at the given invalid value index.
@@ -266,18 +295,28 @@ model::GenerateResult Generate(const GenerateOptions& options) {
   util::Rng rng(opts.seed);
 
   // Pre-load seed tests into all engines.
-  for (const auto& seed_test : opts.seeds) {
+  bool dropped_for_max_tests = false;
+  for (size_t si = 0; si < opts.seeds.size(); ++si) {
+    const auto& seed_test = opts.seeds[si];
     if (opts.max_tests > 0 && result.tests.size() >= static_cast<size_t>(opts.max_tests)) {
-      result.warnings.push_back("Seed test count (" + std::to_string(opts.seeds.size()) +
-                                ") exceeds max_tests (" + std::to_string(opts.max_tests) +
-                                "); some seeds were dropped");
+      dropped_for_max_tests = true;
       break;
+    }
+    auto seed_error = ValidatePositiveSeed(seed_test, opts.parameters, constraints);
+    if (!seed_error.empty()) {
+      result.warnings.push_back("Seed test " + std::to_string(si) + " ignored: " + seed_error);
+      continue;
     }
     coverage.AddTestCase(seed_test);
     for (auto& eng : sub_engines) {
       eng.AddTestCase(seed_test);
     }
     result.tests.push_back(seed_test);
+  }
+  if (dropped_for_max_tests) {
+    result.warnings.push_back("Seed test count (" + std::to_string(opts.seeds.size()) +
+                              ") exceeds max_tests (" + std::to_string(opts.max_tests) +
+                              "); some seeds were dropped");
   }
 
   // Scoring lambdas: avoid std::function wrapper on the hot path.

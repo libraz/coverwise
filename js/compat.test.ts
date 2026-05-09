@@ -227,6 +227,16 @@ const scenarios: Array<{ name: string; input: GenerateInput }> = [
     },
   },
   {
+    name: 'with invalid values',
+    input: {
+      parameters: [
+        { name: 'browser', values: ['chrome', 'firefox', { value: 'ie6', invalid: true }] },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+      seed: 42,
+    },
+  },
+  {
     name: 'with sub-models',
     input: {
       parameters: [
@@ -321,6 +331,7 @@ describe('WASM / TS compatibility', () => {
         expect(tsResult.stats.totalTuples).toBe(wasmResult.stats.totalTuples);
         expect(tsResult.stats.coveredTuples).toBe(wasmResult.stats.coveredTuples);
         expect(tsResult.uncovered.length).toBe(wasmResult.uncovered.length);
+        expect(tsResult.negativeTests?.length ?? 0).toBe(wasmResult.negativeTests?.length ?? 0);
         // Note: tests.length may differ between engines because the greedy
         // algorithm's RNG produces different value orderings in C++ vs TS,
         // which can lead to different numbers of tests while still achieving

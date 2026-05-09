@@ -10,7 +10,9 @@
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -49,6 +51,23 @@ std::string JsValueToString(val item) {
   }
   // Fallback: use JS String() conversion
   return val::global("String").call<std::string>("call", val::null(), item);
+}
+
+/// @brief Parse a JS number as a uint32 with public API validation.
+uint32_t ParseUint32Option(val input, const char* field, bool allow_zero) {
+  val raw = input[field];
+  if (raw.typeOf().as<std::string>() != "number") {
+    throw std::runtime_error(std::string("Invalid ") + field + ": must be a number");
+  }
+  double d = raw.as<double>();
+  if (!std::isfinite(d) || std::floor(d) != d || d < 0.0 ||
+      d > static_cast<double>(std::numeric_limits<uint32_t>::max())) {
+    throw std::runtime_error(std::string("Invalid ") + field + ": must be a non-negative integer");
+  }
+  if (!allow_zero && d == 0.0) {
+    throw std::runtime_error(std::string("Invalid ") + field + ": must be a positive integer");
+  }
+  return static_cast<uint32_t>(d);
 }
 
 /// @brief Parse a single JS parameter object into a C++ Parameter.
@@ -227,7 +246,7 @@ coverwise::model::GenerateOptions ParseGenerateOptions(val input) {
 
   // Strength (default 2)
   if (input.hasOwnProperty("strength")) {
-    opts.strength = input["strength"].as<uint32_t>();
+    opts.strength = ParseUint32Option(input, "strength", false);
   }
 
   // Seed (default 0)
@@ -238,7 +257,7 @@ coverwise::model::GenerateOptions ParseGenerateOptions(val input) {
 
   // Max tests (default 0 = no limit)
   if (input.hasOwnProperty("maxTests")) {
-    opts.max_tests = input["maxTests"].as<uint32_t>();
+    opts.max_tests = ParseUint32Option(input, "maxTests", true);
   }
 
   // Constraint expressions (strings)

@@ -101,6 +101,49 @@ function getModule(): WasmModule {
   return wasmModule;
 }
 
+// --- Input Validation ---
+
+function validateStrength(strength: unknown): number {
+  if (strength === undefined || strength === null) {
+    return 2;
+  }
+  if (typeof strength !== 'number' || !Number.isInteger(strength) || strength <= 0) {
+    throw new Error(`Invalid strength: ${String(strength)}. Must be a positive integer.`);
+  }
+  return strength;
+}
+
+function validateMaxTests(maxTests: unknown): void {
+  if (maxTests === undefined || maxTests === null) {
+    return;
+  }
+  if (typeof maxTests !== 'number' || !Number.isInteger(maxTests) || maxTests < 0) {
+    throw new Error(`Invalid maxTests: ${String(maxTests)}. Must be a non-negative integer.`);
+  }
+}
+
+function validateSeed(seed: unknown): void {
+  if (seed === undefined || seed === null) {
+    return;
+  }
+  if (typeof seed !== 'number' || !Number.isFinite(seed)) {
+    throw new Error(`Invalid seed: ${String(seed)}. Must be a finite number.`);
+  }
+}
+
+function validateParameters(parameters: unknown): void {
+  if (!Array.isArray(parameters)) {
+    throw new Error('Invalid parameters: must be an array.');
+  }
+}
+
+function validateGenerateInput(input: GenerateInput): void {
+  validateParameters(input.parameters);
+  validateStrength(input.strength);
+  validateMaxTests(input.maxTests);
+  validateSeed(input.seed);
+}
+
 // --- Result Checking ---
 
 function checkResult<T>(result: unknown): T {
@@ -131,6 +174,7 @@ function checkResult<T>(result: unknown): T {
  * // result.coverage: 1.0
  */
 export function generate(input: GenerateInput): GenerateResult {
+  validateGenerateInput(input);
   const mod = getModule();
   const result = checkResult<GenerateResult>(mod.generate(input));
   result.negativeTests = result.negativeTests ?? [];
@@ -154,9 +198,11 @@ export function analyzeCoverage(
   strength?: number,
   constraints?: string[],
 ): CoverageReport {
+  validateParameters(parameters);
+  const s = validateStrength(strength);
   const mod = getModule();
   const result = checkResult<CoverageReport>(
-    mod.analyzeCoverage(parameters, tests, strength ?? 2, constraints ?? []),
+    mod.analyzeCoverage(parameters, tests, s, constraints ?? []),
   );
   // When there are no tuples (e.g. fewer parameters than strength), coverage is vacuously 1.0.
   if (result.totalTuples === 0) {
@@ -172,6 +218,7 @@ export function analyzeCoverage(
  * Only "strict" mode is supported (existing tests are kept as-is).
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
+  validateGenerateInput(input);
   const mod = getModule();
   const result = checkResult<GenerateResult>(mod.extendTests(existing, input));
   result.negativeTests = result.negativeTests ?? [];
@@ -182,6 +229,7 @@ export function extendTests(existing: TestCase[], input: ExtendInput): GenerateR
  * Get model statistics without running generation.
  */
 export function estimateModel(input: GenerateInput): ModelStats {
+  validateGenerateInput(input);
   const mod = getModule();
   const result = checkResult<ModelStats>(mod.estimateModel(input));
   return result;
@@ -214,13 +262,14 @@ export class Coverwise {
    */
   static async create(): Promise<Coverwise> {
     await init();
-    return new Coverwise(wasmModule!);
+    return new Coverwise(getModule());
   }
 
   /**
    * Generate a covering array. One function, sensible defaults.
    */
   generate(input: GenerateInput): GenerateResult {
+    validateGenerateInput(input);
     const result = checkResult<GenerateResult>(this.module.generate(input));
     result.negativeTests = result.negativeTests ?? [];
     return result;
@@ -235,8 +284,10 @@ export class Coverwise {
     strength?: number,
     constraints?: string[],
   ): CoverageReport {
+    validateParameters(parameters);
+    const s = validateStrength(strength);
     const result = checkResult<CoverageReport>(
-      this.module.analyzeCoverage(parameters, tests, strength ?? 2, constraints ?? []),
+      this.module.analyzeCoverage(parameters, tests, s, constraints ?? []),
     );
     if (result.totalTuples === 0) {
       result.coverageRatio = 1.0;
@@ -248,6 +299,7 @@ export class Coverwise {
    * Extend an existing test suite with additional tests to improve coverage.
    */
   extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
+    validateGenerateInput(input);
     const result = checkResult<GenerateResult>(this.module.extendTests(existing, input));
     result.negativeTests = result.negativeTests ?? [];
     return result;
@@ -257,6 +309,7 @@ export class Coverwise {
    * Get model statistics without running generation.
    */
   estimateModel(input: GenerateInput): ModelStats {
+    validateGenerateInput(input);
     return checkResult<ModelStats>(this.module.estimateModel(input));
   }
 }

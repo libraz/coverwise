@@ -108,7 +108,11 @@ export function toInternalTestCase(
     const paramName = params[i].name;
     if (Object.hasOwn(tc, paramName)) {
       const valStr = valueToString(tc[paramName]);
-      values[i] = params[i].findValueIndex(valStr);
+      const idx = params[i].findValueIndex(valStr);
+      if (idx === UNASSIGNED) {
+        throw new Error(`Unknown value '${valStr}' for parameter '${paramName}'`);
+      }
+      values[i] = idx;
     }
   }
   return { values };
@@ -147,7 +151,11 @@ export function toInternalOptions(
   const seeds = (input.seeds ?? []).map((tc) => toInternalTestCase(tc, params));
 
   return createGenerateOptions({
-    parameters: params.map((p) => ({ name: p.name, values: p.values })),
+    parameters: params.map((p) => ({
+      name: p.name,
+      values: p.values,
+      ...(p.hasInvalidValues ? { invalid: p.invalid } : {}),
+    })),
     constraintExpressions: input.constraints ?? [],
     strength: input.strength ?? 2,
     seed: input.seed ?? 0,

@@ -74,6 +74,28 @@ describe('coverwise WASM', () => {
       expect(result.uncovered.length).toBeGreaterThan(0);
     });
 
+    it('rejects invalid numeric options', () => {
+      const input = {
+        parameters: [
+          { name: 'a', values: ['1', '2'] },
+          { name: 'b', values: ['1', '2'] },
+        ],
+      };
+      const expectInvalid = (fn: () => unknown, message: RegExp) => {
+        try {
+          fn();
+          throw new Error('expected function to throw');
+        } catch (err) {
+          expect((err as { message?: string }).message ?? '').toMatch(message);
+        }
+      };
+
+      expectInvalid(() => generate({ ...input, strength: 0 }), /Invalid strength/);
+      expectInvalid(() => generate({ ...input, strength: 1.5 }), /Invalid strength/);
+      expectInvalid(() => generate({ ...input, maxTests: -1 }), /Invalid maxTests/);
+      expectInvalid(() => generate({ ...input, maxTests: 1.5 }), /Invalid maxTests/);
+    });
+
     it('supports weights', () => {
       const result = generate({
         parameters: [

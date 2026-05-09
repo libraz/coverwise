@@ -89,8 +89,8 @@ function validateSeed(seed: unknown): void {
 }
 
 function validateParameters(parameters: unknown): void {
-  if (!Array.isArray(parameters) || parameters.length === 0) {
-    throw new Error('Invalid parameters: must be a non-empty array.');
+  if (!Array.isArray(parameters)) {
+    throw new Error('Invalid parameters: must be an array.');
   }
 }
 
@@ -201,6 +201,7 @@ export function extendTests(existing: TestCase[], input: ExtendInput): GenerateR
  * Get model statistics without running generation.
  */
 export function estimateModel(input: GenerateInput): ModelStats {
+  validateGenerateInput(input);
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);
   const stats = internalEstimateModel(opts);

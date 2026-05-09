@@ -154,6 +154,51 @@ describe('generate', () => {
     expect(result.tests[1].values).toEqual([1, 1]);
   });
 
+  it('does not count invalid or constraint-violating seeds as positive coverage', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'os', values: ['win', 'mac'] },
+        { name: 'browser', values: ['chrome', 'ie'], invalid: [false, true] },
+      ],
+      constraintExpressions: ['IF os = mac THEN browser != chrome'],
+      strength: 2,
+      seed: 42,
+      seeds: [
+        { values: [0, 1] }, // invalid browser value
+        { values: [1, 0] }, // violates constraint
+      ],
+    });
+
+    const result = generate(opts);
+
+    expect(result.coverage).toBe(1.0);
+    expect(result.tests.every((tc) => tc.values[1] !== 1)).toBe(true);
+    expect(result.tests.every((tc) => !(tc.values[0] === 1 && tc.values[1] === 0))).toBe(true);
+    expect(result.warnings).toEqual([
+      'Seed test 0 ignored: value browser=ie is marked invalid',
+      'Seed test 1 ignored: violates a constraint',
+    ]);
+  });
+
+  it('drops seed tests beyond maxTests', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'a', values: ['0', '1'] },
+        { name: 'b', values: ['0', '1'] },
+      ],
+      maxTests: 1,
+      seeds: [{ values: [0, 0] }, { values: [1, 1] }],
+    });
+
+    const result = generate(opts);
+
+    expect(result.tests).toHaveLength(1);
+    expect(result.tests[0].values).toEqual([0, 0]);
+    expect(result.warnings).toContain(
+      'Seed test count (2) exceeds maxTests (1); some seeds were dropped',
+    );
+  });
+
   it('handles sub-models with mixed strength', () => {
     const opts = createGenerateOptions({
       parameters: [
