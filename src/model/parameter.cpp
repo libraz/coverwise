@@ -114,5 +114,29 @@ std::vector<std::string> Parameter::unique_classes() const {
   return result;
 }
 
+Error ValidateParameters(const std::vector<Parameter>& params) {
+  std::unordered_set<std::string> seen_names;
+  for (const auto& p : params) {
+    if (p.name.empty()) {
+      return {Error::Code::kInvalidInput, "Parameter name must be a non-empty string", ""};
+    }
+    if (!seen_names.insert(p.name).second) {
+      return {Error::Code::kInvalidInput, "Duplicate parameter name '" + p.name + "'", ""};
+    }
+    if (p.values.empty()) {
+      return {Error::Code::kInvalidInput,
+              "Parameter '" + p.name + "' must have at least one value", ""};
+    }
+    std::unordered_set<std::string> seen_values;
+    for (const auto& v : p.values) {
+      if (!seen_values.insert(v).second) {
+        return {Error::Code::kInvalidInput,
+                "Duplicate value '" + v + "' in parameter '" + p.name + "'", ""};
+      }
+    }
+  }
+  return {};
+}
+
 }  // namespace model
 }  // namespace coverwise

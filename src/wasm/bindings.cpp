@@ -18,6 +18,8 @@
 
 #include "core/generator.h"
 #include "model/constraint_parser.h"
+#include "model/error.h"
+#include "model/parameter.h"
 #include "validator/coverage_validator.h"
 
 using namespace emscripten;
@@ -76,9 +78,22 @@ uint32_t ParseUint32Option(val input, const char* field, bool allow_zero) {
 ///   - Object with aliases: { value: "chromium", aliases: ["chrome", "edge"] }
 coverwise::model::Parameter ParseParameter(val js_param) {
   coverwise::model::Parameter param;
-  param.name = js_param["name"].as<std::string>();
+
+  // Validate shape BEFORE dereferencing. Under DISABLE_EXCEPTION_CATCHING a raw
+  // emscripten type error would abort the module and poison the singleton, so we
+  // throw a std::runtime_error (caught at the boundary → INVALID_INPUT) instead.
+  val js_name = js_param["name"];
+  if (js_name.typeOf().as<std::string>() != "string") {
+    throw std::runtime_error("Parameter name must be a non-empty string");
+  }
+  param.name = js_name.as<std::string>();
 
   val js_values = js_param["values"];
+  // Array.isArray guards against a string (indexable via .length, which would be
+  // silently iterated char-by-char) or any non-array value.
+  if (!val::global("Array").call<bool>("isArray", js_values)) {
+    throw std::runtime_error("Parameter '" + param.name + "' must have at least one value");
+  }
   uint32_t count = js_values["length"].as<uint32_t>();
 
   std::vector<bool> invalid_flags;
@@ -129,11 +144,20 @@ coverwise::model::Parameter ParseParameter(val js_param) {
 
 /// @brief Parse a JS parameters array into a C++ vector.
 std::vector<coverwise::model::Parameter> ParseParameters(val js_params) {
+  if (!val::global("Array").call<bool>("isArray", js_params)) {
+    throw std::runtime_error("Invalid parameters: must be an array.");
+  }
   std::vector<coverwise::model::Parameter> params;
   uint32_t count = js_params["length"].as<uint32_t>();
   params.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     params.push_back(ParseParameter(js_params[i]));
+  }
+  // Semantic checks (duplicate names/values, empty values) shared with the
+  // pure-JS surface and the CLI via the model layer.
+  auto err = coverwise::model::ValidateParameters(params);
+  if (!err.ok()) {
+    throw std::runtime_error(err.message);
   }
   return params;
 }
@@ -175,6 +199,9 @@ coverwise::model::TestCase ParseTestCase(val js_test,
 /// @brief Parse a JS array of test case objects into C++ TestCase vector.
 std::vector<coverwise::model::TestCase> ParseTestCases(
     val js_tests, const std::vector<coverwise::model::Parameter>& params) {
+  if (!val::global("Array").call<bool>("isArray", js_tests)) {
+    throw std::runtime_error("Invalid tests: must be an array.");
+  }
   std::vector<coverwise::model::TestCase> tests;
   uint32_t count = js_tests["length"].as<uint32_t>();
   tests.reserve(count);
@@ -434,13 +461,26 @@ val ModelStatsToJS(const coverwise::model::ModelStats& stats) {
   return obj;
 }
 
-/// @brief Create a JS error object.
+/// @brief Create a JS error object carrying a numeric model::Error::Code.
+///
+/// The JS wrapper maps this number to a canonical string code. The default 3
+/// (kInvalidInput) covers exceptions thrown at the JS<->C++ boundary (parse and
+/// shape errors); structured core failures pass their real code explicitly.
 val MakeError(const std::string& message, int code = 3) {
   val obj = val::object();
   obj.set("error", true);
   obj.set("code", code);
   obj.set("message", val(message));
   return obj;
+}
+
+/// @brief Build a JS error object from a structured core Error.
+val MakeError(const coverwise::model::Error& error) {
+  std::string message = error.message;
+  if (!error.detail.empty()) {
+    message += ": " + error.detail;
+  }
+  return MakeError(message, static_cast<int>(error.code));
 }
 
 // ---------------------------------------------------------------------------
@@ -458,13 +498,17 @@ val wasmGenerate(val input) {
     auto opts = ParseGenerateOptions(input);
     auto result = coverwise::core::Generate(opts);
 
+    // Core reports early-exit failures (e.g. constraint parse errors) via
+    // result.error rather than throwing. Propagate the real code to JS.
+    if (!result.error.ok()) {
+      return MakeError(result.error);
+    }
+
     // Annotate equivalence class coverage if any parameter has classes defined.
     coverwise::validator::AnnotateClassCoverage(result, opts.parameters, opts.strength);
 
     return GenerateResultToJS(result, opts.parameters, opts.strength);
   } catch (const std::exception& e) {
-    // TODO: Map specific exception types to appropriate error codes once
-    // the C++ layer throws typed exceptions (e.g., ConstraintError).
     return MakeError(e.what());
   }
 }
@@ -488,7 +532,7 @@ val wasmAnalyzeCoverage(val js_params, val js_tests, uint32_t strength, val js_c
         std::string expr = js_constraints[i].as<std::string>();
         auto parse_result = coverwise::model::ParseConstraint(expr, params);
         if (!parse_result.error.ok()) {
-          return MakeError(parse_result.error.message + ": " + parse_result.error.detail);
+          return MakeError(parse_result.error);
         }
         constraints.push_back(std::move(parse_result.constraint));
       }
@@ -511,9 +555,11 @@ val wasmExtendTests(val js_existing, val input) {
     auto opts = ParseGenerateOptions(input);
     auto existing = ParseTestCases(js_existing, opts.parameters);
     auto result = coverwise::core::Extend(existing, opts);
+    if (!result.error.ok()) {
+      return MakeError(result.error);
+    }
     return GenerateResultToJS(result, opts.parameters, opts.strength);
   } catch (const std::exception& e) {
-    // TODO: Map specific exception types to appropriate error codes.
     return MakeError(e.what());
   }
 }

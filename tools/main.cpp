@@ -26,6 +26,8 @@
 
 #include "core/generator.h"
 #include "model/boundary.h"
+#include "model/constraint_ast.h"
+#include "model/constraint_parser.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
 #include "util/string_util.h"
@@ -731,6 +733,78 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
   return true;
 }
 
+/// @brief Parse a JSON array of constraint strings into expression strings.
+/// @return true on success; on failure sets error and returns false.
+bool ParseConstraintExpressions(const JsonValue& json, std::vector<std::string>& expressions,
+                                std::string& error) {
+  if (json.IsNull()) return true;
+  if (json.type != JsonType::kArray) {
+    error = "constraints must be a JSON array";
+    return false;
+  }
+  for (size_t i = 0; i < json.array_val.size(); ++i) {
+    const auto& c = json.array_val[i];
+    if (c.type != JsonType::kString) {
+      error = "constraint " + std::to_string(i) + " must be a string";
+      return false;
+    }
+    expressions.push_back(c.string_val);
+  }
+  return true;
+}
+
+/// @brief Parse sub-models from a JSON array of {parameters, strength} objects.
+void ParseSubModels(const JsonValue& json, std::vector<coverwise::model::SubModel>& sub_models) {
+  if (json.IsNull() || json.type != JsonType::kArray) return;
+  for (size_t i = 0; i < json.array_val.size(); ++i) {
+    const auto& sm = json.array_val[i];
+    if (sm.type != JsonType::kObject) continue;
+    coverwise::model::SubModel sub_model;
+    const auto& sm_strength = sm["strength"];
+    if (!sm_strength.IsNull() && sm_strength.type == JsonType::kNumber) {
+      sub_model.strength = static_cast<uint32_t>(sm_strength.number_val);
+    }
+    const auto& sm_params = sm["parameters"];
+    if (!sm_params.IsNull() && sm_params.type == JsonType::kArray) {
+      for (const auto& p : sm_params.array_val) {
+        if (p.type == JsonType::kString) {
+          sub_model.parameter_names.push_back(p.string_val);
+        }
+      }
+    }
+    sub_models.push_back(std::move(sub_model));
+  }
+}
+
+/// @brief Parse value weights from JSON: {"param": {"value": weight, ...}, ...}.
+/// @return true on success; on failure sets error and returns false.
+bool ParseWeights(const JsonValue& json, coverwise::model::WeightConfig& weights,
+                  std::string& error) {
+  if (json.IsNull()) return true;
+  if (json.type != JsonType::kObject) {
+    error = "weights must be a JSON object";
+    return false;
+  }
+  for (size_t i = 0; i < json.object_keys.size(); ++i) {
+    const auto& param_name = json.object_keys[i];
+    const auto& param_weights = json.object_vals[i];
+    if (param_weights.type != JsonType::kObject) {
+      error = "weights for '" + param_name + "' must be an object";
+      return false;
+    }
+    for (size_t j = 0; j < param_weights.object_keys.size(); ++j) {
+      const auto& value_name = param_weights.object_keys[j];
+      const auto& weight_val = param_weights.object_vals[j];
+      if (weight_val.type != JsonType::kNumber) {
+        error = "weight for '" + param_name + "." + value_name + "' must be a number";
+        return false;
+      }
+      weights.entries[param_name][value_name] = weight_val.number_val;
+    }
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Write coverwise output as JSON.
 // ---------------------------------------------------------------------------
@@ -959,38 +1033,26 @@ int RunGenerate(int argc, char* argv[]) {
   }
 
   // Parse constraints (array of strings).
-  const auto& constraints_val = json["constraints"];
-  if (!constraints_val.IsNull() && constraints_val.type == JsonType::kArray) {
-    for (size_t i = 0; i < constraints_val.array_val.size(); ++i) {
-      const auto& c = constraints_val.array_val[i];
-      if (c.type != JsonType::kString) {
-        std::cerr << "error: constraint " << i << " must be a string\n";
-        return kExitInvalidInput;
-      }
-      options.constraint_expressions.push_back(c.string_val);
-    }
+  if (!ParseConstraintExpressions(json["constraints"], options.constraint_expressions, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
   }
 
   // Parse weights: {"param_name": {"value_name": weight, ...}, ...}
-  const auto& weights_val = json["weights"];
-  if (!weights_val.IsNull() && weights_val.type == JsonType::kObject) {
-    for (size_t i = 0; i < weights_val.object_keys.size(); ++i) {
-      const auto& param_name = weights_val.object_keys[i];
-      const auto& param_weights = weights_val.object_vals[i];
-      if (param_weights.type != JsonType::kObject) {
-        std::cerr << "error: weights for '" << param_name << "' must be an object\n";
-        return kExitInvalidInput;
-      }
-      for (size_t j = 0; j < param_weights.object_keys.size(); ++j) {
-        const auto& value_name = param_weights.object_keys[j];
-        const auto& weight_val = param_weights.object_vals[j];
-        if (weight_val.type != JsonType::kNumber) {
-          std::cerr << "error: weight for '" << param_name << "." << value_name
-                    << "' must be a number\n";
-          return kExitInvalidInput;
-        }
-        options.weights.entries[param_name][value_name] = weight_val.number_val;
-      }
+  if (!ParseWeights(json["weights"], options.weights, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
+
+  // Parse sub-models (mixed-strength parameter groups).
+  ParseSubModels(json["subModels"], options.sub_models);
+
+  // Parse seed tests (existing tests to build upon).
+  const auto& seeds_val = json["seeds"];
+  if (!seeds_val.IsNull()) {
+    if (!ParseTests(seeds_val, options.parameters, options.seeds, error)) {
+      std::cerr << "error: " << error << "\n";
+      return kExitInvalidInput;
     }
   }
 
@@ -1008,9 +1070,11 @@ int RunGenerate(int argc, char* argv[]) {
 }
 
 int RunAnalyze(int argc, char* argv[]) {
-  // Parse --params and --tests flags.
+  // Parse flags.
   std::string params_path;
   std::string tests_path;
+  std::string constraints_path;
+  uint32_t strength = 2;
 
   for (int i = 2; i < argc; ++i) {
     std::string arg = argv[i];
@@ -1018,15 +1082,36 @@ int RunAnalyze(int argc, char* argv[]) {
       params_path = argv[++i];
     } else if (arg == "--tests" && i + 1 < argc) {
       tests_path = argv[++i];
+    } else if (arg == "--constraints" && i + 1 < argc) {
+      constraints_path = argv[++i];
+    } else if (arg == "--strength" && i + 1 < argc) {
+      std::string value = argv[++i];
+      char* end = nullptr;
+      long parsed = std::strtol(value.c_str(), &end, 10);
+      if (end == value.c_str() || *end != '\0' || parsed < 1 || parsed > UINT32_MAX) {
+        std::cerr << "error: --strength must be a positive integer (>= 1)\n";
+        return kExitInvalidInput;
+      }
+      strength = static_cast<uint32_t>(parsed);
+    } else {
+      std::cerr << "error: unknown argument '" << arg << "'\n";
+      return kExitInvalidInput;
     }
   }
 
   if (params_path.empty() || tests_path.empty()) {
-    std::cerr << "Usage: coverwise analyze --params <params.json> --tests <tests.json>\n";
+    std::cerr << "Usage: coverwise analyze --params <params.json> --tests <tests.json>"
+              << " [--strength <n>] [--constraints <file.json>]\n";
     return kExitInvalidInput;
   }
 
-  // Read and parse params.
+  if (!ValidateStrength(strength)) {
+    return kExitInvalidInput;
+  }
+
+  // Read and parse params. The params file may be either a bare array of
+  // parameters or an object with a "parameters" array (and optional
+  // "constraints"), matching the shape that generate accepts.
   std::string params_content = ReadFile(params_path);
   if (params_content.empty()) {
     std::cerr << "error: cannot read file '" << params_path << "'\n";
@@ -1041,9 +1126,42 @@ int RunAnalyze(int argc, char* argv[]) {
 
   std::string error;
   std::vector<coverwise::model::Parameter> params;
-  if (!ParseParameters(params_json, params, error)) {
+  const JsonValue* params_array = &params_json;
+  std::vector<std::string> constraint_expressions;
+  if (params_json.type == JsonType::kObject) {
+    params_array = &params_json["parameters"];
+    if (!ParseConstraintExpressions(params_json["constraints"], constraint_expressions, error)) {
+      std::cerr << "error: " << error << "\n";
+      return kExitInvalidInput;
+    }
+  }
+  if (!ParseParameters(*params_array, params, error)) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
+  }
+
+  // Read constraints from a dedicated file if provided. A constraints file is a
+  // JSON object with a "constraints" array (or a bare array of strings).
+  if (!constraints_path.empty()) {
+    std::string constraints_content = ReadFile(constraints_path);
+    if (constraints_content.empty()) {
+      std::cerr << "error: cannot read file '" << constraints_path << "'\n";
+      return kExitInvalidInput;
+    }
+    JsonParser constraints_parser(constraints_content);
+    auto constraints_json = constraints_parser.Parse();
+    if (!constraints_parser.error().empty()) {
+      std::cerr << "error: invalid constraints JSON: " << constraints_parser.error() << "\n";
+      return kExitInvalidInput;
+    }
+    const JsonValue& constraints_node = constraints_json.type == JsonType::kObject
+                                            ? constraints_json["constraints"]
+                                            : constraints_json;
+    constraint_expressions.clear();
+    if (!ParseConstraintExpressions(constraints_node, constraint_expressions, error)) {
+      std::cerr << "error: " << error << "\n";
+      return kExitInvalidInput;
+    }
   }
 
   // Read and parse tests.
@@ -1065,9 +1183,21 @@ int RunAnalyze(int argc, char* argv[]) {
     return kExitInvalidInput;
   }
 
-  // Default to pairwise (strength=2). Could add --strength flag later.
-  uint32_t strength = 2;
-  auto report = coverwise::validator::ValidateCoverage(params, tests, strength);
+  // Parse constraint expressions into AST so the validator can exclude
+  // constraint-invalid tuples from the coverage universe, consistent with the
+  // generator and the WASM/JS surfaces.
+  std::vector<coverwise::model::Constraint> constraints;
+  for (const auto& expr : constraint_expressions) {
+    auto parse_result = coverwise::model::ParseConstraint(expr, params);
+    if (!parse_result.error.ok()) {
+      std::cerr << "error: " << parse_result.error.message << ": " << parse_result.error.detail
+                << "\n";
+      return kExitConstraintError;
+    }
+    constraints.push_back(std::move(parse_result.constraint));
+  }
+
+  auto report = coverwise::validator::ValidateCoverage(params, tests, strength, constraints);
 
   WriteCoverageReport(report);
 
@@ -1086,8 +1216,11 @@ int RunExtend(int argc, char* argv[]) {
     std::string arg = argv[i];
     if (arg == "--existing" && i + 1 < argc) {
       existing_path = argv[++i];
-    } else if (input_path.empty() && arg[0] != '-') {
+    } else if (!arg.empty() && arg[0] != '-' && input_path.empty()) {
       input_path = arg;
+    } else {
+      std::cerr << "error: unknown argument '" << arg << "'\n";
+      return kExitInvalidInput;
     }
   }
 
@@ -1145,15 +1278,27 @@ int RunExtend(int argc, char* argv[]) {
   }
 
   // Parse constraints (array of strings).
-  const auto& constraints_val = input_json["constraints"];
-  if (!constraints_val.IsNull() && constraints_val.type == JsonType::kArray) {
-    for (size_t i = 0; i < constraints_val.array_val.size(); ++i) {
-      const auto& c = constraints_val.array_val[i];
-      if (c.type != JsonType::kString) {
-        std::cerr << "error: constraint " << i << " must be a string\n";
-        return kExitInvalidInput;
-      }
-      options.constraint_expressions.push_back(c.string_val);
+  if (!ParseConstraintExpressions(input_json["constraints"], options.constraint_expressions,
+                                  error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
+
+  // Parse weights: {"param_name": {"value_name": weight, ...}, ...}
+  if (!ParseWeights(input_json["weights"], options.weights, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
+
+  // Parse sub-models (mixed-strength parameter groups).
+  ParseSubModels(input_json["subModels"], options.sub_models);
+
+  // Parse seed tests from the input JSON (in addition to --existing tests).
+  const auto& seeds_val = input_json["seeds"];
+  if (!seeds_val.IsNull()) {
+    if (!ParseTests(seeds_val, options.parameters, options.seeds, error)) {
+      std::cerr << "error: " << error << "\n";
+      return kExitInvalidInput;
     }
   }
 
@@ -1310,7 +1455,8 @@ int RunStats(int argc, char* argv[]) {
 void PrintUsage() {
   std::cerr << "Usage:\n"
             << "  coverwise generate <input.json>\n"
-            << "  coverwise analyze --params <params.json> --tests <tests.json>\n"
+            << "  coverwise analyze --params <params.json> --tests <tests.json>"
+               " [--strength <n>] [--constraints <file.json>]\n"
             << "  coverwise extend --existing <tests.json> <input.json>\n"
             << "  coverwise stats <input.json>\n"
             << "\n"

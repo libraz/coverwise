@@ -122,13 +122,62 @@ export interface ModelStats {
 }
 
 /**
- * Structured error with context.
- * Errors are always explanatory — never just a code.
+ * Canonical string error codes. The values mirror the C++ `model::Error::Code`
+ * enum (error.h) one-to-one; see {@link errorCodeFromNumber} for the mapping.
  */
-export interface CoverwiseError {
-  code: 'CONSTRAINT_ERROR' | 'INSUFFICIENT_COVERAGE' | 'INVALID_INPUT' | 'TUPLE_EXPLOSION';
-  message: string;
-  detail?: string;
+export type CoverwiseErrorCode =
+  | 'CONSTRAINT_ERROR'
+  | 'INSUFFICIENT_COVERAGE'
+  | 'INVALID_INPUT'
+  | 'TUPLE_EXPLOSION';
+
+/**
+ * Structured error thrown by every coverwise surface (WASM-backed and pure).
+ *
+ * Extends the native `Error`, so `instanceof Error` holds, a stack trace is
+ * captured, and error-reporting tools (Sentry, etc.) treat it as a real error.
+ * The typed string `code` lets callers branch reliably:
+ *
+ * @example
+ * try {
+ *   generate(input);
+ * } catch (e) {
+ *   if (e instanceof CoverwiseError && e.code === 'CONSTRAINT_ERROR') { ... }
+ * }
+ */
+export class CoverwiseError extends Error {
+  /** Typed, surface-independent error category. */
+  readonly code: CoverwiseErrorCode;
+  /** Optional secondary context (e.g. the offending fragment). */
+  readonly detail?: string;
+
+  constructor(code: CoverwiseErrorCode, message: string, detail?: string) {
+    super(message);
+    this.name = 'CoverwiseError';
+    this.code = code;
+    this.detail = detail;
+    // Restore the prototype chain when targeting ES5-style transpilation so
+    // `instanceof CoverwiseError` keeps working after `super()`.
+    Object.setPrototypeOf(this, CoverwiseError.prototype);
+  }
+}
+
+/**
+ * Map a numeric error code (from the WASM module or `model::Error::Code`) to its
+ * canonical string code. Values: 1=CONSTRAINT_ERROR, 2=INSUFFICIENT_COVERAGE,
+ * 3=INVALID_INPUT, 4=TUPLE_EXPLOSION. Anything else falls back to INVALID_INPUT.
+ */
+export function errorCodeFromNumber(code: number | undefined): CoverwiseErrorCode {
+  switch (code) {
+    case 1:
+      return 'CONSTRAINT_ERROR';
+    case 2:
+      return 'INSUFFICIENT_COVERAGE';
+    case 4:
+      return 'TUPLE_EXPLOSION';
+    default:
+      return 'INVALID_INPUT';
+  }
 }
 
 /** Per-parameter statistics. */

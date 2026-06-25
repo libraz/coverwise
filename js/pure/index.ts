@@ -10,7 +10,7 @@ export { allOf, anyOf, not, when } from '../constraint.js';
 export type {
   ClassCoverage,
   CoverageReport,
-  CoverwiseError,
+  CoverwiseErrorCode,
   ExtendInput,
   GenerateInput,
   GenerateResult,
@@ -25,6 +25,7 @@ export type {
   UncoveredTuple,
   WeightConfig,
 } from '../types.js';
+export { CoverwiseError } from '../types.js';
 
 // --- Internal imports ---
 
@@ -41,6 +42,7 @@ import {
 } from '../../src/ts/validator/coverage-validator.js';
 import type {
   CoverageReport,
+  CoverwiseErrorCode,
   ExtendInput,
   GenerateInput,
   GenerateResult,
@@ -48,6 +50,7 @@ import type {
   Parameter,
   TestCase,
 } from '../types.js';
+import { CoverwiseError } from '../types.js';
 
 import {
   toInternalOptions,
@@ -65,7 +68,10 @@ function validateStrength(strength: unknown): number {
     return 2;
   }
   if (typeof strength !== 'number' || !Number.isInteger(strength) || strength <= 0) {
-    throw new Error(`Invalid strength: ${String(strength)}. Must be a positive integer.`);
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      `Invalid strength: ${String(strength)}. Must be a positive integer.`,
+    );
   }
   return strength;
 }
@@ -75,7 +81,10 @@ function validateMaxTests(maxTests: unknown): void {
     return;
   }
   if (typeof maxTests !== 'number' || !Number.isInteger(maxTests) || maxTests < 0) {
-    throw new Error(`Invalid maxTests: ${String(maxTests)}. Must be a non-negative integer.`);
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      `Invalid maxTests: ${String(maxTests)}. Must be a non-negative integer.`,
+    );
   }
 }
 
@@ -84,13 +93,22 @@ function validateSeed(seed: unknown): void {
     return;
   }
   if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
-    throw new Error(`Invalid seed: ${String(seed)}. Must be an integer in [0, 4294967295].`);
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      `Invalid seed: ${String(seed)}. Must be an integer in [0, 4294967295].`,
+    );
   }
 }
 
 function validateParameters(parameters: unknown): void {
   if (!Array.isArray(parameters)) {
-    throw new Error('Invalid parameters: must be an array.');
+    throw new CoverwiseError('INVALID_INPUT', 'Invalid parameters: must be an array.');
+  }
+}
+
+function validateTestArray(tests: unknown, field: string): void {
+  if (!Array.isArray(tests)) {
+    throw new CoverwiseError('INVALID_INPUT', `Invalid ${field}: must be an array.`);
   }
 }
 
@@ -99,6 +117,33 @@ function validateGenerateInput(input: GenerateInput): void {
   validateStrength(input.strength);
   validateMaxTests(input.maxTests);
   validateSeed(input.seed);
+}
+
+/**
+ * Map the numeric internal {@link ErrorCode} to its canonical string code.
+ * Mirrors errorCodeFromNumber in ../types.js (kept local to avoid importing a
+ * numeric-mapping helper that the public surface does not otherwise need).
+ */
+function toErrorCode(code: number): CoverwiseErrorCode {
+  switch (code) {
+    case 1:
+      return 'CONSTRAINT_ERROR';
+    case 2:
+      return 'INSUFFICIENT_COVERAGE';
+    case 4:
+      return 'TUPLE_EXPLOSION';
+    default:
+      return 'INVALID_INPUT';
+  }
+}
+
+/** Throw a CoverwiseError when the internal engine reports a structured error. */
+function throwOnResultError(error: { code: number; message: string; detail: string }): void {
+  if (error.code === 0) {
+    return;
+  }
+  const message = error.detail ? `${error.message}: ${error.detail}` : error.message;
+  throw new CoverwiseError(toErrorCode(error.code), message);
 }
 
 // --- Core API ---
@@ -123,6 +168,9 @@ export function generate(input: GenerateInput): GenerateResult {
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);
   const result = internalGenerate(opts);
+  // Core reports early-exit failures (e.g. constraint parse errors) via
+  // result.error rather than throwing; surface them as CoverwiseError.
+  throwOnResultError(result.error);
   const strength = input.strength ?? 2;
 
   // Annotate equivalence class coverage if applicable.
@@ -149,6 +197,7 @@ export function analyzeCoverage(
   constraints?: string[],
 ): CoverageReport {
   validateParameters(parameters);
+  validateTestArray(tests, 'tests');
   const s = validateStrength(strength);
   const params = toInternalParams(parameters);
   const internalTests = tests.map((tc) => toInternalTestCase(tc, params));
@@ -159,7 +208,8 @@ export function analyzeCoverage(
     for (const expr of constraints) {
       const parseResult = parseConstraint(expr, params);
       if (parseResult.error.code !== 0 || !parseResult.constraint) {
-        throw new Error(
+        throw new CoverwiseError(
+          toErrorCode(parseResult.error.code),
           `Invalid constraint "${expr}": ${parseResult.error.message}${
             parseResult.error.detail ? ` — ${parseResult.error.detail}` : ''
           }`,
@@ -185,12 +235,14 @@ export function analyzeCoverage(
  * Only "strict" mode is supported (existing tests are kept as-is).
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
+  validateTestArray(existing, 'existing');
   validateGenerateInput(input);
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);
   const internalExisting = existing.map((tc) => toInternalTestCase(tc, params));
   const strength = input.strength ?? 2;
   const result = internalExtend(internalExisting, opts);
+  throwOnResultError(result.error);
 
   annotateClassCoverage(result, params, strength);
 

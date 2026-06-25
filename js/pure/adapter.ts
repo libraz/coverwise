@@ -6,7 +6,11 @@ import {
   createWeightConfig,
   type GenerateOptions as InternalGenerateOptions,
 } from '../../src/ts/model/generate-options.js';
-import { Parameter as InternalParameter, UNASSIGNED } from '../../src/ts/model/parameter.js';
+import {
+  Parameter as InternalParameter,
+  UNASSIGNED,
+  validateParameters as validateInternalParameters,
+} from '../../src/ts/model/parameter.js';
 import type {
   GenerateResult as InternalGenerateResult,
   TestCase as InternalTestCase,
@@ -24,6 +28,7 @@ import type {
   TestCase as PublicTestCase,
   UncoveredTuple as PublicUncoveredTuple,
 } from '../types.js';
+import { CoverwiseError } from '../types.js';
 
 /**
  * Convert a JS value (string, number, or boolean) to a string representation.
@@ -56,6 +61,19 @@ export function toInternalParams(params: PublicParameter[]): InternalParameter[]
   const result: InternalParameter[] = [];
 
   for (const pub of params) {
+    // Shape guards mirroring the WASM binding: reject a non-string name or a
+    // non-array `values` BEFORE iterating, so a string `values:'win'` is never
+    // walked character-by-character (silent data corruption).
+    if (typeof pub?.name !== 'string') {
+      throw new CoverwiseError('INVALID_INPUT', 'Parameter name must be a non-empty string');
+    }
+    if (!Array.isArray(pub.values)) {
+      throw new CoverwiseError(
+        'INVALID_INPUT',
+        `Parameter '${pub.name}' must have at least one value`,
+      );
+    }
+
     const values: string[] = [];
     const invalidFlags: boolean[] = [];
     const aliases: string[][] = [];
@@ -93,6 +111,13 @@ export function toInternalParams(params: PublicParameter[]): InternalParameter[]
       param.setAliases(aliases);
     }
     result.push(param);
+  }
+
+  // Semantic checks shared with the WASM/CLI surfaces (duplicate names/values,
+  // empty values). Kept here so every pure-JS entry point inherits them.
+  const semanticError = validateInternalParameters(result);
+  if (semanticError.length > 0) {
+    throw new CoverwiseError('INVALID_INPUT', semanticError);
   }
 
   return result;

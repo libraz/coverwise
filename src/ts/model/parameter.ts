@@ -186,3 +186,40 @@ export class Parameter {
 export function hasInvalidValues(params: Parameter[]): boolean {
   return params.some((p) => p.hasInvalidValues);
 }
+
+/**
+ * Validate the semantic well-formedness of a parameter collection.
+ *
+ * Catches input that would otherwise corrupt coverage accounting or silently
+ * drop data: an empty parameter name, a parameter with no values, a value that
+ * repeats within a single parameter (inflates the tuple denominator and is
+ * never coverable past its first occurrence), or two parameters sharing a name
+ * (their output-map keys collide). Messages are kept byte-identical to the C++
+ * validateParameters so every surface reports the same text.
+ *
+ * @returns An error message string on the first violation, or an empty string
+ *   when the collection is well-formed.
+ */
+export function validateParameters(params: Parameter[]): string {
+  const seenNames = new Set<string>();
+  for (const p of params) {
+    if (p.name.length === 0) {
+      return 'Parameter name must be a non-empty string';
+    }
+    if (seenNames.has(p.name)) {
+      return `Duplicate parameter name '${p.name}'`;
+    }
+    seenNames.add(p.name);
+    if (p.values.length === 0) {
+      return `Parameter '${p.name}' must have at least one value`;
+    }
+    const seenValues = new Set<string>();
+    for (const v of p.values) {
+      if (seenValues.has(v)) {
+        return `Duplicate value '${v}' in parameter '${p.name}'`;
+      }
+      seenValues.add(v);
+    }
+  }
+  return '';
+}

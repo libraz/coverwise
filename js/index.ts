@@ -15,7 +15,7 @@ export { allOf, anyOf, not, when } from './constraint.js';
 export type {
   ClassCoverage,
   CoverageReport,
-  CoverwiseError,
+  CoverwiseErrorCode,
   ExtendInput,
   GenerateInput,
   GenerateResult,
@@ -30,10 +30,10 @@ export type {
   UncoveredTuple,
   WeightConfig,
 } from './types.js';
+export { CoverwiseError } from './types.js';
 
 import type {
   CoverageReport,
-  CoverwiseError,
   ExtendInput,
   GenerateInput,
   GenerateResult,
@@ -41,24 +41,25 @@ import type {
   Parameter,
   TestCase,
 } from './types.js';
+import { CoverwiseError, errorCodeFromNumber } from './types.js';
 
 // --- WASM Module Loading ---
 
 interface WasmModule {
-  generate(input: GenerateInput): GenerateResult | { error: true; code?: string; message?: string };
+  generate(input: GenerateInput): GenerateResult | { error: true; code?: number; message?: string };
   analyzeCoverage(
     params: Parameter[],
     tests: TestCase[],
     strength: number,
     constraints?: string[],
-  ): CoverageReport | { error: true; code?: string; message?: string };
+  ): CoverageReport | { error: true; code?: number; message?: string };
   extendTests(
     existing: TestCase[],
     input: ExtendInput,
-  ): GenerateResult | { error: true; code?: string; message?: string };
+  ): GenerateResult | { error: true; code?: number; message?: string };
   estimateModel(
     input: GenerateInput,
-  ): ModelStats | { error: true; code?: string; message?: string };
+  ): ModelStats | { error: true; code?: number; message?: string };
 }
 
 let wasmModule: WasmModule | null = null;
@@ -133,7 +134,13 @@ function validateSeed(seed: unknown): void {
 
 function validateParameters(parameters: unknown): void {
   if (!Array.isArray(parameters)) {
-    throw new Error('Invalid parameters: must be an array.');
+    throw new CoverwiseError('INVALID_INPUT', 'Invalid parameters: must be an array.');
+  }
+}
+
+function validateTestArray(tests: unknown, field: string): void {
+  if (!Array.isArray(tests)) {
+    throw new CoverwiseError('INVALID_INPUT', `Invalid ${field}: must be an array.`);
   }
 }
 
@@ -149,11 +156,12 @@ function validateGenerateInput(input: GenerateInput): void {
 function checkResult<T>(result: unknown): T {
   const r = result as Record<string, unknown>;
   if (r && r.error === true) {
-    const err: CoverwiseError = {
-      code: (r.code as CoverwiseError['code']) ?? 'INVALID_INPUT',
-      message: (r.message as string) ?? 'Unknown error',
-    };
-    throw err;
+    // The WASM module reports `code` as the numeric model::Error::Code value.
+    const code =
+      typeof r.code === 'number'
+        ? errorCodeFromNumber(r.code)
+        : ((r.code as CoverwiseError['code']) ?? 'INVALID_INPUT');
+    throw new CoverwiseError(code, (r.message as string) ?? 'Unknown error');
   }
   return result as T;
 }
@@ -199,6 +207,7 @@ export function analyzeCoverage(
   constraints?: string[],
 ): CoverageReport {
   validateParameters(parameters);
+  validateTestArray(tests, 'tests');
   const s = validateStrength(strength);
   const mod = getModule();
   const result = checkResult<CoverageReport>(
@@ -218,6 +227,7 @@ export function analyzeCoverage(
  * Only "strict" mode is supported (existing tests are kept as-is).
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
+  validateTestArray(existing, 'existing');
   validateGenerateInput(input);
   const mod = getModule();
   const result = checkResult<GenerateResult>(mod.extendTests(existing, input));
@@ -285,6 +295,7 @@ export class Coverwise {
     constraints?: string[],
   ): CoverageReport {
     validateParameters(parameters);
+    validateTestArray(tests, 'tests');
     const s = validateStrength(strength);
     const result = checkResult<CoverageReport>(
       this.module.analyzeCoverage(parameters, tests, s, constraints ?? []),
@@ -299,6 +310,7 @@ export class Coverwise {
    * Extend an existing test suite with additional tests to improve coverage.
    */
   extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
+    validateTestArray(existing, 'existing');
     validateGenerateInput(input);
     const result = checkResult<GenerateResult>(this.module.extendTests(existing, input));
     result.negativeTests = result.negativeTests ?? [];
