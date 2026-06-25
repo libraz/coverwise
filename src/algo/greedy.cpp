@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <optional>
 #include <vector>
 
 namespace coverwise {
@@ -50,10 +51,12 @@ uint32_t BreakTieWithWeights(const std::vector<uint32_t>& best_values,
 
 }  // namespace
 
-model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params, ScoreFn score_fn,
-                                const std::vector<model::Constraint>& constraints, util::Rng& rng,
-                                const std::vector<std::vector<bool>>& allowed_values,
-                                const std::vector<std::vector<double>>& weights) {
+std::optional<model::TestCase> GreedyConstruct(const std::vector<model::Parameter>& params,
+                                               ScoreFn score_fn,
+                                               const std::vector<model::Constraint>& constraints,
+                                               util::Rng& rng,
+                                               const std::vector<std::vector<bool>>& allowed_values,
+                                               const std::vector<std::vector<double>>& weights) {
   const auto num_params = static_cast<uint32_t>(params.size());
 
   model::TestCase tc;
@@ -127,19 +130,10 @@ model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params, Sco
       }
       if (fallback != model::kUnassigned) {
         tc.values[pi] = fallback;
-      } else if (!allowed_values.empty()) {
-        // All allowed values violate constraints; pick first allowed as last resort.
-        for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
-          if (allowed_values[pi][vi]) {
-            tc.values[pi] = vi;
-            break;
-          }
-        }
-        if (tc.values[pi] == model::kUnassigned) {
-          tc.values[pi] = 0;
-        }
       } else {
-        tc.values[pi] = 0;
+        // No constraint-satisfying value exists for this parameter. Signal
+        // construction failure rather than writing a constraint-violating value.
+        return std::nullopt;
       }
     } else {
       tc.values[pi] = BreakTieWithWeights(best_values, weights, pi, rng);

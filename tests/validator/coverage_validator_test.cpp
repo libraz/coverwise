@@ -288,3 +288,42 @@ TEST(CoverageValidatorTest, ConstraintsExcludeTuplesFromUniverse) {
   ASSERT_EQ(report.uncovered.size(), 1u);
   EXPECT_TRUE(UncoveredContains(report.uncovered, {"os=win", "browser=ie"}));
 }
+
+// ---------------------------------------------------------------------------
+// Invalid-value exclusion (oracle/generator agreement)
+//
+// A model with an invalid value must have all tuples containing that value
+// excluded from the coverage universe, matching the generator's
+// CoverageEngine::ExcludeInvalidValues. A suite that covers every valid tuple
+// must report coverage_ratio == 1.0 with an empty uncovered list, and the
+// invalid-value tuples must never appear in total_tuples or uncovered.
+// ---------------------------------------------------------------------------
+TEST(CoverageValidatorTest, InvalidValuesExcludedFromUniverse) {
+  // os = {win, mac, ie6(invalid)}, browser = {chrome, safari}.
+  // Valid pairs: (win|mac) x (chrome|safari) = 4. Tuples involving os=ie6
+  // (2 of them: ie6/chrome, ie6/safari) are excluded.
+  std::vector<Parameter> params = {
+      Parameter{"os", {"win", "mac", "ie6"}, {false, false, true}},
+      Parameter{"browser", {"chrome", "safari"}, {false, false}},
+  };
+
+  // Suite achieving full valid coverage (no invalid value referenced).
+  std::vector<TestCase> tests = {
+      TestCase{{0, 0}},  // win, chrome
+      TestCase{{0, 1}},  // win, safari
+      TestCase{{1, 0}},  // mac, chrome
+      TestCase{{1, 1}},  // mac, safari
+  };
+
+  auto report = ValidateCoverage(params, tests, 2);
+
+  // Only the 4 valid pairs are in the universe; ie6-based tuples excluded.
+  EXPECT_EQ(report.total_tuples, 4u);
+  EXPECT_EQ(report.covered_tuples, 4u);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+  EXPECT_TRUE(report.uncovered.empty());
+
+  // The invalid-value tuples must never surface as uncovered.
+  EXPECT_FALSE(UncoveredContains(report.uncovered, {"os=ie6", "browser=chrome"}));
+  EXPECT_FALSE(UncoveredContains(report.uncovered, {"os=ie6", "browser=safari"}));
+}

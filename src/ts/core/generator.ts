@@ -193,6 +193,12 @@ function generateNegativeTests(
           return freshCov.scoreValue(partial, paramIdx, valIdx);
         };
         const tc = greedyConstruct(params, negScoreFn, constraints, rng, negMask);
+        if (tc === null) {
+          if (++retries >= kMaxRetries) {
+            break;
+          }
+          continue;
+        }
         const score = freshCov.scoreCandidate(tc);
         if (score === 0) {
           if (++retries >= kMaxRetries) {
@@ -256,6 +262,7 @@ export function generate(options: GenerateOptions): GenerateResult {
   const coverageResult = CoverageEngine.create(params, options.strength);
   if (coverageResult.error.code !== ErrorCode.Ok) {
     result.warnings.push(`${coverageResult.error.message}: ${coverageResult.error.detail}`);
+    result.error = coverageResult.error;
     return result;
   }
   const coverage = coverageResult.engine;
@@ -266,21 +273,24 @@ export function generate(options: GenerateOptions): GenerateResult {
     const resolved = resolveParamNames(sm.parameterNames, params);
     if (resolved.error.length > 0) {
       result.warnings.push(resolved.error);
+      result.error = { code: ErrorCode.InvalidInput, message: resolved.error, detail: '' };
       return result;
     }
     if (resolved.indices.length < sm.strength) {
-      result.warnings.push(
+      const msg =
         'Sub-model strength (' +
-          sm.strength +
-          ') exceeds parameter count (' +
-          resolved.indices.length +
-          ')',
-      );
+        sm.strength +
+        ') exceeds parameter count (' +
+        resolved.indices.length +
+        ')';
+      result.warnings.push(msg);
+      result.error = { code: ErrorCode.InvalidInput, message: msg, detail: '' };
       return result;
     }
     const smResult = CoverageEngine.createFromSubset(params, resolved.indices, sm.strength);
     if (smResult.error.code !== ErrorCode.Ok) {
       result.warnings.push(`${smResult.error.message}: ${smResult.error.detail}`);
+      result.error = smResult.error;
       return result;
     }
     subEngines.push(smResult.engine);
@@ -292,10 +302,16 @@ export function generate(options: GenerateOptions): GenerateResult {
     const parseResult = parseConstraint(expr, params);
     if (parseResult.error.code !== ErrorCode.Ok) {
       result.warnings.push(`${parseResult.error.message}: ${parseResult.error.detail}`);
+      result.error = parseResult.error;
       return result;
     }
     if (parseResult.constraint == null) {
       result.warnings.push('Constraint parser returned no constraint');
+      result.error = {
+        code: ErrorCode.ConstraintError,
+        message: 'Constraint parser returned no constraint',
+        detail: '',
+      };
       return result;
     }
     constraints.push(parseResult.constraint);
@@ -376,6 +392,14 @@ export function generate(options: GenerateOptions): GenerateResult {
     (options.maxTests === 0 || result.tests.length < options.maxTests)
   ) {
     const tc = greedyConstruct(params, scoreFn, constraints, rng, validMask, resolvedWeights);
+    // A failed construction (no constraint-satisfying value for some parameter)
+    // is treated like a zero-score candidate: retry with a different shuffle.
+    if (tc === null) {
+      if (++retries >= kMaxRetries) {
+        break;
+      }
+      continue;
+    }
     const score = totalScore(coverage, subEngines, tc);
     if (score === 0) {
       if (++retries >= kMaxRetries) {

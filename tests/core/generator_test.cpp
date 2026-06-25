@@ -371,6 +371,126 @@ TEST(GeneratorTest, LargeModelFullCoverage) {
 }
 
 // ---------------------------------------------------------------------------
+// Constraint integrity under over-constrained models (B-3)
+// ---------------------------------------------------------------------------
+
+/// @brief Validate every generated positive test against the constraints.
+/// @return Number of constraint violations across all positive tests.
+uint32_t CountPositiveViolations(const coverwise::model::GenerateResult& result,
+                                 const GenerateOptions& opts) {
+  std::vector<coverwise::model::Constraint> constraints;
+  for (const auto& expr : opts.constraint_expressions) {
+    auto parse_result = coverwise::model::ParseConstraint(expr, opts.parameters);
+    if (!parse_result.error.ok()) return UINT32_MAX;
+    constraints.push_back(std::move(parse_result.constraint));
+  }
+  auto report = coverwise::validator::ValidateConstraints(result.tests, constraints);
+  return report.violations;
+}
+
+TEST(GeneratorConstraintIntegrityTest, OverConstrainedModelEmitsNoViolatingTests) {
+  // A model where, for some partial assignments, every value of a later
+  // parameter is constraint-pruned. The previous greedy fallback would emit a
+  // constraint-violating value as a "last resort"; the fix must instead drop
+  // the failed construction so the output contains zero violations.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1"}, {}},
+      {"C", {"c0", "c1"}, {}},
+  };
+  // When A=a0 and B=b1 (or A=a1 and B=b0), C has no satisfying value.
+  opts.constraint_expressions = {
+      "IF A=a0 THEN C!=c0",
+      "IF B=b1 THEN C!=c1",
+      "IF A=a1 THEN C!=c1",
+      "IF B=b0 THEN C!=c0",
+  };
+  opts.strength = 2;
+
+  // Try many seeds to exercise different parameter orderings in the greedy loop.
+  for (uint64_t seed = 0; seed < 25; ++seed) {
+    opts.seed = seed;
+    auto result = Generate(opts);
+    EXPECT_EQ(CountPositiveViolations(result, opts), 0u)
+        << "Constraint-violating test emitted at seed " << seed;
+  }
+}
+
+TEST(GeneratorConstraintIntegrityTest, FullyUnsatisfiableParameterEmitsNoViolatingTests) {
+  // C can never be assigned: every value is rejected unconditionally. Every
+  // C-tuple is excluded as inherently invalid, so the generator emits zero
+  // positive tests rather than a constraint-violating one.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1"}, {}},
+      {"C", {"c0", "c1"}, {}},
+  };
+  opts.constraint_expressions = {"C!=c0", "C!=c1"};
+  opts.strength = 2;
+  opts.seed = 7;
+
+  auto result = Generate(opts);
+
+  EXPECT_EQ(CountPositiveViolations(result, opts), 0u);
+  EXPECT_TRUE(result.tests.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Machine-readable error signal and coverage reporting (B-1)
+// ---------------------------------------------------------------------------
+
+TEST(GeneratorErrorSignalTest, ConstraintParseErrorSetsConstraintErrorCode) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1"}, {}},
+  };
+  // References a parameter that does not exist -> constraint parse error.
+  opts.constraint_expressions = {"IF nonexistent=x THEN B!=b0"};
+  opts.strength = 2;
+
+  auto result = Generate(opts);
+
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_TRUE(result.tests.empty());
+}
+
+TEST(GeneratorErrorSignalTest, SuccessfulGenerationLeavesErrorOk) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 1;
+
+  auto result = Generate(opts);
+
+  EXPECT_TRUE(result.error.ok());
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+}
+
+TEST(GeneratorErrorSignalTest, IncompleteCoverageReportsBelowOneWithoutError) {
+  // Insufficient coverage (without a constraint parse error) must be reported
+  // via coverage < 1.0, not via the error signal. The CLI maps this to exit 2.
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1", "a2", "a3"}, {}},
+      {"B", {"b0", "b1", "b2", "b3"}, {}},
+      {"C", {"c0", "c1", "c2", "c3"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 3;
+  opts.max_tests = 3;  // Too few to cover all 48 pairwise tuples.
+
+  auto result = Generate(opts);
+
+  EXPECT_TRUE(result.error.ok());
+  EXPECT_LT(result.coverage, 1.0);
+}
+
+// ---------------------------------------------------------------------------
 // Extend tests
 // ---------------------------------------------------------------------------
 

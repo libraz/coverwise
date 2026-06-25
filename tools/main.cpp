@@ -9,10 +9,11 @@
 /// Exit codes:
 ///   0 = OK (coverage 100%)
 ///   1 = Constraint error
-///   2 = Insufficient coverage (max_tests limited)
+///   2 = Insufficient coverage (coverage < 100% for any reason)
 ///   3 = Invalid input
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -24,17 +25,51 @@
 #include <vector>
 
 #include "core/generator.h"
+#include "model/boundary.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
-#include "model/boundary.h"
 #include "validator/coverage_validator.h"
 
 namespace {
 
 constexpr int kExitOk = 0;
-// Exit code 1 reserved for constraint error support.
+constexpr int kExitConstraintError = 1;
 constexpr int kExitInsufficientCoverage = 2;
 constexpr int kExitInvalidInput = 3;
+
+/// @brief Map a generator result's error/coverage to a CLI exit code.
+///
+/// A constraint parse error takes precedence (exit 1). Otherwise, any coverage
+/// below 100% — for any reason, independent of max_tests — yields insufficient
+/// coverage (exit 2). A fully covered suite yields OK (exit 0). Invalid-input
+/// errors surfaced in the result map to exit 3.
+int ResultExitCode(const coverwise::model::GenerateResult& result) {
+  using Code = coverwise::model::Error::Code;
+  switch (result.error.code) {
+    case Code::kConstraintError:
+      return kExitConstraintError;
+    case Code::kInvalidInput:
+    case Code::kTupleExplosion:
+      return kExitInvalidInput;
+    case Code::kInsufficientCoverage:
+    case Code::kOk:
+      break;
+  }
+  if (result.coverage < 1.0) {
+    return kExitInsufficientCoverage;
+  }
+  return kExitOk;
+}
+
+/// @brief Validate that an interaction strength is a positive integer.
+/// @return true if valid; otherwise prints a message to stderr and returns false.
+bool ValidateStrength(uint32_t strength) {
+  if (strength < 1) {
+    std::cerr << "error: strength must be a positive integer (>= 1)\n";
+    return false;
+  }
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Minimal JSON value representation — just enough for coverwise I/O.
@@ -177,8 +212,8 @@ class JsonParser {
                 } else if (hc >= 'A' && hc <= 'F') {
                   cp |= static_cast<uint32_t>(hc - 'A' + 10);
                 } else {
-                  error_ = "invalid hex digit in \\u escape at position " +
-                           std::to_string(pos_ - 1);
+                  error_ =
+                      "invalid hex digit in \\u escape at position " + std::to_string(pos_ - 1);
                   return 0xFFFFFFFF;
                 }
               }
@@ -905,7 +940,15 @@ int RunGenerate(int argc, char* argv[]) {
   // Parse optional fields.
   const auto& strength_val = json["strength"];
   if (!strength_val.IsNull() && strength_val.type == JsonType::kNumber) {
-    options.strength = static_cast<uint32_t>(strength_val.number_val);
+    double s = strength_val.number_val;
+    if (s < 1.0 || s != std::floor(s)) {
+      std::cerr << "error: strength must be a positive integer (>= 1)\n";
+      return kExitInvalidInput;
+    }
+    options.strength = static_cast<uint32_t>(s);
+  }
+  if (!ValidateStrength(options.strength)) {
+    return kExitInvalidInput;
   }
   const auto& seed_val = json["seed"];
   if (!seed_val.IsNull() && seed_val.type == JsonType::kNumber) {
@@ -958,11 +1001,8 @@ int RunGenerate(int argc, char* argv[]) {
   // Annotate equivalence class coverage if any parameter has classes defined.
   coverwise::validator::AnnotateClassCoverage(result, options.parameters, options.strength);
 
-  // Determine exit code.
-  int exit_code = kExitOk;
-  if (result.coverage < 1.0 && options.max_tests > 0) {
-    exit_code = kExitInsufficientCoverage;
-  }
+  // Determine exit code: constraint error (1) > insufficient coverage (2) > OK.
+  int exit_code = ResultExitCode(result);
 
   WriteGenerateResult(result, options.parameters, options.strength);
   return exit_code;
@@ -1083,7 +1123,15 @@ int RunExtend(int argc, char* argv[]) {
 
   const auto& strength_val = input_json["strength"];
   if (!strength_val.IsNull() && strength_val.type == JsonType::kNumber) {
-    options.strength = static_cast<uint32_t>(strength_val.number_val);
+    double s = strength_val.number_val;
+    if (s < 1.0 || s != std::floor(s)) {
+      std::cerr << "error: strength must be a positive integer (>= 1)\n";
+      return kExitInvalidInput;
+    }
+    options.strength = static_cast<uint32_t>(s);
+  }
+  if (!ValidateStrength(options.strength)) {
+    return kExitInvalidInput;
   }
   const auto& seed_val = input_json["seed"];
   if (!seed_val.IsNull() && seed_val.type == JsonType::kNumber) {
@@ -1131,10 +1179,8 @@ int RunExtend(int argc, char* argv[]) {
   // Annotate equivalence class coverage if any parameter has classes defined.
   coverwise::validator::AnnotateClassCoverage(result, options.parameters, options.strength);
 
-  int exit_code = kExitOk;
-  if (result.coverage < 1.0 && options.max_tests > 0) {
-    exit_code = kExitInsufficientCoverage;
-  }
+  // Determine exit code: constraint error (1) > insufficient coverage (2) > OK.
+  int exit_code = ResultExitCode(result);
 
   WriteGenerateResult(result, options.parameters, options.strength);
   return exit_code;

@@ -72,6 +72,13 @@ struct GenerateResult {
   std::vector<Suggestion> suggestions;
   std::vector<std::string> warnings;
   std::optional<ClassCoverage> class_coverage;  ///< Equivalence class coverage (if classes defined)
+  /// @brief Machine-readable error signal for early-exit conditions.
+  ///
+  /// Set to a non-ok code when generation aborts before producing a suite,
+  /// e.g. a constraint parse error (kConstraintError) or invalid input
+  /// (kInvalidInput). Remains kOk when generation runs to completion, even if
+  /// coverage is incomplete (insufficient coverage is reported via `coverage`).
+  Error error;
 };
 
 }  // namespace model

@@ -68,7 +68,10 @@ function testCovers(test: TestCase, paramIndices: number[], valueIndices: number
  * Independently validate t-wise coverage of a test suite.
  *
  * This validator enumerates all t-tuples from scratch (not using any
- * generator internals) and checks each against the test suite.
+ * generator internals) and checks each against the test suite. Tuples
+ * containing a value marked invalid are excluded from the coverage universe
+ * (they do not count toward totalTuples or uncovered), matching the
+ * generator's CoverageEngine.excludeInvalidValues semantics.
  */
 export function validateCoverage(
   params: Parameter[],
@@ -114,6 +117,20 @@ export function validateCoverage(
         const radix = params[combo[i]].size;
         valueIndices[i] = remainder % radix;
         remainder = Math.trunc(remainder / radix);
+      }
+
+      // Step 2a: Exclude tuples containing any invalid value from the coverage
+      // universe entirely (matches CoverageEngine.excludeInvalidValues). Such
+      // tuples do not count toward totalTuples or the uncovered list.
+      let containsInvalidValue = false;
+      for (let i = 0; i < strength; ++i) {
+        if (params[combo[i]].isInvalid(valueIndices[i])) {
+          containsInvalidValue = true;
+          break;
+        }
+      }
+      if (containsInvalidValue) {
+        continue;
       }
 
       // Step 2b: Exclude constraint-invalid tuples from the universe entirely

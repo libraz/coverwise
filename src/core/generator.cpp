@@ -175,7 +175,12 @@ void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t
         auto neg_score_fn = [&fresh_cov](const model::TestCase& partial, uint32_t pi, uint32_t vi) {
           return fresh_cov.ScoreValue(partial, pi, vi);
         };
-        auto tc = algo::GreedyConstruct(params, neg_score_fn, constraints, rng, neg_mask);
+        auto tc_opt = algo::GreedyConstruct(params, neg_score_fn, constraints, rng, neg_mask);
+        if (!tc_opt) {
+          if (++retries >= kMaxRetries) break;
+          continue;
+        }
+        auto& tc = *tc_opt;
         uint32_t score = fresh_cov.ScoreCandidate(tc);
         if (score == 0) {
           if (++retries >= kMaxRetries) break;
@@ -232,6 +237,7 @@ model::GenerateResult Generate(const GenerateOptions& options) {
   if (!coverage_result.second.ok()) {
     result.warnings.push_back(coverage_result.second.message + ": " +
                               coverage_result.second.detail);
+    result.error = coverage_result.second;
     return result;
   }
   auto coverage = std::move(coverage_result.first);
@@ -242,17 +248,20 @@ model::GenerateResult Generate(const GenerateOptions& options) {
     auto [indices, resolve_err] = ResolveParamNames(sm.parameter_names, opts.parameters);
     if (!resolve_err.empty()) {
       result.warnings.push_back(resolve_err);
+      result.error = {model::Error::Code::kInvalidInput, resolve_err, ""};
       return result;
     }
     if (indices.size() < sm.strength) {
-      result.warnings.push_back("Sub-model strength (" + std::to_string(sm.strength) +
-                                ") exceeds parameter count (" + std::to_string(indices.size()) +
-                                ")");
+      std::string msg = "Sub-model strength (" + std::to_string(sm.strength) +
+                        ") exceeds parameter count (" + std::to_string(indices.size()) + ")";
+      result.warnings.push_back(msg);
+      result.error = {model::Error::Code::kInvalidInput, msg, ""};
       return result;
     }
     auto [eng, sm_err] = CoverageEngine::Create(opts.parameters, indices, sm.strength);
     if (!sm_err.ok()) {
       result.warnings.push_back(sm_err.message + ": " + sm_err.detail);
+      result.error = sm_err;
       return result;
     }
     sub_engines.push_back(std::move(eng));
@@ -264,6 +273,7 @@ model::GenerateResult Generate(const GenerateOptions& options) {
     auto parse_result = model::ParseConstraint(expr, opts.parameters);
     if (!parse_result.error.ok()) {
       result.warnings.push_back(parse_result.error.message + ": " + parse_result.error.detail);
+      result.error = parse_result.error;
       return result;
     }
     constraints.push_back(std::move(parse_result.constraint));
@@ -337,11 +347,18 @@ model::GenerateResult Generate(const GenerateOptions& options) {
   uint32_t retries = 0;
   while (!AllComplete(coverage, sub_engines) &&
          (opts.max_tests == 0 || result.tests.size() < static_cast<size_t>(opts.max_tests))) {
-    auto tc = sub_engines.empty()
-                  ? algo::GreedyConstruct(opts.parameters, simple_score_fn, constraints, rng,
-                                          valid_mask, resolved_weights)
-                  : algo::GreedyConstruct(opts.parameters, combined_score_fn, constraints, rng,
-                                          valid_mask, resolved_weights);
+    auto tc_opt = sub_engines.empty()
+                      ? algo::GreedyConstruct(opts.parameters, simple_score_fn, constraints, rng,
+                                              valid_mask, resolved_weights)
+                      : algo::GreedyConstruct(opts.parameters, combined_score_fn, constraints, rng,
+                                              valid_mask, resolved_weights);
+    // A failed construction (no constraint-satisfying value for some parameter)
+    // is treated like a zero-score candidate: retry with a different shuffle.
+    if (!tc_opt) {
+      if (++retries >= kMaxRetries) break;
+      continue;
+    }
+    auto& tc = *tc_opt;
     uint32_t score = TotalScore(coverage, sub_engines, tc);
     if (score == 0) {
       if (++retries >= kMaxRetries) break;

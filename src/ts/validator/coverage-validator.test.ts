@@ -171,6 +171,39 @@ describe('validateCoverage', () => {
   });
 });
 
+describe('validateCoverage with invalid values', () => {
+  it('excludes invalid-value tuples from the universe (oracle/generator agreement)', () => {
+    // os = {win, mac, ie6(invalid)}, browser = {chrome, safari}.
+    // Valid pairs: (win|mac) x (chrome|safari) = 4. Tuples involving os=ie6
+    // (ie6/chrome, ie6/safari) must be excluded, matching the generator.
+    const params = [
+      new Parameter('os', ['win', 'mac', 'ie6'], [false, false, true]),
+      new Parameter('browser', ['chrome', 'safari'], [false, false]),
+    ];
+
+    // Suite achieving full valid coverage (no invalid value referenced).
+    const tests: TestCase[] = [
+      { values: [0, 0] }, // win, chrome
+      { values: [0, 1] }, // win, safari
+      { values: [1, 0] }, // mac, chrome
+      { values: [1, 1] }, // mac, safari
+    ];
+
+    const report = validateCoverage(params, tests, 2);
+
+    // Only the 4 valid pairs are in the universe; ie6-based tuples excluded.
+    expect(report.totalTuples).toBe(4);
+    expect(report.coveredTuples).toBe(4);
+    expect(report.coverageRatio).toBe(1.0);
+    expect(report.uncovered).toHaveLength(0);
+
+    // The invalid-value tuples must never surface as uncovered.
+    for (const u of report.uncovered) {
+      expect(u.tuple).not.toContain('os=ie6');
+    }
+  });
+});
+
 describe('validateCoverage with invalid value indices', () => {
   it('handles test case with out-of-range value index gracefully', () => {
     const params = [

@@ -33,7 +33,10 @@ struct ClassCoverageReport {
 /// @brief Independently validate t-wise coverage of a test suite.
 ///
 /// This validator enumerates all t-tuples from scratch (not using any
-/// generator internals) and checks each against the test suite.
+/// generator internals) and checks each against the test suite. Tuples
+/// containing a value marked invalid are excluded from the coverage universe
+/// (they do not count toward total_tuples or uncovered), matching the
+/// generator's CoverageEngine::ExcludeInvalidValues semantics.
 ///
 /// @param constraints Optional constraint AST list. Tuples whose partial
 ///                    assignment evaluates any constraint to kFalse are

@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include "model/constraint_ast.h"
@@ -46,11 +47,14 @@ using ScoreFn = std::function<uint32_t(const model::TestCase&, uint32_t, uint32_
 ///   If non-empty, weights[pi][vi] is the weight for value vi of param pi.
 ///   When multiple values tie on coverage score, the highest-weighted one is
 ///   preferred. Default weight is 1.0.
-/// @return The constructed test case.
-model::TestCase GreedyConstruct(const std::vector<model::Parameter>& params, ScoreFn score_fn,
-                                const std::vector<model::Constraint>& constraints, util::Rng& rng,
-                                const std::vector<std::vector<bool>>& allowed_values = {},
-                                const std::vector<std::vector<double>>& weights = {});
+/// @return The constructed test case, or std::nullopt if no constraint-satisfying
+///   value exists for some parameter. A constraint-violating value is never
+///   written into the returned test case.
+std::optional<model::TestCase> GreedyConstruct(
+    const std::vector<model::Parameter>& params, ScoreFn score_fn,
+    const std::vector<model::Constraint>& constraints, util::Rng& rng,
+    const std::vector<std::vector<bool>>& allowed_values = {},
+    const std::vector<std::vector<double>>& weights = {});
 
 }  // namespace algo
 }  // namespace coverwise

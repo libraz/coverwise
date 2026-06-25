@@ -15,6 +15,10 @@ describe('greedyConstruct', () => {
     const scoreFn: ScoreFn = () => 1;
     const rng = new Rng(42);
     const tc = greedyConstruct(params, scoreFn, [], rng);
+    expect(tc).not.toBeNull();
+    if (tc === null) {
+      return;
+    }
 
     expect(tc.values.length).toBe(2);
     expect(tc.values[0]).not.toBe(UNASSIGNED);
@@ -33,6 +37,10 @@ describe('greedyConstruct', () => {
     };
     const rng = new Rng(42);
     const tc = greedyConstruct(params, scoreFn, [], rng);
+    expect(tc).not.toBeNull();
+    if (tc === null) {
+      return;
+    }
 
     expect(tc.values[0]).toBe(2);
   });
@@ -53,6 +61,10 @@ describe('greedyConstruct', () => {
 
     const rng = new Rng(42);
     const tc = greedyConstruct(params, scoreFn, [constraint], rng);
+    expect(tc).not.toBeNull();
+    if (tc === null) {
+      return;
+    }
 
     // os should be mac (value 1) since it's preferred.
     // browser should NOT be ie (value 1) because it's pruned.
@@ -76,12 +88,16 @@ describe('greedyConstruct', () => {
     ];
     const rng = new Rng(42);
     const tc = greedyConstruct(params, scoreFn, [], rng, allowedValues);
+    expect(tc).not.toBeNull();
+    if (tc === null) {
+      return;
+    }
 
     expect(tc.values[0] === 0 || tc.values[0] === 2).toBe(true);
     expect(tc.values[1]).toBe(3);
   });
 
-  it('falls back to first allowed value when all values are pruned by constraints', () => {
+  it('fails construction when all allowed values are pruned by constraints', () => {
     // Single param with 3 values. Constraint rejects all values.
     const params = [{ size: 3 }];
     const scoreFn: ScoreFn = () => 1;
@@ -100,11 +116,12 @@ describe('greedyConstruct', () => {
     const rng = new Rng(42);
     const tc = greedyConstruct(params, scoreFn, [alwaysFalse], rng, allowedValues);
 
-    // When all allowed values are pruned by constraint, fallback to first allowed.
-    expect(tc.values[0]).toBe(0);
+    // No constraint-satisfying value exists => construction fails (null) rather
+    // than emitting a constraint-violating value.
+    expect(tc).toBeNull();
   });
 
-  it('falls back to 0 when no allowed mask and all values pruned', () => {
+  it('fails construction when no allowed mask and all values are pruned', () => {
     const params = [{ size: 3 }];
     const scoreFn: ScoreFn = () => 1;
 
@@ -120,8 +137,8 @@ describe('greedyConstruct', () => {
     const rng = new Rng(42);
     const tc = greedyConstruct(params, scoreFn, [alwaysFalse], rng);
 
-    // No mask, all pruned -> fallback to 0.
-    expect(tc.values[0]).toBe(0);
+    // No constraint-satisfying value exists => construction fails (null).
+    expect(tc).toBeNull();
   });
 
   it('produces deterministic results with the same seed', () => {
@@ -134,6 +151,11 @@ describe('greedyConstruct', () => {
     const rng2 = new Rng(77);
     const tc2 = greedyConstruct(params, scoreFn, [], rng2);
 
+    expect(tc1).not.toBeNull();
+    expect(tc2).not.toBeNull();
+    if (tc1 === null || tc2 === null) {
+      return;
+    }
     expect(tc1.values).toEqual(tc2.values);
   });
 
@@ -147,6 +169,11 @@ describe('greedyConstruct', () => {
     const rng2 = new Rng(9999);
     const tc2 = greedyConstruct(params, scoreFn, [], rng2);
 
+    expect(tc1).not.toBeNull();
+    expect(tc2).not.toBeNull();
+    if (tc1 === null || tc2 === null) {
+      return;
+    }
     // With 10 values per param and equal scores, different seeds should produce
     // different test cases with very high probability.
     const same = tc1.values.every((v, i) => v === tc2.values[i]);

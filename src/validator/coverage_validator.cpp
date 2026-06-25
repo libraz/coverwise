@@ -72,6 +72,21 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
         remainder /= radix;
       }
 
+      // Step 2a: Exclude tuples containing any invalid value from the coverage
+      // universe entirely (matches the generator's
+      // CoverageEngine::ExcludeInvalidValues semantics). Such tuples do not
+      // count toward total_tuples or the uncovered list.
+      bool contains_invalid_value = false;
+      for (uint32_t j = 0; j < strength; ++j) {
+        if (params[combo[j]].is_invalid(value_indices[j])) {
+          contains_invalid_value = true;
+          break;
+        }
+      }
+      if (contains_invalid_value) {
+        continue;
+      }
+
       // Step 2b: If any constraint marks this partial assignment as kFalse,
       // exclude this tuple from the coverage universe entirely (matches the
       // generator's CoverageEngine::ExcludeInvalidTuples semantics).

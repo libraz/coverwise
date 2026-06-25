@@ -77,6 +77,9 @@ function breakTieWithWeights(
 ///   to be considered. If empty, all values are allowed.
 /// @param weights Optional per-parameter per-value weights for tie-breaking.
 ///   If non-empty, weights[pi][vi] is the weight for value vi of param pi.
+/// @returns The constructed test case, or null if no constraint-satisfying value
+///   exists for some parameter. A constraint-violating value is never written
+///   into the returned test case.
 export function greedyConstruct(
   params: readonly GreedyParam[],
   scoreFn: ScoreFn,
@@ -84,7 +87,7 @@ export function greedyConstruct(
   rng: Rng,
   allowedValues: boolean[][] = [],
   weights: number[][] = [],
-): TestCase {
+): TestCase | null {
   const numParams = params.length;
 
   const values = new Array<number>(numParams);
@@ -173,8 +176,9 @@ export function greedyConstruct(
       }
 
       if (!assigned) {
-        // No value satisfies constraints; pick the first allowed value anyway.
-        tc.values[pi] = candidates.length > 0 ? candidates[0] : 0;
+        // No constraint-satisfying value exists for this parameter. Signal
+        // construction failure rather than writing a constraint-violating value.
+        return null;
       }
     } else {
       tc.values[pi] = breakTieWithWeights(bestValues, weights, pi, rng);

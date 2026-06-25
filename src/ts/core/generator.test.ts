@@ -1,7 +1,27 @@
+import { parseConstraint } from '../model/constraint-parser.js';
+import { ErrorCode } from '../model/error.js';
+import type { GenerateOptions } from '../model/generate-options.js';
 import { createGenerateOptions } from '../model/generate-options.js';
 import { Parameter } from '../model/parameter.js';
+import type { GenerateResult } from '../model/test-case.js';
+import { validateConstraintReport } from '../validator/constraint-validator.js';
 import { validateCoverage } from '../validator/coverage-validator.js';
 import { estimateModel, extend, generate } from './generator.js';
+
+/// Count constraint violations across a generated suite's positive tests.
+function countPositiveViolations(result: GenerateResult, opts: GenerateOptions): number {
+  const params = opts.parameters.map((p) =>
+    p.invalid ? new Parameter(p.name, p.values, p.invalid) : new Parameter(p.name, p.values),
+  );
+  const constraints = opts.constraintExpressions.map((expr) => {
+    const parsed = parseConstraint(expr, params);
+    if (parsed.constraint == null) {
+      throw new Error(`constraint parse failed: ${expr}`);
+    }
+    return parsed.constraint;
+  });
+  return validateConstraintReport(result.tests, constraints).violations;
+}
 
 describe('generate', () => {
   it('achieves 100% pairwise coverage for 2x2 params', () => {
@@ -117,6 +137,74 @@ describe('generate', () => {
       const isIe = tc.values[1] === 1;
       expect(isMac && isIe).toBe(false);
     }
+  });
+
+  it('emits no constraint-violating tests for an over-constrained model', () => {
+    // For some partial assignments every value of C is constraint-pruned. The
+    // greedy fallback must drop the failed construction rather than emit a
+    // violating value, so the output contains zero violations.
+    for (let seed = 0; seed < 25; ++seed) {
+      const opts = createGenerateOptions({
+        parameters: [
+          { name: 'A', values: ['a0', 'a1'] },
+          { name: 'B', values: ['b0', 'b1'] },
+          { name: 'C', values: ['c0', 'c1'] },
+        ],
+        constraintExpressions: [
+          'IF A=a0 THEN C!=c0',
+          'IF B=b1 THEN C!=c1',
+          'IF A=a1 THEN C!=c1',
+          'IF B=b0 THEN C!=c0',
+        ],
+        strength: 2,
+        seed,
+      });
+      const result = generate(opts);
+      expect(countPositiveViolations(result, opts)).toBe(0);
+    }
+  });
+
+  it('emits no tests when a parameter is fully unsatisfiable', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['a0', 'a1'] },
+        { name: 'C', values: ['c0', 'c1'] },
+      ],
+      constraintExpressions: ['C!=c0', 'C!=c1'],
+      strength: 2,
+      seed: 7,
+    });
+    const result = generate(opts);
+    expect(countPositiveViolations(result, opts)).toBe(0);
+    expect(result.tests).toHaveLength(0);
+  });
+
+  it('sets a constraint error code when a constraint fails to parse', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['a0', 'a1'] },
+        { name: 'B', values: ['b0', 'b1'] },
+      ],
+      constraintExpressions: ['IF nonexistent=x THEN B!=b0'],
+      strength: 2,
+    });
+    const result = generate(opts);
+    expect(result.error.code).toBe(ErrorCode.ConstraintError);
+    expect(result.tests).toHaveLength(0);
+  });
+
+  it('leaves the error signal Ok on successful generation', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['a0', 'a1'] },
+        { name: 'B', values: ['b0', 'b1'] },
+      ],
+      strength: 2,
+      seed: 1,
+    });
+    const result = generate(opts);
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.coverage).toBe(1.0);
   });
 
   it('limits test count with maxTests', () => {

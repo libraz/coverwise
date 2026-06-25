@@ -4,6 +4,7 @@
 
 #include <limits>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "core/coverage_engine.h"
@@ -32,6 +33,14 @@ inline ScoreFn MakeScoreFn(const CoverageEngine& engine) {
   };
 }
 
+/// @brief Unwrap a GreedyConstruct result, asserting that construction
+/// succeeded. Tests that expect a valid test case use this helper; tests that
+/// exercise construction failure inspect the std::optional directly.
+inline TestCase Unwrap(std::optional<TestCase> result) {
+  EXPECT_TRUE(result.has_value()) << "GreedyConstruct unexpectedly failed";
+  return result.value_or(TestCase{});
+}
+
 // ---------------------------------------------------------------------------
 // Basic construction
 // ---------------------------------------------------------------------------
@@ -48,7 +57,7 @@ TEST(GreedyConstructTest, AllParametersAssigned) {
 
   Rng rng(42);
   std::vector<Constraint> constraints;
-  auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
+  auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
 
   ASSERT_EQ(tc.values.size(), 3u);
   for (uint32_t v : tc.values) {
@@ -69,7 +78,7 @@ TEST(GreedyConstructTest, SingleParameter) {
 
   Rng rng(0);
   std::vector<Constraint> constraints;
-  auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
+  auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
 
   ASSERT_EQ(tc.values.size(), 1u);
   EXPECT_NE(tc.values[0], kUnassigned);
@@ -98,7 +107,7 @@ TEST(GreedyConstructTest, CoverageMaximization) {
   std::vector<Constraint> constraints;
   // Generate enough tests to cover remaining 3 tuples.
   for (int i = 0; i < 10 && !engine.IsComplete(); ++i) {
-    auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
+    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
     engine.AddTestCase(tc);
   }
   EXPECT_TRUE(engine.IsComplete());
@@ -119,7 +128,7 @@ TEST(GreedyConstructTest, FullCoverageThreeParams) {
   std::vector<Constraint> constraints;
   int count = 0;
   while (!engine.IsComplete() && count < 20) {
-    auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
+    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
     engine.AddTestCase(tc);
     ++count;
   }
@@ -152,7 +161,7 @@ TEST(GreedyConstructTest, ConstraintPruning) {
   Rng rng(12);
   for (int i = 0; i < 20; ++i) {
     rng.Seed(static_cast<uint64_t>(i));
-    auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
+    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
     if (tc.values[0] == 0) {
       EXPECT_NE(tc.values[1], 1u) << "Constraint violated: A=a0 and B=b1";
     }
@@ -175,7 +184,7 @@ TEST(GreedyConstructTest, ConstraintUnknownAllowed) {
   constraints.push_back(std::make_unique<NotEqualsNode>(1, 1));  // B != b1
 
   Rng rng(0);
-  auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
+  auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
   // A should still get assigned (not pruned by the B constraint).
   EXPECT_NE(tc.values[0], kUnassigned);
   // B should be 0 (b1 is pruned by the constraint).
@@ -203,7 +212,7 @@ TEST(GreedyConstructTest, AllowedValuesFiltering) {
 
   Rng rng(5);
   std::vector<Constraint> constraints;
-  auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng, allowed);
+  auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng, allowed));
 
   EXPECT_EQ(tc.values[0], 1u);  // only a1 is allowed
   EXPECT_TRUE(tc.values[1] == 0u || tc.values[1] == 2u);
@@ -213,9 +222,9 @@ TEST(GreedyConstructTest, AllowedValuesFiltering) {
 // All values constrained away (fallback behavior)
 // ---------------------------------------------------------------------------
 
-TEST(GreedyConstructTest, AllValuesConstrainedFallback) {
-  // If every value for a parameter is pruned by constraints, the fallback
-  // should assign the first allowed value (or 0 if no allowed mask).
+TEST(GreedyConstructTest, AllValuesConstrainedFailsConstruction) {
+  // If every value for a parameter is pruned by constraints, construction
+  // must fail (std::nullopt) rather than emit a constraint-violating value.
   std::vector<Parameter> params = {
       {"A", {"a0", "a1"}, {}},
       {"B", {"b0", "b1"}, {}},
@@ -231,14 +240,13 @@ TEST(GreedyConstructTest, AllValuesConstrainedFallback) {
   Rng rng(0);
   auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
 
-  // All A values pruned => fallback to 0.
-  EXPECT_EQ(tc.values[0], 0u);
-  // B should still get a valid assignment.
-  EXPECT_NE(tc.values[1], kUnassigned);
+  // No constraint-satisfying value exists for A => construction fails.
+  EXPECT_FALSE(tc.has_value());
 }
 
-TEST(GreedyConstructTest, AllValuesConstrainedWithAllowedMask) {
-  // Fallback with allowed_values should pick the first allowed value.
+TEST(GreedyConstructTest, AllValuesConstrainedWithAllowedMaskFailsConstruction) {
+  // When every allowed value is also pruned by constraints, construction must
+  // fail rather than emit a constraint-violating value.
   std::vector<Parameter> params = {
       {"A", {"a0", "a1", "a2"}, {}},
       {"B", {"b0", "b1"}, {}},
@@ -252,7 +260,7 @@ TEST(GreedyConstructTest, AllValuesConstrainedWithAllowedMask) {
   constraints.push_back(std::make_unique<NotEqualsNode>(0, 1));
   constraints.push_back(std::make_unique<NotEqualsNode>(0, 2));
 
-  // Allowed mask: only a1 and a2 are allowed.
+  // Allowed mask: only a1 and a2 are allowed (both still constraint-pruned).
   std::vector<std::vector<bool>> allowed = {
       {false, true, true},
       {true, true},
@@ -261,8 +269,8 @@ TEST(GreedyConstructTest, AllValuesConstrainedWithAllowedMask) {
   Rng rng(0);
   auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng, allowed);
 
-  // All A values pruned by constraints. Fallback picks first allowed = a1.
-  EXPECT_EQ(tc.values[0], 1u);
+  // Every allowed value of A is constraint-pruned => construction fails.
+  EXPECT_FALSE(tc.has_value());
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +301,7 @@ TEST(GreedyConstructTest, WeightBasedTieBreaking) {
     Rng rng(seed);
     auto [eng, e] = CoverageEngine::Create(params, 2);
     ASSERT_TRUE(e.ok());
-    auto tc = GreedyConstruct(params, MakeScoreFn(eng), constraints, rng, {}, weights);
+    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(eng), constraints, rng, {}, weights));
     if (tc.values[0] == 2) {
       ++a2_count;
     }
@@ -320,12 +328,12 @@ TEST(GreedyConstructTest, Determinism) {
     auto [engine1, err1] = CoverageEngine::Create(params, 2);
     ASSERT_TRUE(err1.ok());
     Rng rng1(seed);
-    auto tc1 = GreedyConstruct(params, MakeScoreFn(engine1), constraints, rng1);
+    auto tc1 = Unwrap(GreedyConstruct(params, MakeScoreFn(engine1), constraints, rng1));
 
     auto [engine2, err2] = CoverageEngine::Create(params, 2);
     ASSERT_TRUE(err2.ok());
     Rng rng2(seed);
-    auto tc2 = GreedyConstruct(params, MakeScoreFn(engine2), constraints, rng2);
+    auto tc2 = Unwrap(GreedyConstruct(params, MakeScoreFn(engine2), constraints, rng2));
 
     ASSERT_EQ(tc1.values.size(), tc2.values.size());
     for (size_t i = 0; i < tc1.values.size(); ++i) {
@@ -362,7 +370,7 @@ TEST(GreedyConstructTest, MultiEngineSumsScores) {
   std::vector<Constraint> constraints;
   Rng rng(77);
 
-  auto tc = GreedyConstruct(params, multi_score, constraints, rng);
+  auto tc = Unwrap(GreedyConstruct(params, multi_score, constraints, rng));
 
   ASSERT_EQ(tc.values.size(), 3u);
   for (uint32_t v : tc.values) {
@@ -373,7 +381,7 @@ TEST(GreedyConstructTest, MultiEngineSumsScores) {
   eng1.AddTestCase(tc);
   eng2.AddTestCase(tc);
 
-  auto tc2 = GreedyConstruct(params, multi_score, constraints, rng);
+  auto tc2 = Unwrap(GreedyConstruct(params, multi_score, constraints, rng));
   ASSERT_EQ(tc2.values.size(), 3u);
   for (uint32_t v : tc2.values) {
     EXPECT_NE(v, kUnassigned);
@@ -395,7 +403,7 @@ TEST(GreedyConstructTest, MultiEngineFullCoverage) {
 
   int count = 0;
   while (!engine1.IsComplete() && count < 20) {
-    auto tc = GreedyConstruct(params, MakeScoreFn(engine1), constraints, rng);
+    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine1), constraints, rng));
     engine1.AddTestCase(tc);
     ++count;
   }
@@ -419,13 +427,14 @@ TEST(GreedyConstructTest, MultiEngineConstraintPruning) {
 
   for (int i = 0; i < 10; ++i) {
     rng.Seed(static_cast<uint64_t>(i));
-    auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
+    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
     EXPECT_NE(tc.values[0], 0u) << "Constraint violated at seed " << i;
   }
 }
 
-TEST(GreedyConstructTest, MultiEngineAllPrunedFallback) {
-  // Multi-engine: when all values are pruned, fallback to 0.
+TEST(GreedyConstructTest, MultiEngineAllPrunedFailsConstruction) {
+  // Multi-engine: when all values of a parameter are pruned, construction must
+  // fail rather than emit a constraint-violating value.
   std::vector<Parameter> params = {
       {"A", {"a0", "a1"}, {}},
       {"B", {"b0", "b1"}, {}},
@@ -441,8 +450,8 @@ TEST(GreedyConstructTest, MultiEngineAllPrunedFallback) {
   Rng rng(0);
   auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
 
-  // All pruned => fallback to 0.
-  EXPECT_EQ(tc.values[0], 0u);
+  // No constraint-satisfying value exists for A => construction fails.
+  EXPECT_FALSE(tc.has_value());
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +478,7 @@ TEST(GreedyConstructTest, EqualWeightsUniform) {
   std::vector<std::vector<double>> weights = {{1.0, 1.0}, {1.0, 1.0}};
   Rng rng(42);
   std::vector<Constraint> constraints;
-  auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng, {}, weights);
+  auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng, {}, weights));
   // Should succeed without crash
   EXPECT_EQ(tc.values.size(), 2u);
 }

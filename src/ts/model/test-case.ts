@@ -1,5 +1,7 @@
 /// Test case and result representations.
 
+import { type ErrorInfo, okError } from './error.js';
+
 /** Sentinel value indicating an unassigned parameter (matches C++ UINT32_MAX). */
 export const UNASSIGNED = 0xffffffff;
 
@@ -63,6 +65,15 @@ export interface GenerateResult {
   warnings: string[];
   /** Equivalence class coverage (if classes defined). */
   classCoverage?: ClassCoverage;
+  /**
+   * Machine-readable error signal for early-exit conditions.
+   *
+   * Set to a non-Ok code when generation aborts before producing a suite,
+   * e.g. a constraint parse error (ConstraintError) or invalid input
+   * (InvalidInput). Remains Ok when generation runs to completion, even if
+   * coverage is incomplete (insufficient coverage is reported via `coverage`).
+   */
+  error: ErrorInfo;
 }
 
 /** Create a default UncoveredTuple. */
@@ -94,5 +105,6 @@ export function createGenerateResult(): GenerateResult {
     stats: createGenerateStats(),
     suggestions: [],
     warnings: [],
+    error: okError(),
   };
 }
