@@ -5,6 +5,7 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { analyzeCoverage, estimateModel, extendTests, generate, init } from './index.js';
+import { generate as pureGenerate } from './pure/index.js';
 import type {
   CoverageReport,
   GenerateInput,
@@ -332,20 +333,17 @@ describe('WASM / TS compatibility', () => {
         expect(tsResult.stats.coveredTuples).toBe(wasmResult.stats.coveredTuples);
         expect(tsResult.uncovered.length).toBe(wasmResult.uncovered.length);
         expect(tsResult.negativeTests?.length ?? 0).toBe(wasmResult.negativeTests?.length ?? 0);
-        // Note: tests.length may differ between engines because the greedy
-        // algorithm's RNG produces different value orderings in C++ vs TS,
-        // which can lead to different numbers of tests while still achieving
-        // the same coverage.
+        // Both engines share the same RNG, so exact suite equality (including
+        // length) is asserted separately in the "exact test output match" test.
       });
     }
 
-    // Exact output match tests are skipped because the C++ / WASM engine uses
-    // std::mt19937_64 (Mersenne Twister 64-bit) while the TypeScript engine
-    // uses xoshiro128**. The same seed produces different sequences across
-    // engines, but both are deterministic within their own engine.
-    // Compatibility tests compare coverage completeness, not exact output.
+    // Exact output match: both engines share the xoshiro128** RNG with
+    // SplitMix32 seeding and identical rejection sampling, so the same seed
+    // produces a byte-identical generated suite across the WASM (C++) and
+    // pure TypeScript surfaces.
     for (const { name, input } of scenarios) {
-      it.skip(`${name}: exact test output match`, () => {
+      it(`${name}: exact test output match`, () => {
         const wasmResult = generate(input);
         const tsResult = tsGenerate(input);
 
@@ -489,5 +487,42 @@ describe('WASM / TS compatibility', () => {
       expect(wasmExtended.coverage).toBe(1.0);
       expect(tsExtended.stats.totalTuples).toBe(wasmExtended.stats.totalTuples);
     });
+  });
+
+  // The canonical seed domain is an integer in [0, 2^32 - 1]. Both the
+  // WASM-backed and pure surfaces must reject the same out-of-domain values
+  // with the same error shape.
+  describe('seed validation parity', () => {
+    const params: Parameter[] = [{ name: 'os', values: ['win', 'mac'] }];
+    const validInput = (seed: number): GenerateInput => ({ parameters: params, seed });
+
+    const surfaces: Array<{ name: string; gen: (input: GenerateInput) => GenerateResult }> = [
+      { name: 'wasm', gen: generate },
+      { name: 'pure', gen: pureGenerate },
+    ];
+
+    for (const { name, gen } of surfaces) {
+      describe(name, () => {
+        it('rejects a negative seed', () => {
+          expect(() => gen(validInput(-1))).toThrow(/Invalid seed/);
+        });
+
+        it('rejects a non-integer seed', () => {
+          expect(() => gen(validInput(1.5))).toThrow(/Invalid seed/);
+        });
+
+        it('rejects a seed at 2^32', () => {
+          expect(() => gen(validInput(0x100000000))).toThrow(/Invalid seed/);
+        });
+
+        it('accepts the 2^32 - 1 boundary', () => {
+          expect(() => gen(validInput(0xffffffff))).not.toThrow();
+        });
+
+        it('accepts seed 0', () => {
+          expect(() => gen(validInput(0))).not.toThrow();
+        });
+      });
+    }
   });
 });

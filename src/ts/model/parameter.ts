@@ -1,5 +1,6 @@
 /// Parameter definition for combinatorial test generation.
 
+import { asciiCaseInsensitiveEqual } from '../util/string_util.js';
 import { UNASSIGNED } from './test-case.js';
 
 export { UNASSIGNED };
@@ -126,9 +127,8 @@ export class Parameter {
    * @returns The value index, or UNASSIGNED if not found.
    */
   findValueIndex(name: string, caseSensitive = true): number {
-    const eq = caseSensitive
-      ? (a: string, b: string) => a === b
-      : (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+    // Case-insensitive value resolution is ASCII-only, matching the C++ core.
+    const eq = caseSensitive ? (a: string, b: string) => a === b : asciiCaseInsensitiveEqual;
 
     // Check primary values first.
     for (let i = 0; i < this.values.length; ++i) {

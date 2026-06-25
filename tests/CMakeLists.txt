@@ -21,6 +21,7 @@ endfunction()
 coverwise_add_test(bitset_test util/bitset_test.cpp)
 coverwise_add_test(rng_test util/rng_test.cpp)
 coverwise_add_test(combinatorics_test util/combinatorics_test.cpp)
+coverwise_add_test(string_util_test util/string_util_test.cpp)
 
 # Model tests
 coverwise_add_test(boundary_test model/boundary_test.cpp)

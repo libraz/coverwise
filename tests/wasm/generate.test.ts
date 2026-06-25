@@ -239,8 +239,8 @@ describe('coverwise WASM', () => {
       });
       expect(result.coverage).toBe(1.0);
       for (const tc of result.tests) {
-        if (tc['OS'] === 'mac') {
-          expect(tc['ブラウザ']).not.toBe('edge');
+        if (tc.OS === 'mac') {
+          expect(tc.ブラウザ).not.toBe('edge');
         }
       }
     });
@@ -256,8 +256,8 @@ describe('coverwise WASM', () => {
       });
       expect(result.coverage).toBe(1.0);
       for (const tc of result.tests) {
-        if (tc['OS'] === 'マック') {
-          expect(tc['ブラウザ']).not.toBe('エッジ');
+        if (tc.OS === 'マック') {
+          expect(tc.ブラウザ).not.toBe('エッジ');
         }
       }
     });
@@ -273,8 +273,8 @@ describe('coverwise WASM', () => {
       });
       expect(result.coverage).toBe(1.0);
       for (const tc of result.tests) {
-        if (tc['OS'] === 'Windows 10') {
-          expect(tc['browser']).not.toBe('edge');
+        if (tc.OS === 'Windows 10') {
+          expect(tc.browser).not.toBe('edge');
         }
       }
     });

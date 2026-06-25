@@ -1,6 +1,10 @@
 /// Parser for human-readable constraint expressions.
 
-import { isNumeric as isNumericString } from '../util/string_util.js';
+import {
+  asciiCaseInsensitiveEqual,
+  asciiToUpper,
+  isNumeric as isNumericString,
+} from '../util/string_util.js';
 import {
   AndNode,
   type ConstraintNode,
@@ -80,8 +84,9 @@ interface Token {
 
 // --- Tokenizer ---
 
+// Keyword matching is ASCII-only by design, matching the C++ core.
 function toUpper(s: string): string {
-  return s.toUpperCase();
+  return asciiToUpper(s);
 }
 
 function isIdentChar(c: string): boolean {
@@ -356,7 +361,8 @@ function namesEqual(a: string, b: string, caseSensitive: boolean): boolean {
   if (caseSensitive) {
     return a === b;
   }
-  return a.toLowerCase() === b.toLowerCase();
+  // Case-insensitive name resolution is ASCII-only, matching the C++ core.
+  return asciiCaseInsensitiveEqual(a, b);
 }
 
 interface ResolvedParam {

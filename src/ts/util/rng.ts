@@ -1,10 +1,12 @@
 /// @file rng.ts
 /// @brief Seeded PRNG for deterministic generation using xoshiro128**.
 ///
-/// This implementation uses xoshiro128** with SplitMix32 seeding.
-/// The C++ engine uses std::mt19937_64, which produces different output
-/// for the same seed. Seed portability across C++/TS is not guaranteed
-/// by design; both engines are independently deterministic.
+/// This implementation uses xoshiro128** with SplitMix32 seeding and rejection
+/// sampling. The C++ engine (src/util/rng.cpp) is a byte-for-byte port of this
+/// algorithm, so the same seed produces an identical integer stream — and thus
+/// an identical generated suite — across the C++/WASM and TypeScript surfaces.
+/// The canonical seed domain is an integer in [0, 2^32 - 1]; only the low 32
+/// bits are significant (`seed >>> 0`).
 
 /// SplitMix32: used to initialize xoshiro128** state from a single seed.
 function splitmix32(seed: number): () => number {

@@ -71,6 +71,19 @@ bool ValidateStrength(uint32_t strength) {
   return true;
 }
 
+/// @brief Validate that a seed value is an integer in the canonical domain.
+///
+/// The canonical seed domain is [0, 2^32 - 1], shared across all surfaces.
+/// @param seed Raw numeric value from the parsed JSON input.
+/// @return true if valid; otherwise prints a message to stderr and returns false.
+bool ValidateSeed(double seed) {
+  if (seed != std::floor(seed) || seed < 0.0 || seed > 4294967295.0) {
+    std::cerr << "error: seed must be an integer in [0, 4294967295]\n";
+    return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Minimal JSON value representation — just enough for coverwise I/O.
 // ---------------------------------------------------------------------------
@@ -952,6 +965,9 @@ int RunGenerate(int argc, char* argv[]) {
   }
   const auto& seed_val = json["seed"];
   if (!seed_val.IsNull() && seed_val.type == JsonType::kNumber) {
+    if (!ValidateSeed(seed_val.number_val)) {
+      return kExitInvalidInput;
+    }
     options.seed = static_cast<uint64_t>(seed_val.number_val);
   }
   const auto& max_tests_val = json["maxTests"];
@@ -1135,6 +1151,9 @@ int RunExtend(int argc, char* argv[]) {
   }
   const auto& seed_val = input_json["seed"];
   if (!seed_val.IsNull() && seed_val.type == JsonType::kNumber) {
+    if (!ValidateSeed(seed_val.number_val)) {
+      return kExitInvalidInput;
+    }
     options.seed = static_cast<uint64_t>(seed_val.number_val);
   }
   const auto& max_tests_val = input_json["maxTests"];

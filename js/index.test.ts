@@ -794,8 +794,8 @@ describe('Japanese and emoji support', () => {
     });
     expect(result.coverage).toBe(1.0);
     for (const tc of result.tests) {
-      expect(['ウィンドウズ', 'マック']).toContain(tc['OS']);
-      expect(['クローム', 'ファイアフォックス']).toContain(tc['ブラウザ']);
+      expect(['ウィンドウズ', 'マック']).toContain(tc.OS);
+      expect(['クローム', 'ファイアフォックス']).toContain(tc.ブラウザ);
     }
   });
 
@@ -809,8 +809,8 @@ describe('Japanese and emoji support', () => {
     });
     expect(result.coverage).toBe(1.0);
     for (const tc of result.tests) {
-      if (tc['OS'] === 'mac') {
-        expect(tc['ブラウザ']).not.toBe('edge');
+      if (tc.OS === 'mac') {
+        expect(tc.ブラウザ).not.toBe('edge');
       }
     }
   });
@@ -825,8 +825,8 @@ describe('Japanese and emoji support', () => {
     });
     expect(result.coverage).toBe(1.0);
     for (const tc of result.tests) {
-      if (tc['OS'] === 'mac') {
-        expect(tc['browser']).not.toBe('edge');
+      if (tc.OS === 'mac') {
+        expect(tc.browser).not.toBe('edge');
       }
     }
   });
@@ -841,8 +841,8 @@ describe('Japanese and emoji support', () => {
     });
     expect(result.coverage).toBe(1.0);
     for (const tc of result.tests) {
-      if (tc['OS'] === 'マック') {
-        expect(tc['ブラウザ']).not.toBe('エッジ');
+      if (tc.OS === 'マック') {
+        expect(tc.ブラウザ).not.toBe('エッジ');
       }
     }
   });
@@ -857,8 +857,8 @@ describe('Japanese and emoji support', () => {
     });
     expect(result.coverage).toBe(1.0);
     for (const tc of result.tests) {
-      if (tc['OS'] === 'Windows 10') {
-        expect(tc['browser']).not.toBe('edge');
+      if (tc.OS === 'Windows 10') {
+        expect(tc.browser).not.toBe('edge');
       }
     }
   });
@@ -933,8 +933,8 @@ describe('Japanese and emoji support', () => {
     });
     expect(result.coverage).toBe(1.0);
     for (const tc of result.tests) {
-      if (tc['os'] === 'mac') {
-        expect(tc['browser']).not.toBe('edge');
+      if (tc.os === 'mac') {
+        expect(tc.browser).not.toBe('edge');
       }
     }
   });

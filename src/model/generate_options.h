@@ -54,7 +54,7 @@ struct GenerateOptions {
   std::vector<Parameter> parameters;
   std::vector<std::string> constraint_expressions;         ///< Constraint strings
   uint32_t strength = 2;                                   ///< Interaction strength (2 = pairwise)
-  uint64_t seed = 0;                                       ///< RNG seed for deterministic output
+  uint64_t seed = 0;  ///< RNG seed (canonical domain [0, 2^32-1]; low 32 bits used)
   uint32_t max_tests = 0;                                  ///< 0 = no limit
   std::vector<TestCase> seeds;                             ///< Existing tests to build upon
   std::vector<SubModel> sub_models;                        ///< Mixed-strength sub-models

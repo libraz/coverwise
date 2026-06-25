@@ -8,4 +8,9 @@ export {
   generateCombinations,
 } from './combinatorics.js';
 export { Rng } from './rng.js';
-export { isNumeric, toDouble } from './string_util.js';
+export {
+  asciiCaseInsensitiveEqual,
+  asciiToUpper,
+  isNumeric,
+  toDouble,
+} from './string_util.js';

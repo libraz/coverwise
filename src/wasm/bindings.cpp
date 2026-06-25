@@ -249,10 +249,16 @@ coverwise::model::GenerateOptions ParseGenerateOptions(val input) {
     opts.strength = ParseUint32Option(input, "strength", false);
   }
 
-  // Seed (default 0)
+  // Seed (default 0). Canonical domain: integer in [0, 2^32 - 1].
   if (input.hasOwnProperty("seed")) {
-    // JS numbers are doubles; cast to uint64_t.
-    opts.seed = static_cast<uint64_t>(input["seed"].as<double>());
+    // JS numbers are doubles; validate before casting to avoid UB on negative
+    // values or silent wraparound on out-of-range values.
+    double seed_d = input["seed"].as<double>();
+    if (seed_d != std::floor(seed_d) || seed_d < 0.0 || seed_d > 4294967295.0) {
+      throw std::runtime_error(
+          "Invalid seed: must be an integer in [0, 4294967295]");
+    }
+    opts.seed = static_cast<uint64_t>(seed_d);
   }
 
   // Max tests (default 0 = no limit)

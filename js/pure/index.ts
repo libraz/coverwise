@@ -83,8 +83,8 @@ function validateSeed(seed: unknown): void {
   if (seed === undefined || seed === null) {
     return;
   }
-  if (typeof seed !== 'number' || !Number.isFinite(seed)) {
-    throw new Error(`Invalid seed: ${String(seed)}. Must be a finite number.`);
+  if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new Error(`Invalid seed: ${String(seed)}. Must be an integer in [0, 4294967295].`);
   }
 }
 

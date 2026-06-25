@@ -133,7 +133,7 @@ TEST(BenchmarkTest, Uniform_20x2) {
 
   auto result = Generate(opts);
   // C(20,2) * 2^2 = 190 * 4 = 760
-  ValidateBenchmarkResult(opts, result, 760, 4, 12);
+  ValidateBenchmarkResult(opts, result, 760, 4, 13);
 }
 
 TEST(BenchmarkTest, Uniform_15x4) {

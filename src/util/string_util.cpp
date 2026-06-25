@@ -3,7 +3,6 @@
 #include "util/string_util.h"
 
 #include <cctype>
-#include <cerrno>
 #include <cstdlib>
 
 namespace coverwise {
@@ -21,11 +20,48 @@ bool CaseInsensitiveEqual(const std::string& a, const std::string& b) {
 }
 
 bool IsNumeric(const std::string& s) {
+  // Strict decimal grammar, identical to the TypeScript port:
+  //   ^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$
+  // Rejects "inf"/"nan" (any case), hex, whitespace, empty, thousands
+  // separators, and multiple dots. No reliance on locale-dependent strtod.
   if (s.empty()) return false;
-  char* end = nullptr;
-  errno = 0;
-  std::strtod(s.c_str(), &end);
-  return errno == 0 && end != nullptr && *end == '\0';
+  size_t i = 0;
+  const size_t len = s.size();
+
+  // Optional leading sign.
+  if (s[i] == '+' || s[i] == '-') ++i;
+
+  size_t int_digits = 0;
+  while (i < len && s[i] >= '0' && s[i] <= '9') {
+    ++int_digits;
+    ++i;
+  }
+
+  size_t frac_digits = 0;
+  if (i < len && s[i] == '.') {
+    ++i;
+    while (i < len && s[i] >= '0' && s[i] <= '9') {
+      ++frac_digits;
+      ++i;
+    }
+  }
+
+  // Require at least one digit in the integer or fractional part.
+  if (int_digits == 0 && frac_digits == 0) return false;
+
+  // Optional exponent.
+  if (i < len && (s[i] == 'e' || s[i] == 'E')) {
+    ++i;
+    if (i < len && (s[i] == '+' || s[i] == '-')) ++i;
+    size_t exp_digits = 0;
+    while (i < len && s[i] >= '0' && s[i] <= '9') {
+      ++exp_digits;
+      ++i;
+    }
+    if (exp_digits == 0) return false;
+  }
+
+  return i == len;
 }
 
 double ToDouble(const std::string& s) { return std::strtod(s.c_str(), nullptr); }
