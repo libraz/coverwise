@@ -1,6 +1,6 @@
 /// Boundary value expansion for numeric parameters.
 
-import { isNumeric } from '../util/string_util.js';
+import { isNumeric, jsNumberToString } from '../util/string_util.js';
 import { Parameter } from './parameter.js';
 
 /** Boundary value type: integer or float. */
@@ -28,14 +28,14 @@ export function createBoundaryConfig(params?: Partial<BoundaryConfig>): Boundary
   };
 }
 
-/** Format an integer value as a string. */
+/** Format an integer value as a string (matches C++ JsNumberToString). */
 function formatInteger(value: number): string {
-  return String(Math.round(value));
+  return jsNumberToString(Math.round(value));
 }
 
-/** Format a float value as a string, trimming trailing zeros. */
+/** Format a float value as the shortest round-trip string. */
 function formatFloat(value: number): string {
-  return String(value);
+  return jsNumberToString(value);
 }
 
 /**

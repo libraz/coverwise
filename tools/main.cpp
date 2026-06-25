@@ -28,6 +28,7 @@
 #include "model/boundary.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
+#include "util/string_util.h"
 #include "validator/coverage_validator.h"
 
 namespace {
@@ -544,14 +545,8 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
         aliases_list.push_back({});
         eq_classes.push_back({});
       } else if (v.type == JsonType::kNumber) {
-        // Convert number to string representation.
-        if (v.number_val == static_cast<int64_t>(v.number_val)) {
-          param.values.push_back(std::to_string(static_cast<int64_t>(v.number_val)));
-        } else {
-          std::ostringstream oss;
-          oss << v.number_val;
-          param.values.push_back(oss.str());
-        }
+        // Convert number to its canonical JS string (matches every surface).
+        param.values.push_back(coverwise::util::JsNumberToString(v.number_val));
         invalid_flags.push_back(false);
         aliases_list.push_back({});
         eq_classes.push_back({});
@@ -567,13 +562,7 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
         if (val_field.type == JsonType::kString) {
           val_str = val_field.string_val;
         } else if (val_field.type == JsonType::kNumber) {
-          if (val_field.number_val == static_cast<int64_t>(val_field.number_val)) {
-            val_str = std::to_string(static_cast<int64_t>(val_field.number_val));
-          } else {
-            std::ostringstream oss;
-            oss << val_field.number_val;
-            val_str = oss.str();
-          }
+          val_str = coverwise::util::JsNumberToString(val_field.number_val);
         } else if (val_field.type == JsonType::kBool) {
           val_str = val_field.bool_val ? "true" : "false";
         } else {
@@ -719,13 +708,7 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
       if (val.type == JsonType::kString) {
         val_str = val.string_val;
       } else if (val.type == JsonType::kNumber) {
-        if (val.number_val == static_cast<int64_t>(val.number_val)) {
-          val_str = std::to_string(static_cast<int64_t>(val.number_val));
-        } else {
-          std::ostringstream oss;
-          oss << val.number_val;
-          val_str = oss.str();
-        }
+        val_str = coverwise::util::JsNumberToString(val.number_val);
       } else if (val.type == JsonType::kBool) {
         val_str = val.bool_val ? "true" : "false";
       } else {

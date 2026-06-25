@@ -44,8 +44,8 @@ std::vector<BenchmarkConfig> BuildConfigs() {
   std::vector<BenchmarkConfig> configs;
 
   // Uniform configs
-  auto add_uniform = [&](const std::string& name, uint32_t params, uint32_t vals,
-                         uint32_t tuples, uint32_t lo, uint32_t hi) {
+  auto add_uniform = [&](const std::string& name, uint32_t params, uint32_t vals, uint32_t tuples,
+                         uint32_t lo, uint32_t hi) {
     GenerateOptions opts;
     opts.parameters = MakeUniformParams(params, vals);
     opts.strength = 2;
@@ -93,8 +93,7 @@ std::vector<BenchmarkConfig> BuildConfigs() {
                                    std::vector<std::string>{"v0", "v1", "v2"});
     }
     for (uint32_t i = 0; i < 3; ++i) {
-      opts.parameters.emplace_back("B" + std::to_string(i),
-                                   std::vector<std::string>{"v0", "v1"});
+      opts.parameters.emplace_back("B" + std::to_string(i), std::vector<std::string>{"v0", "v1"});
     }
     opts.strength = 2;
     opts.seed = 42;
@@ -104,15 +103,13 @@ std::vector<BenchmarkConfig> BuildConfigs() {
   // Mixed: 5 * 3^3 * 2^4
   {
     GenerateOptions opts;
-    opts.parameters.emplace_back("X0",
-                                 std::vector<std::string>{"v0", "v1", "v2", "v3", "v4"});
+    opts.parameters.emplace_back("X0", std::vector<std::string>{"v0", "v1", "v2", "v3", "v4"});
     for (uint32_t i = 0; i < 3; ++i) {
       opts.parameters.emplace_back("A" + std::to_string(i),
                                    std::vector<std::string>{"v0", "v1", "v2"});
     }
     for (uint32_t i = 0; i < 4; ++i) {
-      opts.parameters.emplace_back("B" + std::to_string(i),
-                                   std::vector<std::string>{"v0", "v1"});
+      opts.parameters.emplace_back("B" + std::to_string(i), std::vector<std::string>{"v0", "v1"});
     }
     opts.strength = 2;
     opts.seed = 42;
@@ -127,10 +124,10 @@ std::vector<BenchmarkConfig> BuildConfigs() {
 int main() {
   auto configs = BuildConfigs();
 
-  std::printf("%-20s | %6s | %5s | %5s | %5s | %s\n",
-              "Configuration", "Tuples", "Tests", "Lower", "Upper", "Status");
-  std::printf("%-20s-|-%6s-|-%5s-|-%5s-|-%5s-|-%s\n",
-              "--------------------", "------", "-----", "-----", "-----", "------");
+  std::printf("%-20s | %6s | %5s | %5s | %5s | %s\n", "Configuration", "Tuples", "Tests", "Lower",
+              "Upper", "Status");
+  std::printf("%-20s-|-%6s-|-%5s-|-%5s-|-%5s-|-%s\n", "--------------------", "------", "-----",
+              "-----", "-----", "------");
 
   int failures = 0;
 
@@ -157,9 +154,8 @@ int main() {
       ++failures;
     }
 
-    std::printf("%-20s | %6u | %5u | %5u | %5u | %s (%ldms)\n",
-                cfg.name.c_str(), cfg.expected_tuples, test_count,
-                cfg.lower_bound, cfg.upper_bound, status.c_str(),
+    std::printf("%-20s | %6u | %5u | %5u | %5u | %s (%ldms)\n", cfg.name.c_str(),
+                cfg.expected_tuples, test_count, cfg.lower_bound, cfg.upper_bound, status.c_str(),
                 static_cast<long>(ms));
   }
 

@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstdint>
 #include <set>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -16,19 +15,19 @@ namespace coverwise {
 namespace model {
 
 using util::IsNumeric;
+using util::JsNumberToString;
 using util::ToDouble;
 
 namespace {
 
-/// @brief Format an integer value as a string.
-std::string FormatInteger(int64_t value) { return std::to_string(value); }
+/// @brief Format an integer value as a string (matches JS String(value)).
+std::string FormatInteger(int64_t value) { return JsNumberToString(static_cast<double>(value)); }
 
-/// @brief Format a float value as a string, trimming trailing zeros.
-std::string FormatFloat(double value) {
-  std::ostringstream oss;
-  oss << value;
-  return oss.str();
-}
+/// @brief Format a float value as the shortest round-trip string.
+///
+/// Uses the canonical JS Number-to-String algorithm so newly computed boundary
+/// values (min-step, max+step, ...) render identically to the TypeScript port.
+std::string FormatFloat(double value) { return JsNumberToString(value); }
 
 }  // namespace
 

@@ -8,17 +8,46 @@
 
 using coverwise::util::CaseInsensitiveEqual;
 using coverwise::util::IsNumeric;
+using coverwise::util::JsNumberToString;
 
 namespace {
+
+// Byte-equality corpus for JsNumberToString. Every expected string is exactly
+// what JavaScript String(value) / Number.prototype.toString() produces, so the
+// C++ and TS surfaces render numeric values identically. The companion TS test
+// in src/ts/util/string_util.test.ts asserts the same pairs.
+TEST(StringUtilTest, JsNumberToStringMatchesJavaScript) {
+  const std::vector<std::pair<double, std::string>> corpus = {
+      {3.14, "3.14"},
+      {0.1, "0.1"},
+      {1.0 / 3.0, "0.3333333333333333"},
+      {0.1 + 0.2, "0.30000000000000004"},
+      {2.5, "2.5"},
+      {-0.0, "0"},
+      {0.0, "0"},
+      {100.0, "100"},
+      {1e-7, "1e-7"},
+      {42.0, "42"},
+      {-42.0, "-42"},
+      {1e21, "1e+21"},
+      {1e-21, "1e-21"},
+      {1e-6, "0.000001"},
+      {1e20, "100000000000000000000"},
+      {-3.14, "-3.14"},
+      {123456789.0, "123456789"},
+  };
+  for (const auto& [value, expected] : corpus) {
+    EXPECT_EQ(JsNumberToString(value), expected) << "value: " << value;
+  }
+}
 
 // Shared accept/reject corpus, identical to the TypeScript string_util test.
 // Both surfaces must agree token-for-token.
 TEST(StringUtilTest, IsNumericSharedCorpus) {
   const std::vector<std::pair<std::string, bool>> corpus = {
-      {"123", true},      {"-12.5", true}, {"+.5", true},  {"12.", true},
-      {"1e9", true},      {"-3.0E-2", true}, {"inf", false}, {"Infinity", false},
-      {"nan", false},     {"0x1f", false}, {" 5 ", false}, {"", false},
-      {"1.2.3", false},   {"1,000", false},
+      {"123", true},     {"-12.5", true}, {"+.5", true},       {"12.", true},    {"1e9", true},
+      {"-3.0E-2", true}, {"inf", false},  {"Infinity", false}, {"nan", false},   {"0x1f", false},
+      {" 5 ", false},    {"", false},     {"1.2.3", false},    {"1,000", false},
   };
   for (const auto& [input, expected] : corpus) {
     EXPECT_EQ(IsNumeric(input), expected) << "input: '" << input << "'";

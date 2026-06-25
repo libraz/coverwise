@@ -31,25 +31,23 @@ namespace {
 /// @brief Convert a JS value (string, number, or boolean) to a C++ string.
 ///
 /// - string  → as-is
-/// - number  → "42", "3.14"  (integer-like doubles drop the ".0")
+/// - number  → JS Number.prototype.toString() ("42", "3.14", "1e-7")
 /// - boolean → "true" / "false"
+///
+/// Numbers are formatted through the JS runtime (String()), so the result is
+/// byte-identical to the pure-JS adapter by construction. This keeps the WASM
+/// and pure-JS surfaces in lockstep with zero duplicated numeric logic.
 std::string JsValueToString(val item) {
   std::string type = item.typeOf().as<std::string>();
   if (type == "string") {
     return item.as<std::string>();
   }
-  if (type == "number") {
-    double d = item.as<double>();
-    // Emit integers without decimal point: 42.0 -> "42"
-    if (d == static_cast<double>(static_cast<int64_t>(d)) && d >= -1e15 && d <= 1e15) {
-      return std::to_string(static_cast<int64_t>(d));
-    }
-    return std::to_string(d);
-  }
   if (type == "boolean") {
     return item.as<bool>() ? "true" : "false";
   }
-  // Fallback: use JS String() conversion
+  // For numbers (and any other type), defer to JS String() conversion, which
+  // implements the ECMAScript Number-to-String algorithm. String(42) === "42"
+  // (no ".0"), String(-0) === "0", String(1e-7) === "1e-7".
   return val::global("String").call<std::string>("call", val::null(), item);
 }
 
@@ -255,8 +253,7 @@ coverwise::model::GenerateOptions ParseGenerateOptions(val input) {
     // values or silent wraparound on out-of-range values.
     double seed_d = input["seed"].as<double>();
     if (seed_d != std::floor(seed_d) || seed_d < 0.0 || seed_d > 4294967295.0) {
-      throw std::runtime_error(
-          "Invalid seed: must be an integer in [0, 4294967295]");
+      throw std::runtime_error("Invalid seed: must be an integer in [0, 4294967295]");
     }
     opts.seed = static_cast<uint64_t>(seed_d);
   }

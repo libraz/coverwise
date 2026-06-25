@@ -25,6 +25,17 @@ export function toDouble(s: string): number {
   return Number(s);
 }
 
+/// Format a number exactly like JavaScript's Number.prototype.toString().
+///
+/// This is the canonical reference for cross-surface number formatting: the
+/// C++ `JsNumberToString` reproduces this algorithm so a numeric value renders
+/// to a byte-identical string on every surface (WASM, pure-JS, CLI, boundary
+/// expansion). `String(value)` already implements the ECMAScript
+/// Number-to-String algorithm, including String(-0) === '0'.
+export function jsNumberToString(value: number): string {
+  return String(value);
+}
+
 /// Fold an ASCII letter (A-Z) to uppercase, leaving every other byte
 /// untouched. Code points >= 0x80 are never modified.
 function asciiUpperChar(code: number): number {

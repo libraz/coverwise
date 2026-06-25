@@ -431,6 +431,45 @@ describe('WASM / TS compatibility', () => {
     });
   });
 
+  describe('numeric value formatting parity', () => {
+    // A parameter whose values are JSON numbers (not strings). The two surfaces
+    // must render each number to a byte-identical string, or a suite generated
+    // on one surface fails analyzeCoverage on the other.
+    const numericInput: GenerateInput = {
+      parameters: [
+        { name: 'ratio', values: [3.14, 0.1, 1 / 3, 2.5] },
+        { name: 'mode', values: ['fast', 'slow'] },
+      ],
+      seed: 7,
+    };
+
+    it('WASM-generated numeric suite analyzes to full coverage on TS', () => {
+      const wasmResult = generate(numericInput);
+      // WASM-formatted numeric value strings must match what the pure-JS
+      // adapter expects, otherwise findValueIndex would drop coverage.
+      const tsReport = tsAnalyzeCoverage(numericInput.parameters, wasmResult.tests);
+      expect(tsReport.coverageRatio).toBe(1.0);
+    });
+
+    it('pure-JS-generated numeric suite analyzes to full coverage on WASM', () => {
+      const pureResult = pureGenerate(numericInput);
+      const wasmReport = analyzeCoverage(numericInput.parameters, pureResult.tests);
+      expect(wasmReport.coverageRatio).toBe(1.0);
+    });
+
+    it('both engines emit identical numeric value strings', () => {
+      const wasmResult = generate(numericInput);
+      const pureResult = pureGenerate(numericInput);
+      // Collect the distinct value strings each engine used for `ratio`.
+      const wasmRatios = new Set(wasmResult.tests.map((t) => t.ratio));
+      const pureRatios = new Set(pureResult.tests.map((t) => t.ratio));
+      expect([...wasmRatios].sort()).toEqual([...pureRatios].sort());
+      // The repeating-decimal value must be the shortest round-trip form.
+      expect(pureRatios.has('0.3333333333333333')).toBe(true);
+      expect(wasmRatios.has('0.3333333333333333')).toBe(true);
+    });
+  });
+
   describe('estimateModel()', () => {
     const estimateScenarios = scenarios.filter((s) => s.input.parameters.length > 0);
 

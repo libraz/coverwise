@@ -1,4 +1,10 @@
-import { asciiCaseInsensitiveEqual, asciiToUpper, isNumeric, toDouble } from './string_util.js';
+import {
+  asciiCaseInsensitiveEqual,
+  asciiToUpper,
+  isNumeric,
+  jsNumberToString,
+  toDouble,
+} from './string_util.js';
 
 // Shared accept/reject corpus. The C++ `IsNumeric` test asserts the exact same
 // expectations so the two surfaces agree token-for-token.
@@ -106,6 +112,37 @@ describe('toDouble', () => {
 
   it('parses scientific notation', () => {
     expect(toDouble('1e3')).toBe(1000);
+  });
+});
+
+// Byte-equality corpus shared with the C++ JsNumberToString test. The C++
+// formatter reproduces JavaScript's Number-to-String algorithm, so both
+// surfaces must produce these exact strings for each value.
+const JS_NUMBER_CORPUS: ReadonlyArray<[number, string]> = [
+  [3.14, '3.14'],
+  [0.1, '0.1'],
+  [1 / 3, '0.3333333333333333'],
+  [0.1 + 0.2, '0.30000000000000004'],
+  [2.5, '2.5'],
+  [-0.0, '0'],
+  [0.0, '0'],
+  [100.0, '100'],
+  [1e-7, '1e-7'],
+  [42.0, '42'],
+  [-42.0, '-42'],
+  [1e21, '1e+21'],
+  [1e-21, '1e-21'],
+  [1e-6, '0.000001'],
+  [1e20, '100000000000000000000'],
+  [-3.14, '-3.14'],
+  [123456789.0, '123456789'],
+];
+
+describe('jsNumberToString', () => {
+  it('matches String(value) on the shared cross-surface corpus', () => {
+    for (const [value, expected] of JS_NUMBER_CORPUS) {
+      expect(jsNumberToString(value)).toBe(expected);
+    }
   });
 });
 

@@ -28,9 +28,11 @@ import type {
 /**
  * Convert a JS value (string, number, or boolean) to a string representation.
  *
- * Mirrors the C++ JsValueToString logic:
+ * Numbers use Number.prototype.toString() (the canonical cross-surface rule):
+ * the C++ JsNumberToString and the WASM binding reproduce this exactly, so a
+ * numeric value renders to a byte-identical string on every surface.
  * - string -> as-is
- * - number -> integer-like numbers drop the ".0"
+ * - number -> JS toString() ("42", "3.14", "1e-7")
  * - boolean -> "true" / "false"
  */
 function valueToString(v: string | number | boolean): string {
@@ -40,7 +42,7 @@ function valueToString(v: string | number | boolean): string {
   if (typeof v === 'boolean') {
     return v ? 'true' : 'false';
   }
-  // number
+  // number — Number.prototype.toString() is the canonical formatting.
   return v.toString();
 }
 
