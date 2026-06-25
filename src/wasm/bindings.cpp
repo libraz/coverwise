@@ -13,10 +13,12 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "core/generator.h"
+#include "model/boundary.h"
 #include "model/constraint_parser.h"
 #include "model/error.h"
 #include "model/parameter.h"
@@ -70,12 +72,18 @@ uint32_t ParseUint32Option(val input, const char* field, bool allow_zero) {
   return static_cast<uint32_t>(d);
 }
 
+std::optional<coverwise::model::BoundaryConfig> ParseBoundaryConfigForParam(val js_param);
+
 /// @brief Parse a single JS parameter object into a C++ Parameter.
 ///
 /// Handles three value formats:
 ///   - Simple string: "chrome"
 ///   - Object with value: { value: "ie6", invalid: true }
 ///   - Object with aliases: { value: "chromium", aliases: ["chrome", "edge"] }
+///
+/// When the parameter carries boundary fields (type/range/step), the value set
+/// is expanded up front so the returned Parameter is the single source of truth
+/// for both generation and rendering.
 coverwise::model::Parameter ParseParameter(val js_param) {
   coverwise::model::Parameter param;
 
@@ -98,8 +106,10 @@ coverwise::model::Parameter ParseParameter(val js_param) {
 
   std::vector<bool> invalid_flags;
   std::vector<std::vector<std::string>> aliases;
+  std::vector<std::string> eq_classes;
   bool has_invalid = false;
   bool has_aliases = false;
+  bool has_classes = false;
 
   for (uint32_t i = 0; i < count; ++i) {
     val item = js_values[i];
@@ -109,8 +119,9 @@ coverwise::model::Parameter ParseParameter(val js_param) {
       param.values.push_back(JsValueToString(item));
       invalid_flags.push_back(false);
       aliases.emplace_back();
+      eq_classes.emplace_back();
     } else {
-      // Object form: { value: "...", invalid?: bool, aliases?: [...] }
+      // Object form: { value: "...", invalid?: bool, aliases?: [...], class?: "..." }
       param.values.push_back(JsValueToString(item["value"]));
 
       bool is_invalid = false;
@@ -130,6 +141,17 @@ coverwise::model::Parameter ParseParameter(val js_param) {
         if (!value_aliases.empty()) has_aliases = true;
       }
       aliases.push_back(std::move(value_aliases));
+
+      // Equivalence class (non-empty string).
+      std::string eq_class;
+      if (item.hasOwnProperty("class")) {
+        val js_class = item["class"];
+        if (js_class.typeOf().as<std::string>() == "string") {
+          eq_class = js_class.as<std::string>();
+        }
+      }
+      if (!eq_class.empty()) has_classes = true;
+      eq_classes.push_back(std::move(eq_class));
     }
   }
 
@@ -139,7 +161,64 @@ coverwise::model::Parameter ParseParameter(val js_param) {
   if (has_aliases) {
     param.set_aliases(std::move(aliases));
   }
+  if (has_classes) {
+    param.set_equivalence_classes(std::move(eq_classes));
+  }
+
+  // Apply boundary value expansion up front. ExpandBoundaryValues regenerates
+  // the value set (dropping aliases/classes), so the returned Parameter alone
+  // describes the value space used for both generation and rendering.
+  auto boundary = ParseBoundaryConfigForParam(js_param);
+  if (boundary) {
+    param = coverwise::model::ExpandBoundaryValues(param, *boundary);
+  }
   return param;
+}
+
+/// @brief Derive a boundary expansion config from a single JS parameter object.
+///
+/// A parameter participates when it carries a `type` ("integer" | "float") and a
+/// 2-element numeric `range` ([min, max]). For the float type an optional `step`
+/// (default 1.0) sets the spacing. Returns std::nullopt when the parameter does
+/// not opt into boundary expansion. Mirrors the CLI's ParseBoundaryConfigs and
+/// the pure-JS boundaryConfigFromParam canonical shape.
+std::optional<coverwise::model::BoundaryConfig> ParseBoundaryConfigForParam(val js_param) {
+  if (!js_param.hasOwnProperty("type") || !js_param.hasOwnProperty("range")) {
+    return std::nullopt;
+  }
+  val js_type = js_param["type"];
+  if (js_type.typeOf().as<std::string>() != "string") {
+    return std::nullopt;
+  }
+  val js_range = js_param["range"];
+  if (!val::global("Array").call<bool>("isArray", js_range) ||
+      js_range["length"].as<uint32_t>() != 2) {
+    return std::nullopt;
+  }
+  if (js_range[0].typeOf().as<std::string>() != "number" ||
+      js_range[1].typeOf().as<std::string>() != "number") {
+    return std::nullopt;
+  }
+
+  coverwise::model::BoundaryConfig config;
+  config.min_value = js_range[0].as<double>();
+  config.max_value = js_range[1].as<double>();
+
+  std::string type = js_type.as<std::string>();
+  if (type == "integer") {
+    config.type = coverwise::model::BoundaryConfig::Type::kInteger;
+    config.step = 1.0;
+  } else if (type == "float") {
+    config.type = coverwise::model::BoundaryConfig::Type::kFloat;
+    if (js_param.hasOwnProperty("step") && js_param["step"].typeOf().as<std::string>() == "number") {
+      config.step = js_param["step"].as<double>();
+    } else {
+      config.step = 1.0;
+    }
+  } else {
+    return std::nullopt;
+  }
+  return config;
 }
 
 /// @brief Parse a JS parameters array into a C++ vector.
@@ -313,6 +392,10 @@ coverwise::model::GenerateOptions ParseGenerateOptions(val input) {
   if (input.hasOwnProperty("subModels")) {
     opts.sub_models = ParseSubModels(input["subModels"]);
   }
+
+  // Boundary expansion is applied during ParseParameter, so opts.parameters
+  // already holds the expanded value set; opts.boundary_configs stays empty to
+  // avoid a second (no-op) expansion in core::Generate.
 
   return opts;
 }

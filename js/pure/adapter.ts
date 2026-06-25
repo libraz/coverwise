@@ -1,5 +1,10 @@
 /// Adapter between public API types and internal TS engine types.
 
+import {
+  type BoundaryConfig,
+  BoundaryType,
+  expandBoundaryValues,
+} from '../../src/ts/model/boundary.js';
 import type { ModelStats as InternalModelStats } from '../../src/ts/model/generate-options.js';
 import {
   createGenerateOptions,
@@ -77,8 +82,10 @@ export function toInternalParams(params: PublicParameter[]): InternalParameter[]
     const values: string[] = [];
     const invalidFlags: boolean[] = [];
     const aliases: string[][] = [];
+    const eqClasses: string[] = [];
     let hasInvalid = false;
     let hasAliases = false;
+    let hasClasses = false;
 
     for (const item of pub.values) {
       if (typeof item === 'object' && item !== null && 'value' in item) {
@@ -95,20 +102,38 @@ export function toInternalParams(params: PublicParameter[]): InternalParameter[]
         if (valueAliases.length > 0) {
           hasAliases = true;
         }
+        const eqClass = pv.class ?? '';
+        eqClasses.push(eqClass);
+        if (eqClass.length > 0) {
+          hasClasses = true;
+        }
       } else {
         // Scalar value
         values.push(valueToString(item as string | number | boolean));
         invalidFlags.push(false);
         aliases.push([]);
+        eqClasses.push('');
       }
     }
 
-    const param = new InternalParameter(pub.name, values);
+    let param = new InternalParameter(pub.name, values);
     if (hasInvalid) {
       param.setInvalid(invalidFlags);
     }
     if (hasAliases) {
       param.setAliases(aliases);
+    }
+    if (hasClasses) {
+      param.setEquivalenceClasses(eqClasses);
+    }
+
+    // Apply boundary value expansion up front, so the resulting Parameter is the
+    // single source of truth used for generation AND rendering. (Expansion
+    // regenerates the value set, so aliases/classes are intentionally dropped,
+    // matching expandBoundaryValues.)
+    const bc = boundaryConfigFromParam(pub);
+    if (bc) {
+      param = expandBoundaryValues(param, bc);
     }
     result.push(param);
   }
@@ -177,11 +202,18 @@ export function toInternalOptions(
 
   const seeds = (input.seeds ?? []).map((tc) => toInternalTestCase(tc, params));
 
+  // Boundary expansion is already applied in toInternalParams, so `params` is
+  // the final value space. Aliases/equivalence classes are threaded onto the
+  // options' parameter entries so the engine (which rebuilds Parameter objects
+  // from opts.parameters) honors them in constraint resolution and class
+  // coverage. boundaryConfigs is intentionally left empty (no double-expansion).
   return createGenerateOptions({
     parameters: params.map((p) => ({
       name: p.name,
       values: p.values,
       ...(p.hasInvalidValues ? { invalid: p.invalid } : {}),
+      ...(p.hasAliases ? { aliases: p.allAliases } : {}),
+      ...(p.hasEquivalenceClasses ? { equivalenceClasses: p.equivalenceClasses } : {}),
     })),
     constraintExpressions: input.constraints ?? [],
     strength: input.strength ?? 2,
@@ -191,6 +223,42 @@ export function toInternalOptions(
     subModels,
     weights,
   });
+}
+
+/**
+ * Derive a BoundaryConfig from a public parameter object, or null when the
+ * parameter does not opt into boundary expansion.
+ *
+ * A parameter participates when it carries a `type` ('integer' | 'float') and a
+ * 2-element numeric `range` ([min, max]); for 'float' an optional `step`
+ * (default 1.0) sets the spacing. Mirrors the WASM ParseBoundaryConfigs and the
+ * CLI's canonical shape so every surface expands the same value set.
+ */
+function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
+  if (typeof p.type !== 'string') {
+    return null;
+  }
+  const range = p.range;
+  if (
+    !Array.isArray(range) ||
+    range.length !== 2 ||
+    typeof range[0] !== 'number' ||
+    typeof range[1] !== 'number'
+  ) {
+    return null;
+  }
+  if (p.type === 'integer') {
+    return { type: BoundaryType.Integer, minValue: range[0], maxValue: range[1], step: 1.0 };
+  }
+  if (p.type === 'float') {
+    return {
+      type: BoundaryType.Float,
+      minValue: range[0],
+      maxValue: range[1],
+      step: typeof p.step === 'number' ? p.step : 1.0,
+    };
+  }
+  return null;
 }
 
 /**

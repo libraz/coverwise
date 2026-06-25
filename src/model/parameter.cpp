@@ -124,8 +124,8 @@ Error ValidateParameters(const std::vector<Parameter>& params) {
       return {Error::Code::kInvalidInput, "Duplicate parameter name '" + p.name + "'", ""};
     }
     if (p.values.empty()) {
-      return {Error::Code::kInvalidInput,
-              "Parameter '" + p.name + "' must have at least one value", ""};
+      return {Error::Code::kInvalidInput, "Parameter '" + p.name + "' must have at least one value",
+              ""};
     }
     std::unordered_set<std::string> seen_values;
     for (const auto& v : p.values) {

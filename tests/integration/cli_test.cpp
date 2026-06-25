@@ -250,3 +250,79 @@ TEST(CliGenerateTest, SeedTestAppearsInOutput) {
   EXPECT_NE(result.stdout_text.find("\"os\":\"linux\",\"browser\":\"firefox\""), std::string::npos)
       << result.stdout_text;
 }
+
+// generate rejects a parameter with a duplicate value -> exit 3.
+TEST(CliGenerateTest, DuplicateValueExitsInvalidInput) {
+  const std::string input = R"({
+    "parameters": [
+      {"name": "os", "values": ["win", "win"]}
+    ]
+  })";
+  std::string input_path = TempPath("dupval.json");
+  WriteFile(input_path, input);
+
+  auto result = RunCli("generate " + input_path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+}
+
+// generate rejects duplicate parameter names -> exit 3.
+TEST(CliGenerateTest, DuplicateParameterNameExitsInvalidInput) {
+  const std::string input = R"({
+    "parameters": [
+      {"name": "os", "values": ["win", "mac"]},
+      {"name": "os", "values": ["chrome", "safari"]}
+    ]
+  })";
+  std::string input_path = TempPath("dupname.json");
+  WriteFile(input_path, input);
+
+  auto result = RunCli("generate " + input_path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+}
+
+// analyze rejects a duplicate-value model -> exit 3.
+TEST(CliAnalyzeTest, DuplicateValueExitsInvalidInput) {
+  const std::string params = R"([{"name": "os", "values": ["win", "win"]}])";
+  const std::string tests = R"([{"os": "win"}])";
+  std::string params_path = TempPath("dupanalyze_params.json");
+  std::string tests_path = TempPath("dupanalyze_tests.json");
+  WriteFile(params_path, params);
+  WriteFile(tests_path, tests);
+
+  auto result = RunCli("analyze --params " + params_path + " --tests " + tests_path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+}
+
+// generate with a numeric boundary parameter renders the expanded boundary
+// values as non-empty strings (regression: test cases carry value indices, so
+// rendering against unexpanded parameters yielded empty/garbage values).
+TEST(CliGenerateTest, BoundaryExpansionRendersNonEmptyValues) {
+  // Integer range [0, 5] expands to {-1, 0, 1, 4, 5, 6}; a second parameter
+  // makes pairwise coverage non-trivial.
+  const std::string input = R"({
+    "parameters": [
+      {"name": "n", "values": ["0", "5"], "type": "integer", "range": [0, 5]},
+      {"name": "mode", "values": ["fast", "slow"]}
+    ]
+  })";
+  std::string input_path = TempPath("boundary.json");
+  WriteFile(input_path, input);
+
+  auto result = RunCli("generate " + input_path);
+  ASSERT_EQ(result.exit_code, 0) << result.stdout_text;
+
+  // The expanded boundary values must appear in the rendered output.
+  for (const char* expected : {"\"n\":\"-1\"", "\"n\":\"0\"", "\"n\":\"1\"", "\"n\":\"4\"",
+                               "\"n\":\"5\"", "\"n\":\"6\""}) {
+    EXPECT_NE(result.stdout_text.find(expected), std::string::npos)
+        << "missing " << expected << " in:\n"
+        << result.stdout_text;
+  }
+
+  // No rendered value for either parameter may be empty.
+  EXPECT_EQ(result.stdout_text.find("\"n\":\"\""), std::string::npos) << result.stdout_text;
+  EXPECT_EQ(result.stdout_text.find("\"mode\":\"\""), std::string::npos) << result.stdout_text;
+
+  // Coverage must be complete.
+  EXPECT_NE(result.stdout_text.find("\"coverage\":1"), std::string::npos) << result.stdout_text;
+}

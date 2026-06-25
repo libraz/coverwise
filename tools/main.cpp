@@ -635,6 +635,26 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
   return true;
 }
 
+/// @brief Parse parameters and run structural validation.
+///
+/// Wraps ParseParameters with model::ValidateParameters so the CLI rejects
+/// empty names, empty value lists, duplicate values within a parameter, and
+/// duplicate parameter names — the same checks the WASM/JS surfaces enforce.
+/// @return true on success; on failure sets error and returns false.
+bool ParseAndValidateParameters(const JsonValue& json,
+                                std::vector<coverwise::model::Parameter>& params,
+                                std::string& error) {
+  if (!ParseParameters(json, params, error)) {
+    return false;
+  }
+  auto validation = coverwise::model::ValidateParameters(params);
+  if (!validation.ok()) {
+    error = validation.message;
+    return false;
+  }
+  return true;
+}
+
 /// @brief Parse boundary value configs from parameter JSON.
 ///
 /// For each parameter with "type" ("integer" or "float") and "range" ([min, max]),
@@ -679,6 +699,24 @@ void ParseBoundaryConfigs(const JsonValue& json,
 
     configs[name_val.string_val] = config;
   }
+}
+
+/// @brief Expand numeric boundary parameters up front and clear the configs.
+///
+/// Boundary expansion must happen before generation so that a single Parameter
+/// object (with expanded values) is the source of truth for both generation and
+/// rendering. Otherwise test cases — which carry value indices — render against
+/// the unexpanded parameters and produce empty/garbage values. After expanding,
+/// the configs are cleared so core::Generate does not expand a second time.
+void ApplyBoundaryExpansion(coverwise::model::GenerateOptions& options) {
+  if (options.boundary_configs.empty()) return;
+  for (auto& param : options.parameters) {
+    auto it = options.boundary_configs.find(param.name);
+    if (it != options.boundary_configs.end()) {
+      param = coverwise::model::ExpandBoundaryValues(param, it->second);
+    }
+  }
+  options.boundary_configs.clear();
 }
 
 /// @brief Parse test cases from a JSON array of objects with string values.
@@ -999,7 +1037,7 @@ int RunGenerate(int argc, char* argv[]) {
   // Parse parameters.
   std::string error;
   coverwise::model::GenerateOptions options;
-  if (!ParseParameters(json["parameters"], options.parameters, error)) {
+  if (!ParseAndValidateParameters(json["parameters"], options.parameters, error)) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
   }
@@ -1046,6 +1084,11 @@ int RunGenerate(int argc, char* argv[]) {
 
   // Parse sub-models (mixed-strength parameter groups).
   ParseSubModels(json["subModels"], options.sub_models);
+
+  // Expand numeric boundary parameters up front so the same Parameter objects
+  // drive both generation and rendering. Seed tests are parsed afterward so
+  // their value indices match the expanded value lists.
+  ApplyBoundaryExpansion(options);
 
   // Parse seed tests (existing tests to build upon).
   const auto& seeds_val = json["seeds"];
@@ -1135,7 +1178,7 @@ int RunAnalyze(int argc, char* argv[]) {
       return kExitInvalidInput;
     }
   }
-  if (!ParseParameters(*params_array, params, error)) {
+  if (!ParseAndValidateParameters(*params_array, params, error)) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
   }
@@ -1248,10 +1291,16 @@ int RunExtend(int argc, char* argv[]) {
 
   std::string error;
   coverwise::model::GenerateOptions options;
-  if (!ParseParameters(input_json["parameters"], options.parameters, error)) {
+  if (!ParseAndValidateParameters(input_json["parameters"], options.parameters, error)) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
   }
+
+  // Parse boundary value configs and expand up front so generation and
+  // rendering share the same expanded Parameter objects. Seeds and existing
+  // tests are parsed afterward so their value indices match.
+  ParseBoundaryConfigs(input_json["parameters"], options.boundary_configs);
+  ApplyBoundaryExpansion(options);
 
   const auto& strength_val = input_json["strength"];
   if (!strength_val.IsNull() && strength_val.type == JsonType::kNumber) {
@@ -1358,7 +1407,7 @@ int RunStats(int argc, char* argv[]) {
 
   std::string error;
   coverwise::model::GenerateOptions options;
-  if (!ParseParameters(json["parameters"], options.parameters, error)) {
+  if (!ParseAndValidateParameters(json["parameters"], options.parameters, error)) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
   }

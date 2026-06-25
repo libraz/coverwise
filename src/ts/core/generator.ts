@@ -233,6 +233,12 @@ function resolveWeights(params: Parameter[], config: WeightConfig): number[][] {
 }
 
 /// Apply boundary value expansion to parameters with boundary configs.
+///
+/// When a parameter has a boundary config its value set is regenerated, so
+/// aliases and equivalence classes (which are keyed to the original values) are
+/// intentionally dropped — mirroring expandBoundaryValues. Otherwise the aliases
+/// and classes carried on the options are restored on the rebuilt Parameter so
+/// constraint resolution and class coverage see them.
 function applyBoundaryExpansion(opts: GenerateOptions): Parameter[] {
   const params: Parameter[] = [];
   for (const p of opts.parameters) {
@@ -243,6 +249,12 @@ function applyBoundaryExpansion(opts: GenerateOptions): Parameter[] {
     if (bc) {
       params.push(expandBoundaryValues(param, bc));
     } else {
+      if (p.aliases?.some((a) => a.length > 0)) {
+        param.setAliases(p.aliases);
+      }
+      if (p.equivalenceClasses?.some((c) => c.length > 0)) {
+        param.setEquivalenceClasses(p.equivalenceClasses);
+      }
       params.push(param);
     }
   }

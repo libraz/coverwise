@@ -4,11 +4,27 @@ export interface ParameterValue {
   value: string | number | boolean;
   invalid?: boolean;
   aliases?: string[];
+  /**
+   * Equivalence class name. Values sharing a class are interchangeable for the
+   * class-coverage metric; populate {@link GenerateResult.classCoverage}.
+   */
+  class?: string;
 }
 
 export interface Parameter {
   name: string;
   values: (string | number | boolean | ParameterValue)[];
+  /**
+   * Boundary value expansion type. When set with {@link Parameter.range}, the
+   * value set is expanded with min/max boundary values (min-1, min, min+1,
+   * max-1, max, max+1 for `'integer'`; the same spaced by {@link Parameter.step}
+   * for `'float'`).
+   */
+  type?: 'integer' | 'float';
+  /** Inclusive `[min, max]` range driving boundary value expansion. */
+  range?: [number, number];
+  /** Step size for `'float'` boundary expansion (default 1.0). */
+  step?: number;
 }
 
 export interface SubModel {

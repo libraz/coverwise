@@ -564,4 +564,123 @@ describe('WASM / TS compatibility', () => {
       });
     }
   });
+
+  // Boundary value expansion and equivalence classes must be honored identically
+  // from the npm public API on both the WASM-backed and pure-JS surfaces.
+  describe('boundary expansion parity', () => {
+    const integerInput: GenerateInput = {
+      parameters: [
+        { name: 'count', values: ['10'], type: 'integer', range: [0, 5] },
+        { name: 'mode', values: ['a', 'b'] },
+      ],
+      seed: 42,
+    };
+
+    it('WASM and pure-JS expand the same integer boundary value set', () => {
+      const wasmResult = generate(integerInput);
+      const pureResult = pureGenerate(integerInput);
+
+      const wasmCounts = new Set(wasmResult.tests.map((t) => String(t.count)));
+      const pureCounts = new Set(pureResult.tests.map((t) => String(t.count)));
+      expect([...pureCounts].sort()).toEqual([...wasmCounts].sort());
+      // min-1..min+1, max-1..max+1, merged with the original 10.
+      expect([...wasmCounts].sort()).toEqual(['-1', '0', '1', '10', '4', '5', '6'].sort());
+    });
+
+    it('WASM and pure-JS agree on coverage for a float boundary parameter', () => {
+      const floatInput: GenerateInput = {
+        parameters: [
+          { name: 'ratio', values: ['0.5'], type: 'float', range: [1, 2], step: 0.5 },
+          { name: 'mode', values: ['a', 'b'] },
+        ],
+        seed: 42,
+      };
+      const wasmResult = generate(floatInput);
+      const pureResult = pureGenerate(floatInput);
+
+      // Compare the assigned ratio value strings (a test may leave a parameter
+      // unassigned; WASM renders that as "" while pure-JS omits the key — an
+      // incidental display difference, not a value-set difference).
+      const assignedRatios = (tests: TestCase[]): string[] =>
+        [...new Set(tests.map((t) => t.ratio).filter((v) => v !== undefined && v !== ''))]
+          .map(String)
+          .sort();
+      expect(assignedRatios(pureResult.tests)).toEqual(assignedRatios(wasmResult.tests));
+      // The expanded float value set: min-step..min+step, max-step..max+step.
+      expect(assignedRatios(wasmResult.tests)).toEqual(['0.5', '1', '1.5', '2', '2.5'].sort());
+      expect(wasmResult.coverage).toBe(pureResult.coverage);
+      expect(wasmResult.stats.totalTuples).toBe(pureResult.stats.totalTuples);
+    });
+  });
+
+  // Equivalence classes supplied via the public ParameterValue.class field must
+  // populate result.classCoverage on both surfaces (not undefined).
+  describe('equivalence class parity', () => {
+    const classInput: GenerateInput = {
+      parameters: [
+        {
+          name: 'browser',
+          values: [
+            { value: 'chrome', class: 'chromium' },
+            { value: 'edge', class: 'chromium' },
+            { value: 'firefox', class: 'gecko' },
+          ],
+        },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+      seed: 42,
+    };
+
+    it('classCoverage is populated identically on WASM and pure-JS', () => {
+      const wasmResult = generate(classInput);
+      const pureResult = pureGenerate(classInput);
+
+      expect(wasmResult.classCoverage).toBeDefined();
+      expect(pureResult.classCoverage).toBeDefined();
+      expect(pureResult.classCoverage).toEqual(wasmResult.classCoverage);
+      // Sanity: at least one class tuple is tracked.
+      expect(wasmResult.classCoverage?.totalClassTuples).toBeGreaterThan(0);
+    });
+  });
+
+  // A constraint that references an aliased value must resolve identically on
+  // both surfaces; pure-JS previously dropped aliases before generation, yielding
+  // a degenerate result and a parse-failure warning.
+  describe('alias + constraint parity', () => {
+    const aliasInput: GenerateInput = {
+      parameters: [
+        {
+          name: 'browser',
+          values: [{ value: 'chromium', aliases: ['chrome'] }, 'firefox', 'safari'],
+        },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+      constraints: ['IF os = mac THEN browser != chrome'],
+      seed: 42,
+    };
+
+    it('aliased value in a constraint yields identical, non-degenerate results', () => {
+      const wasmResult = generate(aliasInput);
+      const pureResult = pureGenerate(aliasInput);
+
+      // Neither surface degraded with a constraint parse-failure warning.
+      expect(wasmResult.warnings).toEqual([]);
+      expect(pureResult.warnings).toEqual([]);
+
+      // Both reach full coverage with a non-empty suite.
+      expect(wasmResult.coverage).toBe(1.0);
+      expect(pureResult.coverage).toBe(1.0);
+      expect(pureResult.tests.length).toBeGreaterThan(0);
+      expect(pureResult.coverage).toBe(wasmResult.coverage);
+      expect(pureResult.stats.totalTuples).toBe(wasmResult.stats.totalTuples);
+
+      // The constraint must hold: the chromium value (displayed as chromium or
+      // its alias chrome) never pairs with os=mac.
+      for (const t of pureResult.tests) {
+        if (t.os === 'mac') {
+          expect(t.browser === 'chromium' || t.browser === 'chrome').toBe(false);
+        }
+      }
+    });
+  });
 });

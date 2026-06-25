@@ -50,7 +50,15 @@ export function createWeightConfig(): WeightConfig {
 
 /** Options for test generation. */
 export interface GenerateOptions {
-  parameters: Array<{ name: string; values: string[]; invalid?: boolean[] }>;
+  parameters: Array<{
+    name: string;
+    values: string[];
+    invalid?: boolean[];
+    /** Per-value alias lists (parallel to `values`). */
+    aliases?: string[][];
+    /** Per-value equivalence class names (parallel to `values`). */
+    equivalenceClasses?: string[];
+  }>;
   /** Constraint strings. */
   constraintExpressions: string[];
   /** Interaction strength (2 = pairwise). */
