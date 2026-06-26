@@ -70,6 +70,10 @@ std::optional<model::TestCase> GreedyConstruct(const std::vector<model::Paramete
     std::swap(order[i - 1], order[j]);
   }
 
+  // Single-pass, no-backtracking construction: each parameter is assigned once in
+  // shuffled order. This is a deliberate approximation favouring speed — a greedy
+  // local choice may leave some satisfiable tuples uncovered, which the caller
+  // surfaces as coverage < 1.0 rather than retrying exhaustively.
   for (uint32_t pi : order) {
     uint32_t best_score = 0;
     std::vector<uint32_t> best_values;

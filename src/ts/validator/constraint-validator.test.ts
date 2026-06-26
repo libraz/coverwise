@@ -67,6 +67,20 @@ describe('validateConstraints', () => {
     const violations = validateConstraints([], [macImpliesNotIe]);
     expect(violations).toHaveLength(0);
   });
+
+  it('includes the rendered constraint text in the violation description', () => {
+    // Named nodes render human-readable text (e.g. "os = mac").
+    const constraint = new ImpliesNode(
+      new EqualsNode(0, 1, 'os', 'mac'),
+      new NotEqualsNode(1, 2, 'browser', 'ie'),
+    );
+    const tests: TestCase[] = [{ values: [1, 2] }]; // mac, ie -> violation
+
+    const violations = validateConstraints(tests, [constraint]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].description).toContain('os = mac');
+    expect(violations[0].description).toContain(constraint.toString());
+  });
 });
 
 describe('validateConstraintReport', () => {

@@ -96,3 +96,23 @@ export function validateGenerateInput(input: GenerateInput, makeError: ScalarErr
   validateMaxTests(input.maxTests, makeError);
   validateSeed(input.seed, makeError);
 }
+
+/** The extend modes currently supported by the engine. */
+const SUPPORTED_EXTEND_MODES = ['strict'] as const;
+
+/**
+ * Validate the optional `mode` field of an extend input. `'strict'` (keep
+ * existing tests as-is) is the only supported mode today; any other value is
+ * rejected rather than silently ignored. Throws {@link CoverwiseError} otherwise.
+ */
+export function validateExtendMode(mode: unknown): void {
+  if (mode === undefined || mode === null) {
+    return;
+  }
+  if (typeof mode !== 'string' || !(SUPPORTED_EXTEND_MODES as readonly string[]).includes(mode)) {
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      `Invalid extend mode: ${String(mode)}. Supported modes: ${SUPPORTED_EXTEND_MODES.join(', ')}.`,
+    );
+  }
+}

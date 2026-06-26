@@ -118,7 +118,12 @@ export interface CoverageReport {
 }
 
 export interface ExtendInput extends GenerateInput {
-  /** How to handle existing tests. */
+  /**
+   * How to handle existing tests. `'strict'` keeps every existing test exactly
+   * as-is and only appends new tests to improve coverage. This is currently the
+   * only supported mode and the default; any other value is rejected with a
+   * {@link CoverwiseError}.
+   */
   mode?: 'strict';
 }
 

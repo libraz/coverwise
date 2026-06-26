@@ -1267,6 +1267,21 @@ TEST(ConstraintParserTest, InSetWithEscapedDoubleQuote) {
   EXPECT_EQ(result.constraint->Evaluate(a3), ConstraintResult::kFalse);
 }
 
+TEST(ConstraintParserTest, ErrorPositionIsCodepointOffsetForNonAscii) {
+  // The parameter name "café" contains a 2-byte UTF-8 codepoint (é). After it,
+  // an unexpected '@' triggers a tokenizer error. The reported position must be
+  // the codepoint offset (7), not the byte offset (8), so it matches the TS
+  // surface exactly. Expression layout (codepoint indices):
+  //   c(0) a(1) f(2) é(3) ' '(4) =(5) ' '(6) @(7)
+  std::vector<Parameter> params = {
+      {"café", {"x", "y"}, {}},
+  };
+  auto result = ParseConstraint("café = @", params);
+  ASSERT_FALSE(result.error.ok());
+  EXPECT_NE(result.error.message.find("position 7"), std::string::npos) << result.error.message;
+  EXPECT_EQ(result.error.message.find("position 8"), std::string::npos) << result.error.message;
+}
+
 TEST(ConstraintParserTest, QuotedLikePatternWithSpace) {
   std::vector<Parameter> params = {
       {"name", {"Windows 10", "Windows 11", "macOS"}, {}},

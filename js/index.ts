@@ -43,6 +43,7 @@ import type {
 } from './types.js';
 import { CoverwiseError, errorCodeFromNumber } from './types.js';
 import {
+  validateExtendMode,
   validateGenerateInput,
   validateParameters,
   validateStrength,
@@ -94,7 +95,10 @@ export async function init(): Promise<void> {
         return mod as WasmModule;
       } catch (e) {
         initPromise = null;
-        throw e;
+        throw new CoverwiseError(
+          'INVALID_INPUT',
+          `coverwise WASM module failed to initialize: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     })();
   }
@@ -103,7 +107,10 @@ export async function init(): Promise<void> {
 
 function getModule(): WasmModule {
   if (!wasmModule) {
-    throw new Error('coverwise WASM module not initialized. Call await init() first.');
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      'coverwise WASM module not initialized. Call await init() first.',
+    );
   }
   return wasmModule;
 }
@@ -197,6 +204,7 @@ export function analyzeCoverage(
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
   validateTestArray(existing, 'existing');
   validateInput(input);
+  validateExtendMode(input.mode);
   const mod = getModule();
   const result = checkResult<GenerateResult>(mod.extendTests(existing, input));
   result.negativeTests = result.negativeTests ?? [];
@@ -280,6 +288,7 @@ export class Coverwise {
   extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
     validateTestArray(existing, 'existing');
     validateInput(input);
+    validateExtendMode(input.mode);
     const result = checkResult<GenerateResult>(this.module.extendTests(existing, input));
     result.negativeTests = result.negativeTests ?? [];
     return result;

@@ -79,6 +79,7 @@ enum TokenType {
 interface Token {
   type: TokenType;
   text: string;
+  /** Unicode codepoint offset in the original expression. */
   position: number;
 }
 
@@ -104,6 +105,28 @@ function isIdentChar(c: string): boolean {
 
 function isGlobPatternChar(c: string): boolean {
   return isIdentChar(c) || c === '*' || c === '?' || c === '.';
+}
+
+/**
+ * Convert a UTF-16 code-unit offset into a string to a Unicode codepoint offset.
+ *
+ * Error positions are reported as codepoint offsets so that the unit matches the
+ * C++ surface (which counts codepoints, not bytes). For a string made entirely of
+ * Basic Multilingual Plane characters this is identical to the code-unit offset;
+ * astral characters (surrogate pairs) count as a single codepoint.
+ */
+function utf16OffsetToCodepoint(s: string, utf16Offset: number): number {
+  let codepoints = 0;
+  for (let i = 0; i < utf16Offset && i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    // Skip the trailing half of a surrogate pair; the leading half already
+    // accounted for the whole codepoint.
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      continue;
+    }
+    codepoints++;
+  }
+  return codepoints;
 }
 
 function isDigit(c: string): boolean {
@@ -157,7 +180,9 @@ function tokenize(expr: string): TokenizeResult {
       continue;
     }
 
-    const start = i;
+    // Token positions are reported as codepoint offsets (matching the C++ surface);
+    // i remains the UTF-16 code-unit cursor used to scan the string.
+    const start = utf16OffsetToCodepoint(expr, i);
 
     if (expr[i] === '(') {
       tokens.push({ type: TokenType.LParen, text: '(', position: start });
@@ -226,7 +251,13 @@ function tokenize(expr: string): TokenizeResult {
       continue;
     }
 
-    // Negative number: '-' followed by digit, only if preceded by an operator
+    // Negative number: '-' followed by digit, only at the start of the expression
+    // or immediately after a comparison operator. Note the deliberate asymmetry: a
+    // value like '-1' inside an IN set ('p IN {-1}') is preceded by '{' or ',', so
+    // it is NOT tokenized here as a Number; it falls through to the identifier
+    // scanner ('-' is an ident char) and is matched as the literal text '-1'.
+    // This is harmless because value resolution is string-based, so both paths
+    // yield the same value name. Keep this rule identical in the C++ tokenizer.
     if (expr[i] === '-' && i + 1 < len && isDigit(expr[i + 1])) {
       let isNegativeNum = tokens.length === 0;
       if (!isNegativeNum && tokens.length > 0) {
@@ -364,7 +395,7 @@ function tokenize(expr: string): TokenizeResult {
     };
   }
 
-  tokens.push({ type: TokenType.End, text: '', position: len });
+  tokens.push({ type: TokenType.End, text: '', position: utf16OffsetToCodepoint(expr, len) });
   return { tokens, error: okError() };
 }
 

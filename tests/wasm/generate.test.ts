@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   analyzeCoverage,
+  CoverwiseError,
   estimateModel,
   extendTests,
   generate,
@@ -123,6 +124,26 @@ describe('coverwise WASM', () => {
       expect(result.coverage).toBe(1.0);
     });
 
+    it('rejects a non-positive sub-model strength at the binding boundary', () => {
+      // The JS wrapper does not pre-validate subModels[].strength, so this
+      // exercises the WASM binding's own validation (ParseSubModels). A zero
+      // strength would otherwise be silently truncated into a no-op sub-model.
+      const base = {
+        parameters: [
+          { name: 'A', values: ['1', '2', '3'] },
+          { name: 'B', values: ['1', '2', '3'] },
+          { name: 'C', values: ['1', '2', '3'] },
+        ],
+        seed: 1,
+      };
+      expect(() =>
+        generate({ ...base, subModels: [{ parameters: ['A', 'B'], strength: 0 }] }),
+      ).toThrow(/Invalid subModel strength/);
+      expect(() =>
+        generate({ ...base, subModels: [{ parameters: ['A', 'B'], strength: 2.5 }] }),
+      ).toThrow(/Invalid subModel strength/);
+    });
+
     it('generates negative tests for invalid values', () => {
       const result = generate({
         parameters: [
@@ -209,6 +230,65 @@ describe('coverwise WASM', () => {
       const result = extendTests(existing, input);
       expect(result.coverage).toBe(1.0);
       expect(result.tests[0]).toEqual(existing[0]);
+    });
+
+    it("accepts the supported 'strict' mode", () => {
+      const input = {
+        parameters: [
+          { name: 'a', values: ['0', '1'] },
+          { name: 'b', values: ['0', '1'] },
+        ],
+        mode: 'strict' as const,
+        seed: 1,
+      };
+      const existing: TestCase[] = [{ a: '0', b: '0' }];
+      const result = extendTests(existing, input);
+      expect(result.coverage).toBe(1.0);
+      expect(result.tests[0]).toEqual(existing[0]);
+    });
+
+    it('rejects an unsupported extend mode with CoverwiseError(INVALID_INPUT)', () => {
+      const input = {
+        parameters: [
+          { name: 'a', values: ['0', '1'] },
+          { name: 'b', values: ['0', '1'] },
+        ],
+        // Cast: 'relaxed' is not a valid ExtendInput['mode'] at the type level.
+        mode: 'relaxed' as unknown as 'strict',
+        seed: 1,
+      };
+      const existing: TestCase[] = [{ a: '0', b: '0' }];
+      let thrown: unknown;
+      try {
+        extendTests(existing, input);
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(CoverwiseError);
+      expect((thrown as CoverwiseError).code).toBe('INVALID_INPUT');
+    });
+  });
+
+  describe('error surface', () => {
+    it('throws CoverwiseError (with .code) from the public validation path', () => {
+      const badInput = {
+        parameters: [
+          { name: 'a', values: ['0', '1'] },
+          { name: 'b', values: ['0', '1'] },
+        ],
+        // Non-array tests must be rejected before reaching the WASM module.
+        seed: 1,
+      };
+      let thrown: unknown;
+      try {
+        // A non-array `tests` argument must throw CoverwiseError, not a raw TypeError.
+        analyzeCoverage(badInput.parameters, 'not-an-array' as unknown as TestCase[], 2);
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(CoverwiseError);
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as CoverwiseError).code).toBe('INVALID_INPUT');
     });
   });
 

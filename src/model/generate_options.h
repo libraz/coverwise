@@ -63,6 +63,9 @@ struct GenerateOptions {
 };
 
 /// @brief Mode for extendTests operation.
+///
+/// kStrict is currently the only supported mode; the enum is kept for forward
+/// compatibility. Extend() switches on this explicitly rather than ignoring it.
 enum class ExtendMode {
   kStrict,  ///< Keep existing tests exactly as-is
 };

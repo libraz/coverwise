@@ -67,6 +67,13 @@ function breakTieWithWeights(
 /// - false: skip this value (prune)
 /// - unknown: continue (not all params assigned yet)
 ///
+/// This is a single-pass construction: once a parameter is assigned it is never
+/// revisited (no backtracking). Under adversarial constraints a locally-greedy
+/// choice can therefore leave some satisfiable tuples uncovered. This is a
+/// deliberate approximation in favour of speed; the caller bounds the number of
+/// retries and reports any resulting shortfall (coverage < 1.0 plus a warning)
+/// rather than guaranteeing optimal coverage.
+///
 /// @param params Parameter definitions (only .size is used).
 /// @param scoreFn Scoring function that returns the coverage gain for assigning
 ///   value vi to parameter pi given the current partial test case.
@@ -108,6 +115,10 @@ export function greedyConstruct(
     order[j] = tmp;
   }
 
+  // Single-pass, no-backtracking construction: each parameter is assigned once in
+  // shuffled order. This is a deliberate approximation favouring speed — a greedy
+  // local choice may leave some satisfiable tuples uncovered, which the caller
+  // surfaces as coverage < 1.0 rather than retrying exhaustively.
   for (const pi of order) {
     let bestScore = 0;
     const bestValues: number[] = [];

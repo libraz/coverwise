@@ -494,13 +494,20 @@ class JsonWriter {
 // File reading utility.
 // ---------------------------------------------------------------------------
 
-/// @brief Read entire file contents into a string. Returns empty on failure.
-std::string ReadFile(const std::string& path) {
+/// @brief Read entire file contents into @p out.
+///
+/// Distinguishes a file that cannot be opened (missing/unreadable) from one that
+/// opens successfully but is genuinely empty: the former returns false, the latter
+/// returns true with an empty @p out. This lets callers emit accurate diagnostics
+/// ("cannot open file" vs "file is empty") instead of conflating the two.
+/// @return true if the file was opened and read; false if it could not be opened.
+bool ReadFile(const std::string& path, std::string& out) {
   std::ifstream file(path);
-  if (!file.is_open()) return {};
+  if (!file.is_open()) return false;
   std::ostringstream ss;
   ss << file.rdbuf();
-  return ss.str();
+  out = ss.str();
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,9 +1024,13 @@ int RunGenerate(int argc, char* argv[]) {
     return kExitInvalidInput;
   }
 
-  std::string content = ReadFile(argv[2]);
+  std::string content;
+  if (!ReadFile(argv[2], content)) {
+    std::cerr << "error: cannot open file '" << argv[2] << "'\n";
+    return kExitInvalidInput;
+  }
   if (content.empty()) {
-    std::cerr << "error: cannot read file '" << argv[2] << "'\n";
+    std::cerr << "error: file '" << argv[2] << "' is empty\n";
     return kExitInvalidInput;
   }
 
@@ -1155,9 +1166,13 @@ int RunAnalyze(int argc, char* argv[]) {
   // Read and parse params. The params file may be either a bare array of
   // parameters or an object with a "parameters" array (and optional
   // "constraints"), matching the shape that generate accepts.
-  std::string params_content = ReadFile(params_path);
+  std::string params_content;
+  if (!ReadFile(params_path, params_content)) {
+    std::cerr << "error: cannot open file '" << params_path << "'\n";
+    return kExitInvalidInput;
+  }
   if (params_content.empty()) {
-    std::cerr << "error: cannot read file '" << params_path << "'\n";
+    std::cerr << "error: file '" << params_path << "' is empty\n";
     return kExitInvalidInput;
   }
   JsonParser params_parser(params_content);
@@ -1186,9 +1201,13 @@ int RunAnalyze(int argc, char* argv[]) {
   // Read constraints from a dedicated file if provided. A constraints file is a
   // JSON object with a "constraints" array (or a bare array of strings).
   if (!constraints_path.empty()) {
-    std::string constraints_content = ReadFile(constraints_path);
+    std::string constraints_content;
+    if (!ReadFile(constraints_path, constraints_content)) {
+      std::cerr << "error: cannot open file '" << constraints_path << "'\n";
+      return kExitInvalidInput;
+    }
     if (constraints_content.empty()) {
-      std::cerr << "error: cannot read file '" << constraints_path << "'\n";
+      std::cerr << "error: file '" << constraints_path << "' is empty\n";
       return kExitInvalidInput;
     }
     JsonParser constraints_parser(constraints_content);
@@ -1208,9 +1227,13 @@ int RunAnalyze(int argc, char* argv[]) {
   }
 
   // Read and parse tests.
-  std::string tests_content = ReadFile(tests_path);
+  std::string tests_content;
+  if (!ReadFile(tests_path, tests_content)) {
+    std::cerr << "error: cannot open file '" << tests_path << "'\n";
+    return kExitInvalidInput;
+  }
   if (tests_content.empty()) {
-    std::cerr << "error: cannot read file '" << tests_path << "'\n";
+    std::cerr << "error: file '" << tests_path << "' is empty\n";
     return kExitInvalidInput;
   }
   JsonParser tests_parser(tests_content);
@@ -1273,9 +1296,13 @@ int RunExtend(int argc, char* argv[]) {
   }
 
   // Read and parse input.
-  std::string input_content = ReadFile(input_path);
+  std::string input_content;
+  if (!ReadFile(input_path, input_content)) {
+    std::cerr << "error: cannot open file '" << input_path << "'\n";
+    return kExitInvalidInput;
+  }
   if (input_content.empty()) {
-    std::cerr << "error: cannot read file '" << input_path << "'\n";
+    std::cerr << "error: file '" << input_path << "' is empty\n";
     return kExitInvalidInput;
   }
   JsonParser input_parser(input_content);
@@ -1352,9 +1379,13 @@ int RunExtend(int argc, char* argv[]) {
   }
 
   // Read and parse existing tests.
-  std::string existing_content = ReadFile(existing_path);
+  std::string existing_content;
+  if (!ReadFile(existing_path, existing_content)) {
+    std::cerr << "error: cannot open file '" << existing_path << "'\n";
+    return kExitInvalidInput;
+  }
   if (existing_content.empty()) {
-    std::cerr << "error: cannot read file '" << existing_path << "'\n";
+    std::cerr << "error: file '" << existing_path << "' is empty\n";
     return kExitInvalidInput;
   }
   JsonParser existing_parser(existing_content);
@@ -1388,9 +1419,13 @@ int RunStats(int argc, char* argv[]) {
     return kExitInvalidInput;
   }
 
-  std::string content = ReadFile(argv[2]);
+  std::string content;
+  if (!ReadFile(argv[2], content)) {
+    std::cerr << "error: cannot open file '" << argv[2] << "'\n";
+    return kExitInvalidInput;
+  }
   if (content.empty()) {
-    std::cerr << "error: cannot read file '" << argv[2] << "'\n";
+    std::cerr << "error: file '" << argv[2] << "' is empty\n";
     return kExitInvalidInput;
   }
 

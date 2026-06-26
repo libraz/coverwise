@@ -45,7 +45,7 @@ export function validateConstraints(
         violations.push({
           testIndex: i,
           constraintIndex: j,
-          description: `Test case ${i} violates constraint ${j}`,
+          description: `Test case ${i} violates constraint ${j}: ${constraints[j].toString()}`,
         });
       }
     }

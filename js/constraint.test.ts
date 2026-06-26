@@ -639,4 +639,17 @@ describe('builder output parses on the TS parser', () => {
     expect(result.constraint?.evaluate([0, 2])).toBe(ConstraintResult.True);
     expect(result.constraint?.evaluate([2, 0])).toBe(ConstraintResult.False);
   });
+
+  it('reports error positions as codepoint offsets for non-ASCII input', () => {
+    // Parity with the C++ test ErrorPositionIsCodepointOffsetForNonAscii. The
+    // parameter name "café" contains a non-ASCII codepoint; an unexpected '@'
+    // triggers a tokenizer error whose position must be the codepoint offset (7),
+    // identical to the byte-aware C++ surface. Codepoint layout:
+    //   c(0) a(1) f(2) é(3) ' '(4) =(5) ' '(6) @(7)
+    const params = [new Parameter('café', ['x', 'y'])];
+    const result = parse('café = @', params);
+    expect(result.error.code).not.toBe(0);
+    expect(result.error.message).toContain('position 7');
+    expect(result.error.message).not.toContain('position 8');
+  });
 });

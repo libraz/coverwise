@@ -411,3 +411,57 @@ describe('globMatch', () => {
     expect(globMatch('a**b', 'aXYZb')).toBe(true);
   });
 });
+
+describe('ConstraintNode.toString', () => {
+  it('renders Equals/NotEquals with names when provided', () => {
+    expect(new EqualsNode(0, 1, 'os', 'mac').toString()).toBe('os = mac');
+    expect(new NotEqualsNode(1, 2, 'browser', 'ie').toString()).toBe('browser != ie');
+  });
+
+  it('falls back to index form when names are absent', () => {
+    expect(new EqualsNode(0, 1).toString()).toBe('p0 = v1');
+    expect(new NotEqualsNode(1, 2).toString()).toBe('p1 != v2');
+  });
+
+  it('renders composite nodes recursively', () => {
+    const node = new ImpliesNode(
+      new EqualsNode(0, 1, 'os', 'mac'),
+      new NotEqualsNode(1, 2, 'browser', 'ie'),
+    );
+    expect(node.toString()).toBe('(os = mac IMPLIES browser != ie)');
+
+    expect(new NotNode(new EqualsNode(0, 0, 'os', 'win')).toString()).toBe('NOT (os = win)');
+    expect(
+      new AndNode(
+        new EqualsNode(0, 0, 'os', 'win'),
+        new EqualsNode(1, 1, 'browser', 'firefox'),
+      ).toString(),
+    ).toBe('(os = win AND browser = firefox)');
+    expect(
+      new OrNode(
+        new EqualsNode(0, 0, 'os', 'win'),
+        new EqualsNode(1, 1, 'browser', 'firefox'),
+      ).toString(),
+    ).toBe('(os = win OR browser = firefox)');
+    expect(
+      new IfThenElseNode(
+        new EqualsNode(0, 1, 'os', 'mac'),
+        new NotEqualsNode(1, 2, 'browser', 'ie'),
+        new NotEqualsNode(2, 0, 'arch', 'arm'),
+      ).toString(),
+    ).toBe('IF os = mac THEN browser != ie ELSE arch != arm');
+  });
+
+  it('renders IN, LIKE, relational and param comparisons', () => {
+    expect(new InNode(0, [1, 2]).toString()).toBe('p0 IN {v1, v2}');
+    expect(new LikeNode(0, 'chrome*', ['chrome', 'safari']).toString()).toBe('p0 LIKE chrome*');
+    expect(RelationalNode.fromLiteral(0, RelOp.Greater, 3, ['1', '2', '3', '4']).toString()).toBe(
+      'p0 > 3',
+    );
+    expect(RelationalNode.fromParams(0, RelOp.Less, 1, ['1', '2'], ['3', '4']).toString()).toBe(
+      'p0 < p1',
+    );
+    expect(new ParamEqualsNode(0, 1, ['a'], ['a']).toString()).toBe('p0 = p1');
+    expect(new ParamNotEqualsNode(0, 1, ['a'], ['b']).toString()).toBe('p0 != p1');
+  });
+});

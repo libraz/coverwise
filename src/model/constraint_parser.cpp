@@ -43,7 +43,7 @@ enum class TokenType {
 struct Token {
   TokenType type;
   std::string text;
-  size_t position;  // byte offset in the original expression
+  size_t position;  // Unicode codepoint offset in the original expression
 };
 
 // --- Tokenizer ---
@@ -65,6 +65,22 @@ bool IsIdentChar(char c) {
 }
 
 bool IsGlobPatternChar(char c) { return IsIdentChar(c) || c == '*' || c == '?' || c == '.'; }
+
+/// @brief Convert a byte offset into a UTF-8 string to a Unicode codepoint offset.
+///
+/// Error positions are reported as codepoint offsets so that the unit matches the
+/// TypeScript surface (which counts codepoints, not UTF-16 code units). For a pure
+/// ASCII expression this is identical to the byte offset.
+size_t ByteOffsetToCodepoint(const std::string& s, size_t byte_offset) {
+  size_t codepoints = 0;
+  for (size_t b = 0; b < byte_offset && b < s.size(); ++b) {
+    // Count every byte that is not a UTF-8 continuation byte (0b10xxxxxx).
+    if ((static_cast<unsigned char>(s[b]) & 0xC0) != 0x80) {
+      ++codepoints;
+    }
+  }
+  return codepoints;
+}
 
 struct TokenizeResult {
   std::vector<Token> tokens;
@@ -96,7 +112,9 @@ TokenizeResult Tokenize(const std::string& expr) {
       continue;
     }
 
-    size_t start = i;
+    // Token positions are reported as codepoint offsets (matching the TS surface);
+    // i remains the byte cursor used to scan the UTF-8 string.
+    size_t start = ByteOffsetToCodepoint(expr, i);
 
     if (expr[i] == '(') {
       tokens.push_back({TokenType::kLParen, "(", start});
@@ -165,7 +183,13 @@ TokenizeResult Tokenize(const std::string& expr) {
       continue;
     }
 
-    // Negative number: '-' followed by digit, only if preceded by an operator
+    // Negative number: '-' followed by digit, only at the start of the expression
+    // or immediately after a comparison operator. Note the deliberate asymmetry: a
+    // value like "-1" inside an IN set ("p IN {-1}") is preceded by '{' or ',', so
+    // it is NOT tokenized here as a kNumber; it falls through to the identifier
+    // scanner ('-' is an ident char) and is matched as the literal text "-1".
+    // This is harmless because value resolution is string-based, so both paths
+    // yield the same value name. Keep this rule identical in the TS tokenizer.
     if (expr[i] == '-' && i + 1 < len && std::isdigit(static_cast<unsigned char>(expr[i + 1]))) {
       // Check if this looks like a negative number (after an operator token)
       bool is_negative_num = tokens.empty();
@@ -292,7 +316,7 @@ TokenizeResult Tokenize(const std::string& expr) {
              ""}};
   }
 
-  tokens.push_back({TokenType::kEnd, "", len});
+  tokens.push_back({TokenType::kEnd, "", ByteOffsetToCodepoint(expr, len)});
   return {std::move(tokens), {}};
 }
 

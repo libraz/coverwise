@@ -54,7 +54,44 @@ CliResult RunCli(const std::string& args) {
   return result;
 }
 
+/// @brief Run the CLI capturing merged stdout+stderr and the exit code.
+///
+/// Unlike RunCli, this keeps stderr so diagnostics can be asserted on.
+CliResult RunCliCaptureStderr(const std::string& args) {
+  std::string command = std::string(COVERWISE_CLI_PATH) + " " + args + " 2>&1";
+  FILE* pipe = popen(command.c_str(), "r");
+  EXPECT_NE(pipe, nullptr) << "popen failed for: " << command;
+  CliResult result;
+  if (!pipe) return result;
+  char buffer[4096];
+  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+    result.stdout_text += buffer;
+  }
+  int status = pclose(pipe);
+  result.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  return result;
+}
+
 }  // namespace
+
+// A missing input file and an empty input file produce distinguishable
+// diagnostics, both exiting 3 (invalid input).
+TEST(CliReadFileTest, MissingVsEmptyFileDistinctDiagnostics) {
+  // Missing file: a path that does not exist.
+  std::string missing_path = TempPath("does_not_exist.json");
+  auto missing = RunCliCaptureStderr("generate " + missing_path);
+  EXPECT_EQ(missing.exit_code, 3) << missing.stdout_text;
+  EXPECT_NE(missing.stdout_text.find("cannot open file"), std::string::npos) << missing.stdout_text;
+  EXPECT_EQ(missing.stdout_text.find("is empty"), std::string::npos) << missing.stdout_text;
+
+  // Empty file: exists but has no content.
+  std::string empty_path = TempPath("empty.json");
+  WriteFile(empty_path, "");
+  auto empty = RunCliCaptureStderr("generate " + empty_path);
+  EXPECT_EQ(empty.exit_code, 3) << empty.stdout_text;
+  EXPECT_NE(empty.stdout_text.find("is empty"), std::string::npos) << empty.stdout_text;
+  EXPECT_EQ(empty.stdout_text.find("cannot open file"), std::string::npos) << empty.stdout_text;
+}
 
 // analyze with --strength 3 validates a complete 3-wise suite (exit 0).
 TEST(CliAnalyzeTest, StrengthThreeCompleteSuiteExitsZero) {

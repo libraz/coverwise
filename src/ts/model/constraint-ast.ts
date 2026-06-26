@@ -16,6 +16,22 @@ export enum ConstraintResult {
 export interface ConstraintNode {
   /** Evaluate this constraint against a (possibly partial) assignment. */
   evaluate(assignment: number[]): ConstraintResult;
+  /**
+   * Render this constraint back to a human-readable string for diagnostics
+   * (e.g. violation descriptions). When a node was built with parameter/value
+   * names they are used; otherwise an index-based form (`p0 = v1`) is produced.
+   */
+  toString(): string;
+}
+
+/** Render a parameter reference, preferring its name when available. */
+function paramLabel(index: number, name?: string): string {
+  return name ?? `p${index}`;
+}
+
+/** Render a value reference, preferring its name when available. */
+function valueLabel(index: number, name?: string): string {
+  return name ?? `v${index}`;
 }
 
 /** Equality comparison: param_index == value_index. */
@@ -23,6 +39,8 @@ export class EqualsNode implements ConstraintNode {
   constructor(
     readonly paramIndex: number,
     readonly valueIndex: number,
+    private readonly paramName?: string,
+    private readonly valueName?: string,
   ) {}
 
   evaluate(assignment: number[]): ConstraintResult {
@@ -35,6 +53,10 @@ export class EqualsNode implements ConstraintNode {
     }
     return val === this.valueIndex ? ConstraintResult.True : ConstraintResult.False;
   }
+
+  toString(): string {
+    return `${paramLabel(this.paramIndex, this.paramName)} = ${valueLabel(this.valueIndex, this.valueName)}`;
+  }
 }
 
 /** Inequality comparison: param_index != value_index. */
@@ -42,6 +64,8 @@ export class NotEqualsNode implements ConstraintNode {
   constructor(
     readonly paramIndex: number,
     readonly valueIndex: number,
+    private readonly paramName?: string,
+    private readonly valueName?: string,
   ) {}
 
   evaluate(assignment: number[]): ConstraintResult {
@@ -53,6 +77,10 @@ export class NotEqualsNode implements ConstraintNode {
       return ConstraintResult.Unknown;
     }
     return val !== this.valueIndex ? ConstraintResult.True : ConstraintResult.False;
+  }
+
+  toString(): string {
+    return `${paramLabel(this.paramIndex, this.paramName)} != ${valueLabel(this.valueIndex, this.valueName)}`;
   }
 }
 
@@ -77,6 +105,10 @@ export class AndNode implements ConstraintNode {
     }
     return ConstraintResult.Unknown;
   }
+
+  toString(): string {
+    return `(${this.left.toString()} AND ${this.right.toString()})`;
+  }
 }
 
 /** Logical OR of two sub-expressions. */
@@ -100,6 +132,10 @@ export class OrNode implements ConstraintNode {
     }
     return ConstraintResult.Unknown;
   }
+
+  toString(): string {
+    return `(${this.left.toString()} OR ${this.right.toString()})`;
+  }
 }
 
 /** Logical NOT of a sub-expression. */
@@ -115,6 +151,10 @@ export class NotNode implements ConstraintNode {
       return ConstraintResult.True;
     }
     return ConstraintResult.Unknown;
+  }
+
+  toString(): string {
+    return `NOT (${this.child.toString()})`;
   }
 }
 
@@ -139,6 +179,10 @@ export class ImpliesNode implements ConstraintNode {
       return ConstraintResult.True;
     }
     return ConstraintResult.Unknown;
+  }
+
+  toString(): string {
+    return `(${this.antecedent.toString()} IMPLIES ${this.consequent.toString()})`;
   }
 }
 
@@ -172,6 +216,10 @@ export class IfThenElseNode implements ConstraintNode {
       return thenResult;
     }
     return ConstraintResult.Unknown;
+  }
+
+  toString(): string {
+    return `IF ${this.condition.toString()} THEN ${this.thenBranch.toString()} ELSE ${this.elseBranch.toString()}`;
   }
 }
 
@@ -283,6 +331,12 @@ export class RelationalNode implements ConstraintNode {
         return left >= right;
     }
   }
+
+  toString(): string {
+    const left = paramLabel(this.leftParam);
+    const right = this.isParamComparison ? paramLabel(this.rightParam) : String(this.literal);
+    return `${left} ${this.op} ${right}`;
+  }
 }
 
 /**
@@ -311,6 +365,11 @@ export class InNode implements ConstraintNode {
     }
     return ConstraintResult.False;
   }
+
+  toString(): string {
+    const values = this.valueIndices.map((vi) => valueLabel(vi)).join(', ');
+    return `${paramLabel(this.paramIndex)} IN {${values}}`;
+  }
 }
 
 /**
@@ -321,10 +380,12 @@ export class InNode implements ConstraintNode {
  */
 export class LikeNode implements ConstraintNode {
   private readonly paramIndex: number;
+  private readonly pattern: string;
   private readonly matches: boolean[];
 
   constructor(paramIndex: number, pattern: string, paramValues: string[]) {
     this.paramIndex = paramIndex;
+    this.pattern = pattern;
     this.matches = paramValues.map((v) => globMatch(pattern, v));
   }
 
@@ -340,6 +401,10 @@ export class LikeNode implements ConstraintNode {
       return ConstraintResult.False;
     }
     return this.matches[val] ? ConstraintResult.True : ConstraintResult.False;
+  }
+
+  toString(): string {
+    return `${paramLabel(this.paramIndex)} LIKE ${this.pattern}`;
   }
 }
 
@@ -403,6 +468,10 @@ export class ParamEqualsNode implements ConstraintNode {
       ? ConstraintResult.True
       : ConstraintResult.False;
   }
+
+  toString(): string {
+    return `${paramLabel(this.leftParam)} = ${paramLabel(this.rightParam)}`;
+  }
 }
 
 /**
@@ -434,5 +503,9 @@ export class ParamNotEqualsNode implements ConstraintNode {
     return this.leftValues[lv] !== this.rightValues[rv]
       ? ConstraintResult.True
       : ConstraintResult.False;
+  }
+
+  toString(): string {
+    return `${paramLabel(this.leftParam)} != ${paramLabel(this.rightParam)}`;
   }
 }

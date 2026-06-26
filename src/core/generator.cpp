@@ -426,9 +426,17 @@ model::GenerateResult Generate(const GenerateOptions& options) {
 }
 
 model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
-                             const GenerateOptions& options, ExtendMode /*mode*/) {
+                             const GenerateOptions& options, ExtendMode mode) {
   GenerateOptions opts = options;
-  opts.seeds = existing;
+
+  // Only kStrict is supported today: existing tests are seeded verbatim and kept
+  // as-is, with new tests appended to improve coverage. Switch explicitly so a
+  // future mode cannot be silently treated as strict.
+  switch (mode) {
+    case ExtendMode::kStrict:
+      opts.seeds = existing;
+      break;
+  }
 
   return Generate(opts);
 }

@@ -35,6 +35,13 @@ using ScoreFn = std::function<uint32_t(const model::TestCase&, uint32_t, uint32_
 /// - false: skip this value (prune)
 /// - unknown: continue (not all params assigned yet)
 ///
+/// This is a single-pass construction: once a parameter is assigned it is never
+/// revisited (no backtracking). Under adversarial constraints a locally-greedy
+/// choice can therefore leave some satisfiable tuples uncovered. This is a
+/// deliberate approximation in favour of speed; the caller bounds the number of
+/// retries and reports any resulting shortfall (coverage < 1.0 plus a warning)
+/// rather than guaranteeing optimal coverage.
+///
 /// @param params Parameter definitions.
 /// @param score_fn Scoring function that returns the coverage gain for assigning
 ///   value vi to parameter pi given the current partial test case.

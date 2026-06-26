@@ -55,9 +55,11 @@ std::string JsValueToString(val item) {
   return val::global("String").call<std::string>("call", val::null(), item);
 }
 
-/// @brief Parse a JS number as a uint32 with public API validation.
-uint32_t ParseUint32Option(val input, const char* field, bool allow_zero) {
-  val raw = input[field];
+/// @brief Validate a JS number as a uint32 with public API validation.
+///
+/// Rejects non-numbers, non-finite values, fractional values, negatives, and
+/// values beyond uint32 range. When @p allow_zero is false, zero is also rejected.
+uint32_t ParseUint32Value(val raw, const char* field, bool allow_zero) {
   if (raw.typeOf().as<std::string>() != "number") {
     throw std::runtime_error(std::string("Invalid ") + field + ": must be a number");
   }
@@ -70,6 +72,11 @@ uint32_t ParseUint32Option(val input, const char* field, bool allow_zero) {
     throw std::runtime_error(std::string("Invalid ") + field + ": must be a positive integer");
   }
   return static_cast<uint32_t>(d);
+}
+
+/// @brief Parse a JS object field as a uint32 with public API validation.
+uint32_t ParseUint32Option(val input, const char* field, bool allow_zero) {
+  return ParseUint32Value(input[field], field, allow_zero);
 }
 
 std::optional<coverwise::model::BoundaryConfig> ParseBoundaryConfigForParam(val js_param);
@@ -332,7 +339,9 @@ std::vector<coverwise::model::SubModel> ParseSubModels(val js_sub_models) {
       sm.parameter_names.push_back(js_names[j].as<std::string>());
     }
     if (js_sm.hasOwnProperty("strength")) {
-      sm.strength = js_sm["strength"].as<uint32_t>();
+      // Validate as a positive integer; a fractional or zero strength would
+      // otherwise be silently truncated (e.g. 0 → no-op sub-model).
+      sm.strength = ParseUint32Value(js_sm["strength"], "subModel strength", false);
     }
     sub_models.push_back(std::move(sm));
   }
@@ -601,10 +610,13 @@ val wasmGenerate(val input) {
 ///
 /// @param js_params JS array of parameter definitions.
 /// @param js_tests JS array of test case objects (param_name -> value_string).
-/// @param strength Interaction strength (2 = pairwise).
+/// @param js_strength Interaction strength (2 = pairwise); validated as a positive integer.
 /// @return JS object with: totalTuples, coveredTuples, coverageRatio, uncovered.
-val wasmAnalyzeCoverage(val js_params, val js_tests, uint32_t strength, val js_constraints) {
+val wasmAnalyzeCoverage(val js_params, val js_tests, val js_strength, val js_constraints) {
   try {
+    // Validate strength here too: receiving it as a raw embind uint32 would
+    // silently truncate a fractional value (e.g. 2.9 → 2) before this layer.
+    uint32_t strength = ParseUint32Value(js_strength, "strength", false);
     auto params = ParseParameters(js_params);
     auto tests = ParseTestCases(js_tests, params);
 
