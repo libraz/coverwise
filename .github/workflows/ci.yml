@@ -23,20 +23,20 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: volta-cli/action@v4
+      - uses: actions/checkout@v5
+      - uses: volta-cli/action@v5
       - run: yarn install --immutable
       - run: yarn lint
 
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: volta-cli/action@v4
-      - uses: mymindstorm/setup-emsdk@v14
+      - uses: actions/checkout@v5
+      - uses: volta-cli/action@v5
+      - uses: mymindstorm/setup-emsdk@v16
 
       - name: Cache CMake dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/_deps
           key: ${{ runner.os }}-cmake-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
@@ -44,7 +44,7 @@ jobs:
             ${{ runner.os }}-cmake-deps-
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
           key: ${{ runner.os }}-ccache-${{ github.sha }}
@@ -87,7 +87,7 @@ jobs:
           lcov --extract build/coverage/coverage.info "${PWD}/src/*" --output-file build/coverage/coverage_filtered.info --ignore-errors unused
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./build/coverage/coverage_filtered.info
