@@ -43,26 +43,22 @@ import { Coverwise } from '@libraz/coverwise';
 
 const cw = await Coverwise.create();
 
-const report = cw.analyzeCoverage({
-  parameters: [
-    { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
-    { name: 'browser', values: ['Chrome', 'Firefox', 'Safari'] },
-    { name: 'env',     values: ['staging', 'production'] },
-  ],
-  tests: myExistingTests,
-});
+const parameters = [
+  { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
+  { name: 'browser', values: ['Chrome', 'Firefox', 'Safari'] },
+  { name: 'env',     values: ['staging', 'production'] },
+];
+
+const report = cw.analyzeCoverage(parameters, myExistingTests);
 
 report.coverageRatio;  // 0.72
-report.uncovered;      // ["os=Linux, browser=Safari", "os=Linux, env=production", ...]
+report.uncovered;      // [{ display: "os=Linux, browser=Safari", ... }, ...]
 ```
 
 ### Extend with missing coverage
 
 ```typescript
-const result = cw.extendTests({
-  parameters,
-  existing: myExistingTests,
-});
+const result = cw.extendTests(myExistingTests, { parameters });
 
 result.tests.length - myExistingTests.length;  // 3 tests added
 result.coverage;   // 1.0
@@ -142,7 +138,7 @@ Exit codes: `0` OK, `1` constraint error, `2` insufficient coverage, `3` invalid
 | **Constraints** | `IF/THEN/ELSE`, `AND/OR/NOT`, relational (`<`, `>=`), `IN`, `LIKE`. |
 | **Negative testing** | Mark values as `invalid` for automatic single-fault negative tests. |
 | **Mixed strength** | Sub-models for higher coverage on critical parameter groups. |
-| **Boundary values** | Auto-expand numeric ranges into boundary value classes. |
+| **Boundary values** | Auto-expand numeric ranges into edge and near-edge values. |
 | **Equivalence classes** | Group values into classes and track class-level coverage. |
 | **Seed tests** | Build on mandatory tests instead of starting from scratch. |
 | **Deterministic** | Same input + seed = identical output, every time. |

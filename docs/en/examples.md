@@ -2,15 +2,20 @@
 
 Practical recipes for common testing scenarios.
 
-## Basic Pairwise Generation
-
-The most common case — generate a minimal test set covering all parameter pairs:
+The snippets below use the class-based API. Initialize `cw` once before running
+them:
 
 ```typescript
 import { Coverwise } from '@libraz/coverwise';
 
 const cw = await Coverwise.create();
+```
 
+## Basic Pairwise Generation
+
+The most common case — generate a minimal test set covering all parameter pairs:
+
+```typescript
 const result = cw.generate({
   parameters: [
     { name: 'os',       values: ['Windows', 'macOS', 'Linux'] },
@@ -28,7 +33,7 @@ console.log(`${result.tests.length} tests cover all ${result.stats.totalTuples} 
 Prevent impossible combinations from appearing in tests:
 
 ```typescript
-import { when, not, allOf } from '@libraz/coverwise';
+import { when, allOf } from '@libraz/coverwise';
 
 const result = cw.generate({
   parameters: [
@@ -170,7 +175,7 @@ const result = cw.generate({
 
 ## Boundary Value Expansion
 
-Auto-expand numeric ranges into boundary value classes:
+Auto-expand numeric ranges into edge and near-edge values:
 
 ```json
 {
@@ -191,7 +196,9 @@ Auto-expand numeric ranges into boundary value classes:
 }
 ```
 
-This auto-generates values like `1`, `2`, `65534`, `65535` (boundaries) for `port`.
+This expands `port` to `0`, `1`, `2`, `65534`, `65535`, `65536`: one value just
+outside each edge, each edge itself, and one value just inside each edge. Existing
+numeric values are merged into the same set.
 
 ## Model Estimation
 

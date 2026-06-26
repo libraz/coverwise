@@ -59,6 +59,9 @@ interface GenerateInput {
 interface Parameter {
   name: string;
   values: (string | number | boolean | ParameterValue)[];
+  type?: 'integer' | 'float';  // 境界値展開を有効化。
+  range?: [number, number];    // 展開に使う包括的な [min, max] 範囲。
+  step?: number;               // float 境界値の刻み幅。デフォルト: 1.0。
 }
 
 interface ParameterValue {
@@ -175,7 +178,7 @@ interface UncoveredTuple {
 
 interface Suggestion {
   description: string;
-  testCase?: Record<string, string>;
+  testCase: Record<string, string>;
 }
 
 interface ClassCoverage {
@@ -232,7 +235,7 @@ const report = analyzeCoverage(
 ```typescript
 function extendTests(
   existing: TestCase[],
-  input: GenerateInput,
+  input: ExtendInput,
 ): GenerateResult
 ```
 
@@ -307,18 +310,23 @@ WASM API は C++ 側の境界で同等のバリデーションを行います。
 無効な入力の場合、関数は `CoverwiseError` をスローします：
 
 ```typescript
-interface CoverwiseError {
-  code: 'CONSTRAINT_ERROR' | 'INSUFFICIENT_COVERAGE' | 'INVALID_INPUT' | 'TUPLE_EXPLOSION';
-  message: string;
-  detail?: string;
+class CoverwiseError extends Error {
+  readonly code: 'CONSTRAINT_ERROR' | 'INSUFFICIENT_COVERAGE' | 'INVALID_INPUT' | 'TUPLE_EXPLOSION';
+  readonly detail?: string;
 }
 ```
 
+`CoverwiseError` はネイティブの `Error` を継承するため、WASM 版・純 TS 版のどちらでも `instanceof` が機能します：
+
 ```typescript
+import { CoverwiseError } from '@libraz/coverwise';
+
 try {
   const result = generate({ parameters: [] });
 } catch (e) {
-  console.error(e.code, e.message);
-  // INVALID_INPUT "At least one parameter is required"
+  if (e instanceof CoverwiseError) {
+    console.error(e.code, e.message, e.detail);
+    // INVALID_INPUT "At least one parameter is required"
+  }
 }
 ```

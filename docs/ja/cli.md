@@ -67,12 +67,13 @@ coverwise generate <input.json> [> output.json]
 既存テストスイートの t-wise カバレッジを分析します。
 
 ```bash
-coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>]
+coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [--constraints <file.json>]
 ```
 
 - `--params` — パラメータ定義の JSON ファイル
 - `--tests` — テストケースの JSON ファイル
 - `--strength` — 相互作用の強度（デフォルト: 2）
+- `--constraints` — 制約文字列の JSON ファイル（任意）。制約に違反するタプルはカバレッジの分母から除外されるため、制約付きで完全にカバーされたスイートは 100% と報告されます。
 
 **出力:**
 
@@ -119,9 +120,9 @@ coverwise stats <input.json>
   "strength": 2,
   "totalTuples": 29,
   "estimatedTests": 10,
-  "subModelCount": 0,
+  "subModels": 0,
   "constraintCount": 1,
-  "parameters": [
+  "parametersDetail": [
     { "name": "os", "valueCount": 3, "invalidCount": 0 },
     { "name": "browser", "valueCount": 3, "invalidCount": 0 },
     { "name": "theme", "valueCount": 2, "invalidCount": 0 }

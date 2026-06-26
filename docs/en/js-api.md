@@ -59,6 +59,9 @@ interface GenerateInput {
 interface Parameter {
   name: string;
   values: (string | number | boolean | ParameterValue)[];
+  type?: 'integer' | 'float';  // Enables boundary value expansion.
+  range?: [number, number];    // Inclusive [min, max] range for expansion.
+  step?: number;               // Float boundary step. Default: 1.0.
 }
 
 interface ParameterValue {
@@ -175,7 +178,7 @@ interface UncoveredTuple {
 
 interface Suggestion {
   description: string;
-  testCase?: Record<string, string>;
+  testCase: Record<string, string>;
 }
 
 interface ClassCoverage {
@@ -232,7 +235,7 @@ Extend an existing test suite with additional tests to improve coverage. Existin
 ```typescript
 function extendTests(
   existing: TestCase[],
-  input: GenerateInput,
+  input: ExtendInput,
 ): GenerateResult
 ```
 
@@ -307,18 +310,23 @@ The WASM API performs equivalent validation at the C++ boundary.
 Functions throw `CoverwiseError` on invalid input:
 
 ```typescript
-interface CoverwiseError {
-  code: 'CONSTRAINT_ERROR' | 'INSUFFICIENT_COVERAGE' | 'INVALID_INPUT' | 'TUPLE_EXPLOSION';
-  message: string;
-  detail?: string;
+class CoverwiseError extends Error {
+  readonly code: 'CONSTRAINT_ERROR' | 'INSUFFICIENT_COVERAGE' | 'INVALID_INPUT' | 'TUPLE_EXPLOSION';
+  readonly detail?: string;
 }
 ```
 
+`CoverwiseError` extends the native `Error`, so `instanceof` works on both the WASM and pure-TS surfaces:
+
 ```typescript
+import { CoverwiseError } from '@libraz/coverwise';
+
 try {
   const result = generate({ parameters: [] });
 } catch (e) {
-  console.error(e.code, e.message);
-  // INVALID_INPUT "At least one parameter is required"
+  if (e instanceof CoverwiseError) {
+    console.error(e.code, e.message, e.detail);
+    // INVALID_INPUT "At least one parameter is required"
+  }
 }
 ```

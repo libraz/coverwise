@@ -22,26 +22,22 @@ import { Coverwise } from '@libraz/coverwise';
 
 const cw = await Coverwise.create();
 
-const report = cw.analyzeCoverage({
-  parameters: [
-    { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
-    { name: 'browser', values: ['Chrome', 'Firefox', 'Safari'] },
-    { name: 'env',     values: ['staging', 'production'] },
-  ],
-  tests: myExistingTests,
-});
+const parameters = [
+  { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
+  { name: 'browser', values: ['Chrome', 'Firefox', 'Safari'] },
+  { name: 'env',     values: ['staging', 'production'] },
+];
+
+const report = cw.analyzeCoverage(parameters, myExistingTests);
 
 report.coverageRatio;  // 0.72
-report.uncovered;      // ["os=Linux, browser=Safari", "os=Linux, env=production", ...]
+report.uncovered;      // [{ display: "os=Linux, browser=Safari", ... }, ...]
 ```
 
 ### Extend with missing coverage
 
 ```typescript
-const result = cw.extendTests({
-  parameters,
-  existing: myExistingTests,
-});
+const result = cw.extendTests(myExistingTests, { parameters });
 
 result.tests.length - myExistingTests.length;  // 3 tests added
 result.coverage;   // 1.0

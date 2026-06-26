@@ -43,26 +43,22 @@ import { Coverwise } from '@libraz/coverwise';
 
 const cw = await Coverwise.create();
 
-const report = cw.analyzeCoverage({
-  parameters: [
-    { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
-    { name: 'browser', values: ['Chrome', 'Firefox', 'Safari'] },
-    { name: 'env',     values: ['staging', 'production'] },
-  ],
-  tests: myExistingTests,
-});
+const parameters = [
+  { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
+  { name: 'browser', values: ['Chrome', 'Firefox', 'Safari'] },
+  { name: 'env',     values: ['staging', 'production'] },
+];
+
+const report = cw.analyzeCoverage(parameters, myExistingTests);
 
 report.coverageRatio;  // 0.72
-report.uncovered;      // ["os=Linux, browser=Safari", "os=Linux, env=production", ...]
+report.uncovered;      // [{ display: "os=Linux, browser=Safari", ... }, ...]
 ```
 
 ### 不足分を拡張する
 
 ```typescript
-const result = cw.extendTests({
-  parameters,
-  existing: myExistingTests,
-});
+const result = cw.extendTests(myExistingTests, { parameters });
 
 result.tests.length - myExistingTests.length;  // 3テスト追加
 result.coverage;   // 1.0
@@ -142,7 +138,7 @@ coverwise stats input.json
 | **制約** | `IF/THEN/ELSE`、`AND/OR/NOT`、関係演算（`<`、`>=`）、`IN`、`LIKE`。 |
 | **ネガティブテスト** | 値を `invalid` 指定して単一障害のネガティブテストを自動生成。 |
 | **混合強度** | サブモデルで重要パラメータ群に高い網羅度を設定。 |
-| **境界値** | 整数・浮動小数点の範囲を自動的に境界値クラスに展開。 |
+| **境界値** | 整数・浮動小数点の範囲を端と端付近の値に自動展開。 |
 | **同値クラス** | 値をクラスにグループ化し、クラスレベルのカバレッジを追跡。 |
 | **シードテスト** | 必須テストを起点に、不足分だけを追加生成。 |
 | **決定的出力** | 同じ入力＋シード＝毎回同じ出力。 |

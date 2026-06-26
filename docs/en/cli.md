@@ -67,12 +67,13 @@ Only `parameters` is required. All other fields are optional.
 Analyze the t-wise coverage of an existing test suite.
 
 ```bash
-coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>]
+coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [--constraints <file.json>]
 ```
 
 - `--params` — JSON file with parameter definitions
 - `--tests` — JSON file with test cases
 - `--strength` — Interaction strength (default: 2)
+- `--constraints` — JSON file with constraint strings (optional). Constraint-invalid tuples are excluded from the coverage denominator, so a fully covered constrained suite reports 100%.
 
 **Output:**
 
@@ -119,9 +120,9 @@ coverwise stats <input.json>
   "strength": 2,
   "totalTuples": 29,
   "estimatedTests": 10,
-  "subModelCount": 0,
+  "subModels": 0,
   "constraintCount": 1,
-  "parameters": [
+  "parametersDetail": [
     { "name": "os", "valueCount": 3, "invalidCount": 0 },
     { "name": "browser", "valueCount": 3, "invalidCount": 0 },
     { "name": "theme", "valueCount": 2, "invalidCount": 0 }
