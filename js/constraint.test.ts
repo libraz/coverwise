@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { ConstraintResult } from '../src/ts/model/constraint-ast.js';
+import { parseConstraint } from '../src/ts/model/constraint-parser.js';
+import { Parameter } from '../src/ts/model/parameter.js';
 import { allOf, anyOf, not, when } from './constraint';
 
 // ---------------------------------------------------------------------------
@@ -369,7 +372,9 @@ describe('escape and quoting edge cases', () => {
   });
 
   it('value containing backslash and space', () => {
-    expect(when('path').eq('C:\\Program Files').toString()).toBe('path = "C:\\Program Files"');
+    // Space triggers quoting; the backslash is escaped so it round-trips through
+    // the tokenizers (which treat `\\` as a literal backslash inside quotes).
+    expect(when('path').eq('C:\\Program Files').toString()).toBe('path = "C:\\\\Program Files"');
   });
 
   it('value is only special chars', () => {
@@ -540,12 +545,12 @@ describe('double-quote escaping through the builder', () => {
     expect(afterEq[afterEq.length - 1]).toBe('"');
   });
 
-  it('value with only a double quote character is output bare (no quoting trigger)', () => {
-    // A lone `"` does not match NEEDS_QUOTE_RE (/[\s=!<>(),{}]/), so it is
-    // output without outer quotes. This verifies current builder behavior.
+  it('value that is only a double quote is quoted and escaped', () => {
+    // A lone `"` must be wrapped and escaped so it parses as a string literal
+    // containing a double quote rather than opening an unterminated quote.
     const condition = when('x').eq('"');
     const str = condition.toString();
-    expect(str).toBe('x = "');
+    expect(str).toBe('x = "\\""');
   });
 
   it('double quotes inside IN set values with spaces are escaped', () => {
@@ -568,5 +573,70 @@ describe('quoted string support', () => {
   it('quoted constraint roundtrip in then/else', () => {
     const constraint = when('os').eq('Windows 10').then(when('browser').ne('edge'));
     expect(constraint.toString()).toContain('"Windows 10"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Builder -> TS parser round-trip (mirrors the C++ corpus in
+// tests/model/constraint_parser_test.cpp). C++ and TS escape handling must be
+// identical, so these cases match the C++ tests one-to-one.
+// ---------------------------------------------------------------------------
+
+describe('builder output parses on the TS parser', () => {
+  function parse(expr: string, params: Parameter[]) {
+    return parseConstraint(expr, params, { caseSensitive: false });
+  }
+
+  it('value with an embedded double quote round-trips', () => {
+    const params = [new Parameter('msg', ['say "hi"', 'bye'])];
+    const expr = when('msg').eq('say "hi"').toString();
+    expect(expr).toBe('msg = "say \\"hi\\""');
+    const result = parse(expr, params);
+    expect(result.error.code).toBe(0);
+    expect(result.constraint?.evaluate([0])).toBe(ConstraintResult.True);
+    expect(result.constraint?.evaluate([1])).toBe(ConstraintResult.False);
+  });
+
+  it('value with a literal backslash round-trips', () => {
+    const params = [new Parameter('path', ['C:\\Program Files', 'other'])];
+    const expr = when('path').eq('C:\\Program Files').toString();
+    expect(expr).toBe('path = "C:\\\\Program Files"');
+    const result = parse(expr, params);
+    expect(result.error.code).toBe(0);
+    expect(result.constraint?.evaluate([0])).toBe(ConstraintResult.True);
+  });
+
+  it('IN set with an embedded double quote round-trips', () => {
+    const params = [new Parameter('title', ['say "hi"', 'plain', 'bye'])];
+    const expr = when('title').in('say "hi"', 'plain').toString();
+    expect(expr).toBe('title IN {"say \\"hi\\"", plain}');
+    const result = parse(expr, params);
+    expect(result.error.code).toBe(0);
+    expect(result.constraint?.evaluate([0])).toBe(ConstraintResult.True);
+    expect(result.constraint?.evaluate([1])).toBe(ConstraintResult.True);
+    expect(result.constraint?.evaluate([2])).toBe(ConstraintResult.False);
+  });
+
+  it('LIKE pattern with an embedded space round-trips', () => {
+    const params = [new Parameter('name', ['Windows 10', 'Windows 11', 'macOS'])];
+    const expr = when('name').like('Windows 10*').toString();
+    expect(expr).toBe('name LIKE "Windows 10*"');
+    const result = parse(expr, params);
+    expect(result.error.code).toBe(0);
+    expect(result.constraint?.evaluate([0])).toBe(ConstraintResult.True);
+    expect(result.constraint?.evaluate([2])).toBe(ConstraintResult.False);
+  });
+
+  it('relational comparison between parameter names containing a space round-trips', () => {
+    const params = [
+      new Parameter('start date', ['1', '5', '10']),
+      new Parameter('end date', ['1', '5', '10']),
+    ];
+    const expr = when('start date').lt('end date').toString();
+    expect(expr).toBe('"start date" < "end date"');
+    const result = parse(expr, params);
+    expect(result.error.code).toBe(0);
+    expect(result.constraint?.evaluate([0, 2])).toBe(ConstraintResult.True);
+    expect(result.constraint?.evaluate([2, 0])).toBe(ConstraintResult.False);
   });
 });

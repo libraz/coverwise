@@ -42,6 +42,12 @@ import type {
   TestCase,
 } from './types.js';
 import { CoverwiseError, errorCodeFromNumber } from './types.js';
+import {
+  validateGenerateInput,
+  validateParameters,
+  validateStrength,
+  validateTestArray,
+} from './validation.js';
 
 // --- WASM Module Loading ---
 
@@ -104,51 +110,13 @@ function getModule(): WasmModule {
 
 // --- Input Validation ---
 
-function validateStrength(strength: unknown): number {
-  if (strength === undefined || strength === null) {
-    return 2;
-  }
-  if (typeof strength !== 'number' || !Number.isInteger(strength) || strength <= 0) {
-    throw new Error(`Invalid strength: ${String(strength)}. Must be a positive integer.`);
-  }
-  return strength;
-}
+// The WASM surface historically throws a plain `Error` for the numeric scalar
+// checks (strength/maxTests/seed); preserve that by injecting this factory into
+// the shared validators.
+const wasmScalarError = (message: string): Error => new Error(message);
 
-function validateMaxTests(maxTests: unknown): void {
-  if (maxTests === undefined || maxTests === null) {
-    return;
-  }
-  if (typeof maxTests !== 'number' || !Number.isInteger(maxTests) || maxTests < 0) {
-    throw new Error(`Invalid maxTests: ${String(maxTests)}. Must be a non-negative integer.`);
-  }
-}
-
-function validateSeed(seed: unknown): void {
-  if (seed === undefined || seed === null) {
-    return;
-  }
-  if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
-    throw new Error(`Invalid seed: ${String(seed)}. Must be an integer in [0, 4294967295].`);
-  }
-}
-
-function validateParameters(parameters: unknown): void {
-  if (!Array.isArray(parameters)) {
-    throw new CoverwiseError('INVALID_INPUT', 'Invalid parameters: must be an array.');
-  }
-}
-
-function validateTestArray(tests: unknown, field: string): void {
-  if (!Array.isArray(tests)) {
-    throw new CoverwiseError('INVALID_INPUT', `Invalid ${field}: must be an array.`);
-  }
-}
-
-function validateGenerateInput(input: GenerateInput): void {
-  validateParameters(input.parameters);
-  validateStrength(input.strength);
-  validateMaxTests(input.maxTests);
-  validateSeed(input.seed);
+function validateInput(input: GenerateInput): void {
+  validateGenerateInput(input, wasmScalarError);
 }
 
 // --- Result Checking ---
@@ -182,7 +150,7 @@ function checkResult<T>(result: unknown): T {
  * // result.coverage: 1.0
  */
 export function generate(input: GenerateInput): GenerateResult {
-  validateGenerateInput(input);
+  validateInput(input);
   const mod = getModule();
   const result = checkResult<GenerateResult>(mod.generate(input));
   result.negativeTests = result.negativeTests ?? [];
@@ -208,7 +176,7 @@ export function analyzeCoverage(
 ): CoverageReport {
   validateParameters(parameters);
   validateTestArray(tests, 'tests');
-  const s = validateStrength(strength);
+  const s = validateStrength(strength, wasmScalarError);
   const mod = getModule();
   const result = checkResult<CoverageReport>(
     mod.analyzeCoverage(parameters, tests, s, constraints ?? []),
@@ -228,7 +196,7 @@ export function analyzeCoverage(
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
   validateTestArray(existing, 'existing');
-  validateGenerateInput(input);
+  validateInput(input);
   const mod = getModule();
   const result = checkResult<GenerateResult>(mod.extendTests(existing, input));
   result.negativeTests = result.negativeTests ?? [];
@@ -239,7 +207,7 @@ export function extendTests(existing: TestCase[], input: ExtendInput): GenerateR
  * Get model statistics without running generation.
  */
 export function estimateModel(input: GenerateInput): ModelStats {
-  validateGenerateInput(input);
+  validateInput(input);
   const mod = getModule();
   const result = checkResult<ModelStats>(mod.estimateModel(input));
   return result;
@@ -279,7 +247,7 @@ export class Coverwise {
    * Generate a covering array. One function, sensible defaults.
    */
   generate(input: GenerateInput): GenerateResult {
-    validateGenerateInput(input);
+    validateInput(input);
     const result = checkResult<GenerateResult>(this.module.generate(input));
     result.negativeTests = result.negativeTests ?? [];
     return result;
@@ -296,7 +264,7 @@ export class Coverwise {
   ): CoverageReport {
     validateParameters(parameters);
     validateTestArray(tests, 'tests');
-    const s = validateStrength(strength);
+    const s = validateStrength(strength, wasmScalarError);
     const result = checkResult<CoverageReport>(
       this.module.analyzeCoverage(parameters, tests, s, constraints ?? []),
     );
@@ -311,7 +279,7 @@ export class Coverwise {
    */
   extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
     validateTestArray(existing, 'existing');
-    validateGenerateInput(input);
+    validateInput(input);
     const result = checkResult<GenerateResult>(this.module.extendTests(existing, input));
     result.negativeTests = result.negativeTests ?? [];
     return result;
@@ -321,7 +289,7 @@ export class Coverwise {
    * Get model statistics without running generation.
    */
   estimateModel(input: GenerateInput): ModelStats {
-    validateGenerateInput(input);
+    validateInput(input);
     return checkResult<ModelStats>(this.module.estimateModel(input));
   }
 }

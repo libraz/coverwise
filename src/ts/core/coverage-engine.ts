@@ -374,22 +374,23 @@ export class CoverageEngine {
     let total = 0;
     this.combinationOffsets_ = [];
 
+    // Mirror the C++ CoverageEngine::ComputeTotalTuples clamping behavior: once
+    // the running product or total exceeds MAX_TUPLES, stop accumulating and
+    // return a value above the limit. create() then surfaces a single structured
+    // TupleExplosion error (instead of throwing a raw Error mid-computation), so
+    // the explosion path is identical across C++ and TypeScript surfaces.
     for (const combo of this.paramCombinations_) {
       this.combinationOffsets_.push(total);
       let product = 1;
       for (const pi of combo) {
         product *= this.params_[pi].size;
-        if (product > Number.MAX_SAFE_INTEGER) {
-          throw new Error(
-            `Tuple count overflow: product exceeds Number.MAX_SAFE_INTEGER (${Number.MAX_SAFE_INTEGER})`,
-          );
+        if (product > CoverageEngine.MAX_TUPLES) {
+          return Math.min(total + product, Number.MAX_SAFE_INTEGER);
         }
       }
       total += product;
-      if (total > Number.MAX_SAFE_INTEGER) {
-        throw new Error(
-          `Tuple count overflow: total exceeds Number.MAX_SAFE_INTEGER (${Number.MAX_SAFE_INTEGER})`,
-        );
+      if (total > CoverageEngine.MAX_TUPLES) {
+        return Math.min(total, Number.MAX_SAFE_INTEGER);
       }
     }
     return total;

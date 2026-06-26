@@ -51,6 +51,12 @@ import type {
   TestCase,
 } from '../types.js';
 import { CoverwiseError } from '../types.js';
+import {
+  validateGenerateInput,
+  validateParameters,
+  validateStrength,
+  validateTestArray,
+} from '../validation.js';
 
 import {
   toInternalOptions,
@@ -63,60 +69,13 @@ import {
 
 // --- Input Validation ---
 
-function validateStrength(strength: unknown): number {
-  if (strength === undefined || strength === null) {
-    return 2;
-  }
-  if (typeof strength !== 'number' || !Number.isInteger(strength) || strength <= 0) {
-    throw new CoverwiseError(
-      'INVALID_INPUT',
-      `Invalid strength: ${String(strength)}. Must be a positive integer.`,
-    );
-  }
-  return strength;
-}
+// The pure surface historically throws a CoverwiseError for the numeric scalar
+// checks (strength/maxTests/seed); preserve that by injecting this factory into
+// the shared validators.
+const pureScalarError = (message: string): Error => new CoverwiseError('INVALID_INPUT', message);
 
-function validateMaxTests(maxTests: unknown): void {
-  if (maxTests === undefined || maxTests === null) {
-    return;
-  }
-  if (typeof maxTests !== 'number' || !Number.isInteger(maxTests) || maxTests < 0) {
-    throw new CoverwiseError(
-      'INVALID_INPUT',
-      `Invalid maxTests: ${String(maxTests)}. Must be a non-negative integer.`,
-    );
-  }
-}
-
-function validateSeed(seed: unknown): void {
-  if (seed === undefined || seed === null) {
-    return;
-  }
-  if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
-    throw new CoverwiseError(
-      'INVALID_INPUT',
-      `Invalid seed: ${String(seed)}. Must be an integer in [0, 4294967295].`,
-    );
-  }
-}
-
-function validateParameters(parameters: unknown): void {
-  if (!Array.isArray(parameters)) {
-    throw new CoverwiseError('INVALID_INPUT', 'Invalid parameters: must be an array.');
-  }
-}
-
-function validateTestArray(tests: unknown, field: string): void {
-  if (!Array.isArray(tests)) {
-    throw new CoverwiseError('INVALID_INPUT', `Invalid ${field}: must be an array.`);
-  }
-}
-
-function validateGenerateInput(input: GenerateInput): void {
-  validateParameters(input.parameters);
-  validateStrength(input.strength);
-  validateMaxTests(input.maxTests);
-  validateSeed(input.seed);
+function validateInput(input: GenerateInput): void {
+  validateGenerateInput(input, pureScalarError);
 }
 
 /**
@@ -164,7 +123,7 @@ function throwOnResultError(error: { code: number; message: string; detail: stri
  * // result.coverage: 1.0
  */
 export function generate(input: GenerateInput): GenerateResult {
-  validateGenerateInput(input);
+  validateInput(input);
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);
   const result = internalGenerate(opts);
@@ -198,7 +157,7 @@ export function analyzeCoverage(
 ): CoverageReport {
   validateParameters(parameters);
   validateTestArray(tests, 'tests');
-  const s = validateStrength(strength);
+  const s = validateStrength(strength, pureScalarError);
   const params = toInternalParams(parameters);
   const internalTests = tests.map((tc) => toInternalTestCase(tc, params));
 
@@ -236,7 +195,7 @@ export function analyzeCoverage(
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
   validateTestArray(existing, 'existing');
-  validateGenerateInput(input);
+  validateInput(input);
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);
   const internalExisting = existing.map((tc) => toInternalTestCase(tc, params));
@@ -253,7 +212,7 @@ export function extendTests(existing: TestCase[], input: ExtendInput): GenerateR
  * Get model statistics without running generation.
  */
 export function estimateModel(input: GenerateInput): ModelStats {
-  validateGenerateInput(input);
+  validateInput(input);
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);
   const stats = internalEstimateModel(opts);

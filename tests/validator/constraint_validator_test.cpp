@@ -165,6 +165,27 @@ TEST(ConstraintValidatorTest, AllTestsViolate) {
   EXPECT_EQ(report.violating_indices[2], 2u);
 }
 
+// Per-test counting parity: a test that violates multiple constraints is
+// counted exactly once (break on first violated constraint), matching the
+// TypeScript validateConstraintReport canonical semantics.
+TEST(ConstraintValidatorTest, TestCountedOnceAcrossMultipleConstraints) {
+  // Both constraints are violated by the single test {1, 2}:
+  //   Constraint 1: IF p0==1 THEN p1!=2  -> violated (antecedent true, p1==2)
+  //   Constraint 2: p1 != 2              -> violated
+  std::vector<TestCase> tests = {MakeTest({1, 2})};
+  std::vector<Constraint> constraints;
+  constraints.push_back(std::make_unique<ImpliesNode>(std::make_unique<EqualsNode>(0, 1),
+                                                      std::make_unique<NotEqualsNode>(1, 2)));
+  constraints.push_back(std::make_unique<NotEqualsNode>(1, 2));
+
+  auto report = ValidateConstraints(tests, constraints);
+  EXPECT_EQ(report.total_tests, 1u);
+  // Counted once, not twice.
+  EXPECT_EQ(report.violations, 1u);
+  ASSERT_EQ(report.violating_indices.size(), 1u);
+  EXPECT_EQ(report.violating_indices[0], 0u);
+}
+
 // Edge: constraint with kUnknown result (partial assignment)
 TEST(ConstraintValidatorTest, PartialAssignmentNoViolation) {
   // Test case with kUnassigned value

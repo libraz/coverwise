@@ -223,6 +223,47 @@ describe('generate', () => {
     // Coverage may be less than 1.0 due to the limit.
   });
 
+  // Cross-surface parity: these warning literals must stay byte-identical to
+  // the strings asserted in tests/core/generator_test.cpp.
+  it('emits the canonical maxTests warning on incomplete coverage', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['a0', 'a1', 'a2', 'a3'] },
+        { name: 'B', values: ['b0', 'b1', 'b2', 'b3'] },
+        { name: 'C', values: ['c0', 'c1', 'c2', 'c3'] },
+      ],
+      strength: 2,
+      seed: 42,
+      maxTests: 3,
+    });
+    const result = generate(opts);
+    expect(result.coverage).toBeLessThan(1.0);
+    expect(result.warnings).toContain(
+      'Generation stopped at maxTests (3) before reaching 100% coverage',
+    );
+  });
+
+  it('emits the canonical zero-score warning when constraints leave tuples unreachable', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['0', '1'] },
+        { name: 'B', values: ['0', '1'] },
+        { name: 'C', values: ['0', '1'] },
+      ],
+      strength: 2,
+      seed: 1,
+      // Three-parameter constraints evaluate to unknown on a pairwise partial
+      // assignment, so they are not pre-excluded; together they make the pair
+      // (A=0, B=1) impossible to complete, leaving it permanently uncovered.
+      constraintExpressions: ['IF A=0 AND B=1 THEN C!=0', 'IF A=0 AND B=1 THEN C!=1'],
+    });
+    const result = generate(opts);
+    expect(result.coverage).toBeLessThan(1.0);
+    expect(result.warnings).toContain(
+      'Generation stopped before reaching 100% coverage after 50 consecutive zero-score candidates',
+    );
+  });
+
   it('includes seed tests and extends coverage from them', () => {
     const opts = createGenerateOptions({
       parameters: [
@@ -420,5 +461,40 @@ describe('estimateModel', () => {
     expect(stats.totalValues).toBe(6);
     // C(3,2) * 2*2 = 3 * 4 = 12 tuples.
     expect(stats.totalTuples).toBe(12);
+  });
+
+  // Cross-surface parity: these clamped estimates must match the pinned values
+  // in tests/core/generator_test.cpp.
+  it('clamps the degenerate estimate at UINT32_MAX', () => {
+    const thousand = Array.from({ length: 1000 }, () => 'x');
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: thousand },
+        { name: 'B', values: thousand },
+        { name: 'C', values: thousand },
+        { name: 'D', values: thousand },
+      ],
+      strength: 4, // parameterCount === strength -> product path.
+    });
+    const stats = estimateModel(opts);
+    // 1000^4 overflows 32 bits, so the estimate clamps to UINT32_MAX.
+    expect(stats.estimatedTests).toBe(4294967295);
+  });
+
+  it('estimates a large non-degenerate model identically to the native surface', () => {
+    const thousand = Array.from({ length: 1000 }, () => 'x');
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'p0', values: thousand },
+        { name: 'p1', values: thousand },
+        { name: 'p2', values: thousand },
+        { name: 'p3', values: thousand },
+        { name: 'p4', values: thousand },
+      ],
+      strength: 3, // parameterCount(5) > strength(3) -> estimate path.
+    });
+    const stats = estimateModel(opts);
+    // 1000^3 * ceil(log2(5)) = 1e9 * 3 = 3e9, below the C(5,3)*1000^3 tuple cap.
+    expect(stats.estimatedTests).toBe(3000000000);
   });
 });

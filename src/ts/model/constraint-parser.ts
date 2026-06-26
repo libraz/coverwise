@@ -289,14 +289,28 @@ function tokenize(expr: string): TokenizeResult {
       }
     }
 
-    // Quoted string: "..." or '...'
+    // Quoted string: "..." or '...'. Supports backslash escapes \" and \\ so a
+    // quoted value can contain its own quote character or a literal backslash.
     if (expr[i] === '"' || expr[i] === "'") {
       const quote = expr[i];
       let j = i + 1;
-      while (j < len && expr[j] !== quote) {
+      let content = '';
+      let terminated = false;
+      while (j < len) {
+        const c = expr[j];
+        if (c === '\\' && j + 1 < len && (expr[j + 1] === quote || expr[j + 1] === '\\')) {
+          content += expr[j + 1];
+          j += 2;
+          continue;
+        }
+        if (c === quote) {
+          terminated = true;
+          break;
+        }
+        content += c;
         j++;
       }
-      if (j >= len) {
+      if (!terminated) {
         return {
           tokens: [],
           error: {
@@ -306,7 +320,6 @@ function tokenize(expr: string): TokenizeResult {
           },
         };
       }
-      const content = expr.substring(i + 1, j);
       tokens.push({ type: TokenType.Identifier, text: content, position: start });
       i = j + 1;
       expectPattern = false;

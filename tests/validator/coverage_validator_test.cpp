@@ -254,6 +254,35 @@ TEST(CoverageValidatorTest, ThreeWiseCoverage) {
 }
 
 // ---------------------------------------------------------------------------
+// LargeValueProductNoOverflow
+//
+// The per-combination value product is accumulated in 64-bit. Two parameters
+// with 1000 values each yield 1,000,000 tuples for the single pairwise
+// combination; the validator must count every tuple exactly (no silent wrap)
+// and report the empty suite as fully uncovered.
+// ---------------------------------------------------------------------------
+TEST(CoverageValidatorTest, LargeValueProductNoOverflow) {
+  std::vector<std::string> values;
+  for (int j = 0; j < 1000; ++j) {
+    values.push_back(std::to_string(j));
+  }
+  std::vector<Parameter> params = {
+      Parameter{"A", values},
+      Parameter{"B", values},
+  };
+
+  std::vector<TestCase> tests;  // Empty suite: everything uncovered.
+
+  auto report = ValidateCoverage(params, tests, 2);
+
+  // C(2,2) = 1 combination, 1000 * 1000 = 1,000,000 tuples.
+  EXPECT_EQ(report.total_tuples, 1000000u);
+  EXPECT_EQ(report.covered_tuples, 0u);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 0.0);
+  EXPECT_EQ(report.uncovered.size(), 1000000u);
+}
+
+// ---------------------------------------------------------------------------
 // Constraint-aware coverage analysis
 // ---------------------------------------------------------------------------
 

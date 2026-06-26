@@ -427,13 +427,17 @@ export function generate(options: GenerateOptions): GenerateResult {
     result.tests.push(tc);
   }
 
-  // Warn if coverage is incomplete after greedy generation.
+  // Warn if generation stopped before reaching full coverage.
   if (!allComplete(coverage, subEngines)) {
-    const minCov = Math.min(coverage.coverageRatio, ...subEngines.map((e) => e.coverageRatio));
-    result.warnings.push(
-      `Generation ended with incomplete coverage (${(minCov * 100).toFixed(1)}%). ` +
-        `${result.tests.length} test(s) generated.`,
-    );
+    if (options.maxTests > 0 && result.tests.length >= options.maxTests) {
+      result.warnings.push(
+        `Generation stopped at maxTests (${options.maxTests}) before reaching 100% coverage`,
+      );
+    } else {
+      result.warnings.push(
+        `Generation stopped before reaching 100% coverage after ${kMaxRetries} consecutive zero-score candidates`,
+      );
+    }
   }
 
   // Generate negative tests if any parameter has invalid values.
@@ -532,8 +536,11 @@ export function estimateModel(options: GenerateOptions): ModelStats {
     let product = 1;
     for (const p of params) {
       product *= p.size;
+      if (product > 0xffffffff) {
+        break;
+      }
     }
-    stats.estimatedTests = product;
+    stats.estimatedTests = Math.min(product, 0xffffffff) >>> 0;
   } else {
     let estimate = 1;
     for (let i = 0; i < stats.strength; ++i) {
@@ -552,7 +559,7 @@ export function estimateModel(options: GenerateOptions): ModelStats {
     if (stats.totalTuples > 0 && estimate > stats.totalTuples) {
       estimate = stats.totalTuples;
     }
-    stats.estimatedTests = Math.min(estimate, 0xffffffff) | 0;
+    stats.estimatedTests = Math.min(estimate, 0xffffffff) >>> 0;
   }
 
   return stats;

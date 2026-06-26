@@ -22,10 +22,14 @@ export interface ConstraintReport {
 }
 
 /**
- * Validate that all test cases satisfy all constraints.
+ * Validate that all test cases satisfy all constraints (per-violation detail).
  *
- * Evaluates each constraint against each test case. A test case violates
- * a constraint if the constraint evaluates to False (fully assigned).
+ * Evaluates each constraint against each test case and emits one record per
+ * (test, violated constraint) pair, so a test that violates two constraints
+ * yields two records. This per-violation detail is a TypeScript-only convenience
+ * and is NOT the canonical cross-surface shape: use validateConstraintReport
+ * for the aggregate report that agrees with the C++ ValidateConstraints (where a
+ * test is counted at most once). The WASM binding exports only the aggregate.
  * @returns Array of constraint violations (empty if all tests pass).
  */
 export function validateConstraints(
@@ -51,11 +55,13 @@ export function validateConstraints(
 }
 
 /**
- * Validate constraints and return a summary report.
+ * Validate constraints and return a summary report (canonical cross-surface).
  *
  * Unlike validateConstraints which returns per-violation details, this function
- * returns an aggregate report matching the C++ ConstraintReport structure.
- * A test case is counted as violating at most once (on first violated constraint).
+ * returns an aggregate report matching the C++ ConstraintReport structure
+ * field-for-field with identical per-test semantics: a test case is counted as
+ * violating at most once (on its first violated constraint). This is the
+ * canonical report shape shared by every surface.
  */
 export function validateConstraintReport(
   tests: TestCase[],

@@ -160,6 +160,27 @@ TEST(CoverageEngineTest, TupleExplosionLimit) {
   EXPECT_EQ(err.code, coverwise::model::Error::Code::kTupleExplosion);
 }
 
+TEST(CoverageEngineTest, TupleExplosionErrorMessageParity) {
+  // Over-the-limit model must produce a structured kTupleExplosion error whose
+  // message is identical to the TypeScript surface (see coverage-engine.test.ts:
+  // "tuple explosion error message matches C++"). Pinning both code and message
+  // keeps the explosion contract uniform across surfaces.
+  std::vector<Parameter> params;
+  for (int i = 0; i < 10; ++i) {
+    Parameter p;
+    p.name = "P" + std::to_string(i);
+    for (int j = 0; j < 100; ++j) {
+      p.values.push_back(std::to_string(j));
+    }
+    params.push_back(std::move(p));
+  }
+
+  auto [engine, err] = CoverageEngine::Create(params, 5);
+  EXPECT_FALSE(err.ok());
+  EXPECT_EQ(err.code, coverwise::model::Error::Code::kTupleExplosion);
+  EXPECT_EQ(err.message, "t-wise tuple count exceeds safety limit");
+}
+
 TEST(CoverageEngineTest, GetUncoveredTuplesContents) {
   // 2 binary params, verify uncovered tuples contain readable strings.
   std::vector<Parameter> params = {

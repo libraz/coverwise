@@ -90,32 +90,6 @@ export class Rng {
     return this.uniformInt(0, max - 1);
   }
 
-  /// Select a random index weighted by the given weights array.
-  ///
-  /// @param weights Array of non-negative weights. At least one must be positive.
-  /// @returns The selected index.
-  weightedRandomIndex(weights: readonly number[]): number {
-    let totalWeight = 0;
-    for (let i = 0; i < weights.length; i++) {
-      totalWeight += weights[i];
-    }
-    if (totalWeight <= 0) {
-      return this.nextUint32(weights.length);
-    }
-    // Generate a random value in [0, totalWeight).
-    // Use floating-point multiplication for uniform distribution across the range.
-    const threshold = ((this.next() >>> 0) / 0x100000000) * totalWeight;
-    let cumulative = 0;
-    for (let i = 0; i < weights.length; i++) {
-      cumulative += weights[i];
-      if (threshold < cumulative) {
-        return i;
-      }
-    }
-    // Fallback for floating-point edge cases.
-    return weights.length - 1;
-  }
-
   /// Reseed the generator.
   seed(seed: number): void {
     const init = splitmix32(seed);

@@ -51,6 +51,44 @@ describe('CoverageEngine', () => {
       expect(result.error.message.length).toBeGreaterThan(0);
       expect(result.error.detail).toBeTruthy();
     });
+
+    it('tuple explosion error message matches C++', () => {
+      // A model over the tuple limit must surface a structured TupleExplosion
+      // error (never throw a raw Error mid-computation), with the exact same code
+      // and message as the C++ surface (see coverage_engine_test.cpp:
+      // TupleExplosionErrorMessageParity).
+      const params: Parameter[] = [];
+      for (let i = 0; i < 10; ++i) {
+        const values: string[] = [];
+        for (let j = 0; j < 100; ++j) {
+          values.push(`v${j}`);
+        }
+        params.push(new Parameter(`p${i}`, values));
+      }
+      // create() must not throw; it returns the structured error instead.
+      const result = CoverageEngine.create(params, 5);
+      expect(result.error.code).toBe(ErrorCode.TupleExplosion);
+      expect(result.error.message).toBe('t-wise tuple count exceeds safety limit');
+    });
+
+    it('near-threshold model just under MAX_TUPLES succeeds without spurious explosion', () => {
+      // C(8,2) = 28 combinations, each 100*100 = 10000 tuples => 280000 total,
+      // far below the 16M limit. Exercises the 64-bit accumulation path with a
+      // value product that would matter for wider models, and must report the
+      // exact tuple count with no explosion error.
+      const params: Parameter[] = [];
+      for (let i = 0; i < 8; ++i) {
+        const values: string[] = [];
+        for (let j = 0; j < 100; ++j) {
+          values.push(`v${j}`);
+        }
+        params.push(new Parameter(`p${i}`, values));
+      }
+      const result = CoverageEngine.create(params, 2);
+      expect(result.error.code).toBe(ErrorCode.Ok);
+      // C(8,2) = 28, each 100*100 = 10000 -> 280000.
+      expect(result.engine.totalTuples).toBe(280000);
+    });
   });
 
   describe('addTestCase()', () => {

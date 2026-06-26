@@ -225,19 +225,32 @@ TokenizeResult Tokenize(const std::string& expr) {
       }
     }
 
-    // Quoted string: "..." or '...'
+    // Quoted string: "..." or '...'. Supports backslash escapes \" and \\ so a
+    // quoted value can contain its own quote character or a literal backslash.
     if (expr[i] == '"' || expr[i] == '\'') {
       char quote = expr[i];
       size_t j = i + 1;
-      while (j < len && expr[j] != quote) {
+      std::string content;
+      bool terminated = false;
+      while (j < len) {
+        char c = expr[j];
+        if (c == '\\' && j + 1 < len && (expr[j + 1] == quote || expr[j + 1] == '\\')) {
+          content.push_back(expr[j + 1]);
+          j += 2;
+          continue;
+        }
+        if (c == quote) {
+          terminated = true;
+          break;
+        }
+        content.push_back(c);
         ++j;
       }
-      if (j >= len) {
+      if (!terminated) {
         return {{},
                 {Error::Code::kConstraintError,
                  "Unterminated string literal starting at position " + std::to_string(start), ""}};
       }
-      std::string content = expr.substr(i + 1, j - i - 1);
       tokens.push_back({TokenType::kIdentifier, content, start});
       i = j + 1;
       expect_pattern = false;

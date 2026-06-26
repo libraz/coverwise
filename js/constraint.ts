@@ -15,8 +15,20 @@
 
 // --- Value formatting ---
 
+// Wildcards ('*', '?') are intentionally absent so LIKE patterns stay bare when
+// they hold only wildcards; when a pattern also contains one of these chars it
+// is quoted, and the tokenizer preserves the wildcards inside the quotes.
 const NEEDS_QUOTE_RE = /[\s=!<>(),{}]/;
 const KEYWORDS = new Set(['IF', 'THEN', 'ELSE', 'IMPLIES', 'AND', 'OR', 'NOT', 'IN', 'LIKE']);
+
+/**
+ * Wrap a value in double quotes, escaping backslashes and embedded double
+ * quotes so the emitted string round-trips through the C++ and TS tokenizers,
+ * which understand the `\\` and `\"` escapes.
+ */
+function quote(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
 
 function formatValue(value: string | number | boolean): string {
   if (typeof value === 'boolean') {
@@ -25,17 +37,25 @@ function formatValue(value: string | number | boolean): string {
   if (typeof value === 'number') {
     return String(value);
   }
-  if (NEEDS_QUOTE_RE.test(value) || KEYWORDS.has(value.toUpperCase())) {
-    return `"${value.replace(/"/g, '\\"')}"`;
+  if (NEEDS_QUOTE_RE.test(value) || value.includes('"') || KEYWORDS.has(value.toUpperCase())) {
+    return quote(value);
   }
   return value;
 }
 
+/**
+ * Format a relational operand. Numbers are emitted bare; strings are parameter
+ * references (the parser resolves a relational RHS string to a parameter name),
+ * quoted when they contain whitespace, operators, or other special characters
+ * so a name like `end date` round-trips as a single token.
+ */
 function formatNumericOrParam(value: number | string): string {
   if (typeof value === 'number') {
     return String(value);
   }
-  // String = param name, output bare
+  if (NEEDS_QUOTE_RE.test(value) || value.includes('"') || KEYWORDS.has(value.toUpperCase())) {
+    return quote(value);
+  }
   return value;
 }
 
@@ -46,10 +66,27 @@ function formatSetValue(value: string | number | boolean): string {
   if (typeof value === 'number') {
     return String(value);
   }
-  if (NEEDS_QUOTE_RE.test(value) || KEYWORDS.has(value.toUpperCase())) {
-    return `"${value.replace(/"/g, '\\"')}"`;
+  if (NEEDS_QUOTE_RE.test(value) || value.includes('"') || KEYWORDS.has(value.toUpperCase())) {
+    return quote(value);
   }
   return value;
+}
+
+/**
+ * Format a LIKE pattern. Quoting is applied when the pattern contains
+ * whitespace or other special characters; the wildcards `*` and `?` are
+ * preserved verbatim inside the quotes because the tokenizer keeps glob chars
+ * within a quoted pattern.
+ */
+function formatPattern(pattern: string): string {
+  if (
+    NEEDS_QUOTE_RE.test(pattern) ||
+    pattern.includes('"') ||
+    KEYWORDS.has(pattern.toUpperCase())
+  ) {
+    return quote(pattern);
+  }
+  return pattern;
 }
 
 // --- Interfaces ---
@@ -140,7 +177,9 @@ class ConditionStartImpl implements ConditionStart {
   private readonly param: string;
 
   constructor(param: string) {
-    this.param = param;
+    // Quote the parameter name when it contains whitespace, operators, or other
+    // special characters so a name like `end date` round-trips as one token.
+    this.param = formatNumericOrParam(param);
   }
 
   eq(value: string | number | boolean): Condition {
@@ -173,7 +212,7 @@ class ConditionStartImpl implements ConditionStart {
   }
 
   like(pattern: string): Condition {
-    return new ConditionImpl(`${this.param} LIKE ${pattern}`);
+    return new ConditionImpl(`${this.param} LIKE ${formatPattern(pattern)}`);
   }
 }
 

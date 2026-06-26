@@ -233,7 +233,7 @@ TEST(GeneratorTest, DropsSeedsBeyondMaxTests) {
   ASSERT_EQ(result.tests.size(), 1u);
   EXPECT_EQ(result.tests[0].values, (std::vector<uint32_t>{0, 0}));
   EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
-                      "Seed test count (2) exceeds max_tests (1); some seeds were dropped"),
+                      "Seed test count (2) exceeds maxTests (1); some seeds were dropped"),
             result.warnings.end());
 }
 
@@ -605,6 +605,95 @@ TEST(EstimateModelTest, TotalTuplesMatchesFormula) {
   EXPECT_EQ(stats.total_values, 11u);
   // C(4,2)=6 pairs: (A,B)=6, (A,C)=8, (A,D)=4, (B,C)=12, (B,D)=6, (C,D)=8 => 44
   EXPECT_EQ(stats.total_tuples, 44u);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-surface parity tests (warning strings and estimate clamping).
+// The expected literals below are pinned and must stay byte-identical to the
+// strings asserted in src/ts/core/generator.test.ts.
+// ---------------------------------------------------------------------------
+
+// Incomplete coverage caused by the maxTests cap must emit the canonical
+// max-tests warning string.
+TEST(GeneratorParityTest, IncompleteCoverageMaxTestsWarning) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1", "a2", "a3"}, {}},
+      {"B", {"b0", "b1", "b2", "b3"}, {}},
+      {"C", {"c0", "c1", "c2", "c3"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+  opts.max_tests = 3;  // Too few to cover all 48 tuples.
+
+  auto result = Generate(opts);
+
+  EXPECT_LT(result.coverage, 1.0);
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Generation stopped at maxTests (3) before reaching 100% coverage"),
+            result.warnings.end());
+}
+
+// Incomplete coverage caused by constraints making some tuples unreachable
+// (without a maxTests cap) must emit the canonical zero-score warning string.
+TEST(GeneratorParityTest, IncompleteCoverageUnreachableWarning) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 1;
+  // Each constraint spans three parameters, so it evaluates to unknown on a
+  // pairwise partial assignment and is not pre-excluded; together they make the
+  // pair (A=0, B=1) impossible to complete, leaving it permanently uncovered.
+  opts.constraint_expressions = {
+      "IF A=0 AND B=1 THEN C!=0",
+      "IF A=0 AND B=1 THEN C!=1",
+  };
+
+  auto result = Generate(opts);
+
+  EXPECT_LT(result.coverage, 1.0);
+  EXPECT_NE(
+      std::find(result.warnings.begin(), result.warnings.end(),
+                "Generation stopped before reaching 100% coverage after 50 consecutive zero-score "
+                "candidates"),
+      result.warnings.end());
+}
+
+// estimateModel clamps the degenerate product (parameterCount <= strength) at
+// UINT32_MAX, matching the TS surface.
+TEST(GeneratorParityTest, EstimateDegenerateClampsToUint32Max) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", std::vector<std::string>(1000, "x"), {}},
+      {"B", std::vector<std::string>(1000, "x"), {}},
+      {"C", std::vector<std::string>(1000, "x"), {}},
+      {"D", std::vector<std::string>(1000, "x"), {}},
+  };
+  opts.strength = 4;  // parameterCount == strength -> product path.
+
+  auto stats = EstimateModel(opts);
+
+  // 1000^4 overflows 32 bits, so the estimate clamps to UINT32_MAX.
+  EXPECT_EQ(stats.estimated_tests, 4294967295u);
+}
+
+// estimateModel on a large non-degenerate model yields the same clamped value
+// as the TS surface.
+TEST(GeneratorParityTest, EstimateLargeModelMatchesTs) {
+  GenerateOptions opts;
+  for (int i = 0; i < 5; ++i) {
+    opts.parameters.push_back({"p" + std::to_string(i), std::vector<std::string>(1000, "x"), {}});
+  }
+  opts.strength = 3;  // parameterCount(5) > strength(3) -> estimate path.
+
+  auto stats = EstimateModel(opts);
+
+  // 1000^3 * ceil(log2(5)) = 1e9 * 3 = 3e9, below the C(5,3)*1000^3 tuple cap.
+  EXPECT_EQ(stats.estimated_tests, 3000000000u);
 }
 
 // ---------------------------------------------------------------------------

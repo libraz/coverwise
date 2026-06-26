@@ -52,10 +52,19 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
 /// Maps each value to its equivalence class and enumerates all t-wise class
 /// tuples, counting how many are covered by the test suite.
 /// Only considers parameters that have equivalence classes defined.
+///
+/// A class tuple is included in the universe only if it has at least one
+/// representative value tuple that contains no invalid value and satisfies all
+/// constraints. Class tuples whose every representative is excluded (by an
+/// invalid value or a violated constraint) are dropped from the universe so a
+/// fully valid-covering suite is not penalized with classCoverageRatio < 1.0.
+/// @param constraints Optional constraint AST list used to decide whether a
+///                    class tuple has a constraint-satisfiable representative.
 /// @return Class coverage report. If no parameters have classes, returns all zeros.
 ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& params,
                                          const std::vector<model::TestCase>& tests,
-                                         uint32_t strength);
+                                         uint32_t strength,
+                                         const std::vector<model::Constraint>& constraints = {});
 
 /// @brief Annotate a GenerateResult with equivalence class coverage if applicable.
 ///
@@ -65,8 +74,10 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
 /// @param result The generate result to annotate (modified in place).
 /// @param params The parameter definitions (with equivalence classes).
 /// @param strength The coverage strength used for generation.
+/// @param constraints Optional constraints threaded into class-tuple enumeration.
 void AnnotateClassCoverage(model::GenerateResult& result,
-                           const std::vector<model::Parameter>& params, uint32_t strength);
+                           const std::vector<model::Parameter>& params, uint32_t strength,
+                           const std::vector<model::Constraint>& constraints = {});
 
 }  // namespace validator
 }  // namespace coverwise

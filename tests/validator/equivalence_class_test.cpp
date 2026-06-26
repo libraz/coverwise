@@ -1,9 +1,15 @@
 #include <gtest/gtest.h>
 
+#include <utility>
+#include <vector>
+
+#include "model/constraint_ast.h"
+#include "model/constraint_parser.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
 #include "validator/coverage_validator.h"
 
+using coverwise::model::Constraint;
 using coverwise::model::Parameter;
 using coverwise::model::TestCase;
 using coverwise::validator::ComputeClassCoverage;
@@ -116,6 +122,75 @@ TEST(EquivalenceClassTest, NoClasses) {
   EXPECT_EQ(report.total_class_tuples, 0u);
   EXPECT_EQ(report.covered_class_tuples, 0u);
   EXPECT_DOUBLE_EQ(report.coverage_ratio, 0.0);
+}
+
+TEST(EquivalenceClassTest, ConstraintExcludesUnsatisfiableClassTuple) {
+  // os = {win(desktop), mac(apple)}, browser = {chrome(modern), ie(legacy)}.
+  // Constraint: IF os=mac THEN browser!=ie. The class tuple (apple, legacy) has
+  // only one representative (mac, ie), which the constraint forbids, so it must
+  // be excluded from the class-coverage universe. A suite covering the three
+  // remaining valid class tuples must then report classCoverageRatio == 1.0.
+  Parameter os("os", {"win", "mac"});
+  os.set_equivalence_classes({"desktop", "apple"});
+  Parameter browser("browser", {"chrome", "ie"});
+  browser.set_equivalence_classes({"modern", "legacy"});
+  std::vector<Parameter> params = {os, browser};
+
+  auto parse = coverwise::model::ParseConstraint("IF os=mac THEN browser!=ie", params);
+  ASSERT_TRUE(parse.error.ok()) << parse.error.message << ": " << parse.error.detail;
+  std::vector<Constraint> constraints;
+  constraints.push_back(std::move(parse.constraint));
+
+  // Cover the three valid class tuples:
+  //   (desktop, modern) via (win, chrome)
+  //   (desktop, legacy) via (win, ie)
+  //   (apple, modern)   via (mac, chrome)
+  std::vector<TestCase> tests = {
+      TestCase{{0, 0}},  // win, chrome
+      TestCase{{0, 1}},  // win, ie
+      TestCase{{1, 0}},  // mac, chrome
+  };
+
+  // Without constraint exclusion the universe would be 4 class tuples and this
+  // suite would report ratio 0.75. With exclusion it is 3 / 3 = 1.0.
+  auto report = ComputeClassCoverage(params, tests, 2, constraints);
+
+  EXPECT_EQ(report.total_class_tuples, 3u);
+  EXPECT_EQ(report.covered_class_tuples, 3u);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+
+  // Sanity: without constraints the same suite is incomplete (4 tuples, 3 covered).
+  auto unconstrained = ComputeClassCoverage(params, tests, 2);
+  EXPECT_EQ(unconstrained.total_class_tuples, 4u);
+  EXPECT_EQ(unconstrained.covered_class_tuples, 3u);
+  EXPECT_LT(unconstrained.coverage_ratio, 1.0);
+}
+
+TEST(EquivalenceClassTest, InvalidValueExcludesUnsatisfiableClassTuple) {
+  // os = {win(desktop), mac(apple), ie6(legacy, invalid)}.
+  // browser = {chrome(modern), safari(webkit)}.
+  // The only value in the "legacy" class is invalid, so every class tuple
+  // requiring os=legacy has no valid representative and is excluded. The
+  // remaining {desktop, apple} x {modern, webkit} = 4 class tuples form the
+  // universe; a suite covering them must report ratio 1.0.
+  Parameter os("os", {"win", "mac", "ie6"}, {false, false, true});
+  os.set_equivalence_classes({"desktop", "apple", "legacy"});
+  Parameter browser("browser", {"chrome", "safari"});
+  browser.set_equivalence_classes({"modern", "webkit"});
+  std::vector<Parameter> params = {os, browser};
+
+  std::vector<TestCase> tests = {
+      TestCase{{0, 0}},  // win, chrome   -> desktop, modern
+      TestCase{{0, 1}},  // win, safari   -> desktop, webkit
+      TestCase{{1, 0}},  // mac, chrome   -> apple, modern
+      TestCase{{1, 1}},  // mac, safari   -> apple, webkit
+  };
+
+  auto report = ComputeClassCoverage(params, tests, 2);
+
+  EXPECT_EQ(report.total_class_tuples, 4u);
+  EXPECT_EQ(report.covered_class_tuples, 4u);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
 }
 
 TEST(EquivalenceClassTest, MultipleValuesInSameClass) {

@@ -197,17 +197,105 @@ export function validateCoverage(
 }
 
 /**
+ * Check whether a class tuple has at least one valid, constraint-satisfiable
+ * representative value assignment.
+ *
+ * A class tuple selects one equivalence class per parameter in `comboParamIndices`.
+ * A representative picks, for each such parameter, a concrete value whose class
+ * matches the required class. The tuple is satisfiable if some choice of
+ * representatives uses no invalid value and violates no constraint. Class tuples
+ * with no satisfiable representative are excluded from the coverage universe
+ * (mirroring the value-level invalid/constraint exclusion).
+ */
+function classTupleHasValidRepresentative(
+  params: Parameter[],
+  comboParamIndices: number[],
+  requiredClasses: string[],
+  constraints: ConstraintNode[],
+): boolean {
+  const k = comboParamIndices.length;
+
+  // For each parameter, collect value indices whose class matches and which are
+  // not invalid. If any parameter has no such value, no representative exists.
+  const candidates: number[][] = [];
+  for (let i = 0; i < k; ++i) {
+    const p = params[comboParamIndices[i]];
+    const matching: number[] = [];
+    for (let v = 0; v < p.size; ++v) {
+      if (p.isInvalid(v)) {
+        continue;
+      }
+      if (p.equivalenceClass(v) === requiredClasses[i]) {
+        matching.push(v);
+      }
+    }
+    if (matching.length === 0) {
+      return false;
+    }
+    candidates.push(matching);
+  }
+
+  if (constraints.length === 0) {
+    return true;
+  }
+
+  // Search the cartesian product of candidate values for a constraint-satisfying
+  // assignment. The candidate space is bounded by the values-per-class.
+  const assignment = new Array<number>(params.length).fill(UNASSIGNED);
+  const choice = new Array<number>(k).fill(0);
+  for (;;) {
+    for (let i = 0; i < k; ++i) {
+      assignment[comboParamIndices[i]] = candidates[i][choice[i]];
+    }
+    let violated = false;
+    for (const c of constraints) {
+      if (c.evaluate(assignment) === ConstraintResult.False) {
+        violated = true;
+        break;
+      }
+    }
+    for (let i = 0; i < k; ++i) {
+      assignment[comboParamIndices[i]] = UNASSIGNED;
+    }
+    if (!violated) {
+      return true;
+    }
+
+    // Advance the mixed-radix choice vector.
+    let pos = k - 1;
+    while (pos >= 0) {
+      if (++choice[pos] < candidates[pos].length) {
+        break;
+      }
+      choice[pos] = 0;
+      --pos;
+    }
+    if (pos < 0) {
+      break;
+    }
+  }
+  return false;
+}
+
+/**
  * Compute equivalence class coverage for a test suite.
  *
  * Maps each value to its equivalence class and enumerates all t-wise class
  * tuples, counting how many are covered by the test suite.
  * Only considers parameters that have equivalence classes defined.
+ *
+ * A class tuple is included in the universe only if it has at least one
+ * representative value tuple that contains no invalid value and satisfies all
+ * constraints, so a fully valid-covering suite is not penalized with
+ * classCoverageRatio < 1.0.
+ * @param constraints Optional constraints threaded into class-tuple enumeration.
  * @returns Class coverage report. If no parameters have classes, returns all zeros.
  */
 export function computeClassCoverage(
   params: Parameter[],
   tests: TestCase[],
   strength: number,
+  constraints: ConstraintNode[] = [],
 ): ClassCoverageReport {
   const report: ClassCoverageReport = {
     totalClassTuples: 0,
@@ -249,6 +337,12 @@ export function computeClassCoverage(
       classesPerParam.push(params[classParams[idx]].uniqueClasses());
     }
 
+    // Resolve the global parameter indices for this class combination once.
+    const comboParamIndices: number[] = [];
+    for (let k = 0; k < effectiveStrength; ++k) {
+      comboParamIndices.push(classParams[combo[k]]);
+    }
+
     // Compute the number of class tuples for this combination.
     let numTuples = 1;
     for (const cls of classesPerParam) {
@@ -264,6 +358,18 @@ export function computeClassCoverage(
         const radix = classesPerParam[i].length;
         classIndices[i] = remainder % radix;
         remainder = Math.trunc(remainder / radix);
+      }
+
+      // Exclude class tuples with no valid, constraint-satisfiable representative
+      // from the universe entirely (they do not count toward totalClassTuples).
+      const requiredClasses = new Array<string>(effectiveStrength);
+      for (let k = 0; k < effectiveStrength; ++k) {
+        requiredClasses[k] = classesPerParam[k][classIndices[k]];
+      }
+      if (
+        !classTupleHasValidRepresentative(params, comboParamIndices, requiredClasses, constraints)
+      ) {
+        continue;
       }
 
       ++report.totalClassTuples;
@@ -312,11 +418,13 @@ export function computeClassCoverage(
  * @param result The generate result to annotate (modified in place).
  * @param params The parameter definitions (with equivalence classes).
  * @param strength The coverage strength used for generation.
+ * @param constraints Optional constraints threaded into class-tuple enumeration.
  */
 export function annotateClassCoverage(
   result: GenerateResult,
   params: Parameter[],
   strength: number,
+  constraints: ConstraintNode[] = [],
 ): void {
   let hasEqClasses = false;
   for (const p of params) {
@@ -329,7 +437,7 @@ export function annotateClassCoverage(
     return;
   }
 
-  const classReport = computeClassCoverage(params, result.tests, strength);
+  const classReport = computeClassCoverage(params, result.tests, strength, constraints);
   result.classCoverage = {
     totalClassTuples: classReport.totalClassTuples,
     coveredClassTuples: classReport.coveredClassTuples,

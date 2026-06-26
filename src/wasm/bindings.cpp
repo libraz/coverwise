@@ -210,7 +210,8 @@ std::optional<coverwise::model::BoundaryConfig> ParseBoundaryConfigForParam(val 
     config.step = 1.0;
   } else if (type == "float") {
     config.type = coverwise::model::BoundaryConfig::Type::kFloat;
-    if (js_param.hasOwnProperty("step") && js_param["step"].typeOf().as<std::string>() == "number") {
+    if (js_param.hasOwnProperty("step") &&
+        js_param["step"].typeOf().as<std::string>() == "number") {
       config.step = js_param["step"].as<double>();
     } else {
       config.step = 1.0;

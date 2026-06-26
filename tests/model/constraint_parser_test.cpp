@@ -1223,3 +1223,73 @@ TEST(ConstraintParserTest, UnterminatedQuoteError) {
   EXPECT_FALSE(result.error.ok());
   EXPECT_NE(result.error.message.find("Unterminated"), std::string::npos);
 }
+
+// --- Backslash escape tests (mirror the JS builder's quote() output) ---
+
+TEST(ConstraintParserTest, QuotedValueWithEscapedDoubleQuote) {
+  // Value contains an embedded double quote: say "hi"
+  std::vector<Parameter> params = {
+      {"msg", {"say \"hi\"", "bye"}, {}},
+  };
+  // Builder emits: msg = "say \"hi\""
+  auto result = ParseConstraint("msg = \"say \\\"hi\\\"\"", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  std::vector<uint32_t> a1 = {0};  // say "hi"
+  std::vector<uint32_t> a2 = {1};  // bye
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kFalse);
+}
+
+TEST(ConstraintParserTest, QuotedValueWithEscapedBackslash) {
+  // Value contains a literal backslash: a\b
+  std::vector<Parameter> params = {
+      {"path", {"a\\b", "c"}, {}},
+  };
+  // Builder emits: path = "a\\b"
+  auto result = ParseConstraint("path = \"a\\\\b\"", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  std::vector<uint32_t> a1 = {0};  // a\b
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kTrue);
+}
+
+TEST(ConstraintParserTest, InSetWithEscapedDoubleQuote) {
+  std::vector<Parameter> params = {
+      {"msg", {"say \"hi\"", "plain", "bye"}, {}},
+  };
+  // Builder emits: msg IN {"say \"hi\"", plain}
+  auto result = ParseConstraint("msg IN {\"say \\\"hi\\\"\", plain}", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  std::vector<uint32_t> a1 = {0};  // say "hi"
+  std::vector<uint32_t> a2 = {1};  // plain
+  std::vector<uint32_t> a3 = {2};  // bye
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(a3), ConstraintResult::kFalse);
+}
+
+TEST(ConstraintParserTest, QuotedLikePatternWithSpace) {
+  std::vector<Parameter> params = {
+      {"name", {"Windows 10", "Windows 11", "macOS"}, {}},
+  };
+  // Builder emits: name LIKE "Windows 10*"
+  auto result = ParseConstraint("name LIKE \"Windows 10*\"", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  std::vector<uint32_t> a1 = {0};  // Windows 10
+  std::vector<uint32_t> a2 = {2};  // macOS
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kFalse);
+}
+
+TEST(ConstraintParserTest, QuotedParamNameWithSpaceRelational) {
+  std::vector<Parameter> params = {
+      {"start date", {"1", "5", "10"}, {}},
+      {"end date", {"1", "5", "10"}, {}},
+  };
+  // Builder emits: "start date" < "end date"
+  auto result = ParseConstraint("\"start date\" < \"end date\"", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  std::vector<uint32_t> a1 = {0, 2};  // start=1, end=10 → true
+  std::vector<uint32_t> a2 = {2, 0};  // start=10, end=1 → false
+  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kFalse);
+}

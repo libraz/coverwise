@@ -274,6 +274,63 @@ describe('computeClassCoverage', () => {
     expect(report.coverageRatio).toBe(0.25);
   });
 
+  it('constraint excludes unsatisfiable class tuple, suite reports 1.0', () => {
+    // os = {win(desktop), mac(apple)}, browser = {chrome(modern), ie(legacy)}.
+    // Constraint: IF os=mac THEN browser!=ie. The class tuple (apple, legacy)
+    // has only the (mac, ie) representative, which the constraint forbids, so it
+    // is excluded. A suite covering the three valid class tuples reports 1.0.
+    const os = new Parameter('os', ['win', 'mac']);
+    os.setEquivalenceClasses(['desktop', 'apple']);
+    const browser = new Parameter('browser', ['chrome', 'ie']);
+    browser.setEquivalenceClasses(['modern', 'legacy']);
+    const params = [os, browser];
+
+    const parse = parseConstraint('IF os=mac THEN browser!=ie', params);
+    expect(parse.error.code).toBe(0);
+    expect(parse.constraint).toBeDefined();
+
+    const tests: TestCase[] = [
+      { values: [0, 0] }, // win, chrome -> desktop, modern
+      { values: [0, 1] }, // win, ie     -> desktop, legacy
+      { values: [1, 0] }, // mac, chrome -> apple, modern
+    ];
+
+    // biome-ignore lint/style/noNonNullAssertion: guarded by expect above.
+    const report = computeClassCoverage(params, tests, 2, [parse.constraint!]);
+    expect(report.totalClassTuples).toBe(3);
+    expect(report.coveredClassTuples).toBe(3);
+    expect(report.coverageRatio).toBe(1.0);
+
+    // Without constraints the same suite is incomplete (4 tuples, 3 covered).
+    const unconstrained = computeClassCoverage(params, tests, 2);
+    expect(unconstrained.totalClassTuples).toBe(4);
+    expect(unconstrained.coveredClassTuples).toBe(3);
+    expect(unconstrained.coverageRatio).toBeLessThan(1.0);
+  });
+
+  it('invalid value excludes unsatisfiable class tuple, suite reports 1.0', () => {
+    // os = {win(desktop), mac(apple), ie6(legacy, invalid)}.
+    // The only "legacy" value is invalid, so class tuples requiring os=legacy
+    // have no valid representative and are excluded.
+    const os = new Parameter('os', ['win', 'mac', 'ie6'], [false, false, true]);
+    os.setEquivalenceClasses(['desktop', 'apple', 'legacy']);
+    const browser = new Parameter('browser', ['chrome', 'safari']);
+    browser.setEquivalenceClasses(['modern', 'webkit']);
+    const params = [os, browser];
+
+    const tests: TestCase[] = [
+      { values: [0, 0] }, // win, chrome -> desktop, modern
+      { values: [0, 1] }, // win, safari -> desktop, webkit
+      { values: [1, 0] }, // mac, chrome -> apple, modern
+      { values: [1, 1] }, // mac, safari -> apple, webkit
+    ];
+
+    const report = computeClassCoverage(params, tests, 2);
+    expect(report.totalClassTuples).toBe(4);
+    expect(report.coveredClassTuples).toBe(4);
+    expect(report.coverageRatio).toBe(1.0);
+  });
+
   it('no equivalence classes: returns zeros', () => {
     const params = [
       new Parameter('os', ['win', 'mac']),

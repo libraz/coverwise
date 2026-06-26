@@ -55,20 +55,21 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
 
   for (const auto& combo : combinations) {
     // Step 2: Enumerate all value tuples (cartesian product) for this combination.
-    // Compute the number of tuples for this combination.
-    uint32_t num_tuples = 1;
+    // Compute the number of tuples for this combination. Accumulate in 64-bit to
+    // avoid silently wrapping (and under-counting) for large value counts.
+    uint64_t num_tuples = 1;
     for (uint32_t pi : combo) {
       num_tuples *= params[pi].size();
     }
 
     // Iterate over all value tuples using a flat index.
-    for (uint32_t flat = 0; flat < num_tuples; ++flat) {
+    for (uint64_t flat = 0; flat < num_tuples; ++flat) {
       // Decode flat index into value indices (mixed-radix decomposition).
       std::vector<uint32_t> value_indices(strength);
-      uint32_t remainder = flat;
+      uint64_t remainder = flat;
       for (int i = static_cast<int>(strength) - 1; i >= 0; --i) {
         uint32_t radix = params[combo[i]].size();
-        value_indices[i] = remainder % radix;
+        value_indices[i] = static_cast<uint32_t>(remainder % radix);
         remainder /= radix;
       }
 
@@ -149,9 +150,80 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
   return report;
 }
 
+namespace {
+
+/// @brief Check whether a class tuple has at least one valid, constraint-satisfiable
+///        representative value assignment.
+///
+/// A class tuple selects one equivalence class per parameter in @p combo. A
+/// representative picks, for each such parameter, a concrete value whose class
+/// matches the required class. The tuple is "satisfiable" if some choice of
+/// representatives uses no invalid value and violates no constraint. Class
+/// tuples with no satisfiable representative are excluded from the coverage
+/// universe (mirroring the value-level invalid/constraint exclusion).
+bool ClassTupleHasValidRepresentative(const std::vector<model::Parameter>& params,
+                                      const std::vector<uint32_t>& class_param_indices,
+                                      const std::vector<std::string>& required_classes,
+                                      const std::vector<model::Constraint>& constraints) {
+  uint32_t k = static_cast<uint32_t>(class_param_indices.size());
+
+  // For each parameter, collect the value indices whose class matches and which
+  // are not invalid. If any parameter has no such value, no representative exists.
+  std::vector<std::vector<uint32_t>> candidates(k);
+  for (uint32_t i = 0; i < k; ++i) {
+    uint32_t pi = class_param_indices[i];
+    const auto& p = params[pi];
+    for (uint32_t v = 0; v < p.size(); ++v) {
+      if (p.is_invalid(v)) continue;
+      if (p.equivalence_class(v) == required_classes[i]) {
+        candidates[i].push_back(v);
+      }
+    }
+    if (candidates[i].empty()) return false;
+  }
+
+  if (constraints.empty()) {
+    return true;
+  }
+
+  // Search the cartesian product of candidate values for a constraint-satisfying
+  // assignment. The candidate space is bounded by the values-per-class.
+  std::vector<uint32_t> assignment(params.size(), model::kUnassigned);
+  std::vector<uint32_t> choice(k, 0);
+  for (;;) {
+    for (uint32_t i = 0; i < k; ++i) {
+      assignment[class_param_indices[i]] = candidates[i][choice[i]];
+    }
+    bool violated = false;
+    for (const auto& c : constraints) {
+      if (c->Evaluate(assignment) == model::ConstraintResult::kFalse) {
+        violated = true;
+        break;
+      }
+    }
+    for (uint32_t i = 0; i < k; ++i) {
+      assignment[class_param_indices[i]] = model::kUnassigned;
+    }
+    if (!violated) return true;
+
+    // Advance the mixed-radix choice vector.
+    int pos = static_cast<int>(k) - 1;
+    while (pos >= 0) {
+      if (++choice[pos] < candidates[pos].size()) break;
+      choice[pos] = 0;
+      --pos;
+    }
+    if (pos < 0) break;
+  }
+  return false;
+}
+
+}  // namespace
+
 ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& params,
                                          const std::vector<model::TestCase>& tests,
-                                         uint32_t strength) {
+                                         uint32_t strength,
+                                         const std::vector<model::Constraint>& constraints) {
   ClassCoverageReport report;
   uint32_t n = static_cast<uint32_t>(params.size());
 
@@ -188,21 +260,39 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
       classes_per_param.push_back(params[class_params[idx]].unique_classes());
     }
 
-    // Compute the number of class tuples for this combination.
-    uint32_t num_tuples = 1;
+    // Resolve the global parameter indices for this class combination once.
+    std::vector<uint32_t> combo_param_indices(effective_strength);
+    for (uint32_t k = 0; k < effective_strength; ++k) {
+      combo_param_indices[k] = class_params[combo[k]];
+    }
+
+    // Compute the number of class tuples for this combination. Accumulate in
+    // 64-bit so a large class product cannot silently wrap.
+    uint64_t num_tuples = 1;
     for (const auto& cls : classes_per_param) {
-      num_tuples *= static_cast<uint32_t>(cls.size());
+      num_tuples *= cls.size();
     }
 
     // Enumerate all class tuples and check coverage.
-    for (uint32_t flat = 0; flat < num_tuples; ++flat) {
+    for (uint64_t flat = 0; flat < num_tuples; ++flat) {
       // Decode flat index into class indices.
       std::vector<uint32_t> class_indices(effective_strength);
-      uint32_t remainder = flat;
+      uint64_t remainder = flat;
       for (int i = static_cast<int>(effective_strength) - 1; i >= 0; --i) {
         uint32_t radix = static_cast<uint32_t>(classes_per_param[i].size());
-        class_indices[i] = remainder % radix;
+        class_indices[i] = static_cast<uint32_t>(remainder % radix);
         remainder /= radix;
+      }
+
+      // Exclude class tuples with no valid, constraint-satisfiable representative
+      // from the universe entirely (they do not count toward total_class_tuples).
+      std::vector<std::string> required_classes(effective_strength);
+      for (uint32_t k = 0; k < effective_strength; ++k) {
+        required_classes[k] = classes_per_param[k][class_indices[k]];
+      }
+      if (!ClassTupleHasValidRepresentative(params, combo_param_indices, required_classes,
+                                            constraints)) {
+        continue;
       }
 
       ++report.total_class_tuples;
@@ -245,7 +335,8 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
 }
 
 void AnnotateClassCoverage(model::GenerateResult& result,
-                           const std::vector<model::Parameter>& params, uint32_t strength) {
+                           const std::vector<model::Parameter>& params, uint32_t strength,
+                           const std::vector<model::Constraint>& constraints) {
   bool has_eq_classes = false;
   for (const auto& p : params) {
     if (p.has_equivalence_classes()) {
@@ -257,7 +348,7 @@ void AnnotateClassCoverage(model::GenerateResult& result,
     return;
   }
 
-  auto class_report = ComputeClassCoverage(params, result.tests, strength);
+  auto class_report = ComputeClassCoverage(params, result.tests, strength, constraints);
   result.class_coverage = model::ClassCoverage{
       class_report.total_class_tuples,
       class_report.covered_class_tuples,

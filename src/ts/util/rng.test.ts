@@ -90,66 +90,6 @@ describe('Rng', () => {
     });
   });
 
-  describe('weightedRandomIndex', () => {
-    it('respects weight distribution statistically', () => {
-      const rng = new Rng(12345);
-      const weights = [1, 0, 0, 0];
-      // Weight is entirely on index 0, so it must always return 0.
-      for (let i = 0; i < 100; i++) {
-        expect(rng.weightedRandomIndex(weights)).toBe(0);
-      }
-    });
-
-    it('never returns an index with zero weight when others are positive', () => {
-      const rng = new Rng(777);
-      const weights = [0, 5, 0, 5];
-
-      for (let i = 0; i < 500; i++) {
-        const idx = rng.weightedRandomIndex(weights);
-        expect(idx === 1 || idx === 3).toBe(true);
-      }
-    });
-
-    it('distributes roughly proportional to weights', () => {
-      const rng = new Rng(42);
-      const weights = [3, 1];
-      const counts = [0, 0];
-      const iterations = 10000;
-
-      for (let i = 0; i < iterations; i++) {
-        counts[rng.weightedRandomIndex(weights)]++;
-      }
-
-      // Expect index 0 to be picked roughly 3x more than index 1.
-      // Allow wide tolerance for statistical variance.
-      const ratio = counts[0] / counts[1];
-      expect(ratio).toBeGreaterThan(1.5);
-      expect(ratio).toBeLessThan(6.0);
-    });
-
-    it('falls back to uniform selection when all weights are zero', () => {
-      const rng = new Rng(42);
-      const weights = [0, 0, 0, 0];
-      const seen = new Set<number>();
-
-      for (let i = 0; i < 1000; i++) {
-        const idx = rng.weightedRandomIndex(weights);
-        expect(idx).toBeGreaterThanOrEqual(0);
-        expect(idx).toBeLessThan(weights.length);
-        seen.add(idx);
-      }
-
-      // With uniform fallback over 1000 tries, we should see all 4 indices.
-      expect(seen.size).toBe(4);
-    });
-
-    it('handles a single-element weights array', () => {
-      const rng = new Rng(0);
-      expect(rng.weightedRandomIndex([5])).toBe(0);
-      expect(rng.weightedRandomIndex([0])).toBe(0);
-    });
-  });
-
   describe('seed', () => {
     it('reseeding produces the same sequence as a fresh instance', () => {
       const rng = new Rng(100);
@@ -177,6 +117,13 @@ describe('Rng', () => {
       }
       // If we get here without error, the test passes.
       expect(true).toBe(true);
+    });
+  });
+
+  describe('surface', () => {
+    it('does not expose the removed weightedRandomIndex helper', () => {
+      const rng = new Rng(0) as unknown as Record<string, unknown>;
+      expect(rng.weightedRandomIndex).toBeUndefined();
     });
   });
 });
