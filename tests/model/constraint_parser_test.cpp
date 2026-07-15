@@ -1320,7 +1320,7 @@ TEST(ConstraintParserLimitsTest, StrictDecimalGrammarAndRange) {
   ASSERT_TRUE(exponent.error.ok()) << exponent.error.message;
   EXPECT_EQ(exponent.constraint->Evaluate({1}), ConstraintResult::kTrue);
 
-  for (const std::string& expression : {"n > 1..2", "n > 1e", "n > 1e309", "n > 1e-999"}) {
+  for (const char* const expression : {"n > 1..2", "n > 1e", "n > 1e309", "n > 1e-999"}) {
     auto result = ParseConstraint(expression, params);
     EXPECT_FALSE(result.error.ok()) << expression;
   }
