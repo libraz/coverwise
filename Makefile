@@ -1,4 +1,4 @@
-.PHONY: all build release test clean rebuild format wasm coverage coverage-build coverage-clean
+.PHONY: all build release test clean rebuild format format-check wasm coverage coverage-build coverage-clean
 
 BUILD_DIR := build
 
@@ -26,6 +26,12 @@ rebuild: clean build
 
 format:
 	find src tests -name '*.cpp' -o -name '*.h' | xargs clang-format -i
+	# TS/WASM fix (note: package.json's lint:fix covers js/ tests/wasm/ only, not src/ts/)
+	yarn lint:fix
+
+format-check:
+	find src tests -name '*.cpp' -o -name '*.h' | xargs clang-format --dry-run --Werror
+	yarn lint
 
 coverage-build:
 	cmake -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON

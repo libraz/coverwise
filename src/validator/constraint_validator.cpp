@@ -13,7 +13,7 @@ ConstraintReport ValidateConstraints(const std::vector<model::TestCase>& tests,
   for (uint32_t i = 0; i < report.total_tests; ++i) {
     for (const auto& constraint : constraints) {
       auto result = constraint->Evaluate(tests[i].values);
-      if (result == model::ConstraintResult::kFalse) {
+      if (result != model::ConstraintResult::kTrue) {
         report.violations++;
         report.violating_indices.push_back(i);
         break;

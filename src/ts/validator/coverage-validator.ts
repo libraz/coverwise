@@ -1,6 +1,7 @@
 /// Independent coverage validation (does NOT depend on generator/core).
 
 import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
+import { ErrorCode, type ErrorInfo, okError } from '../model/error.js';
 import type { Parameter } from '../model/parameter.js';
 import {
   type GenerateResult,
@@ -8,6 +9,11 @@ import {
   UNASSIGNED,
   type UncoveredTuple,
 } from '../model/test-case.js';
+import { checkedBinomial } from '../util/combinatorics.js';
+
+const MAX_TUPLES = 16_000_000;
+const MAX_COMBINATIONS = 1_000_000;
+const MAX_DIAGNOSTIC_TUPLES = 1_000;
 
 /** Coverage validation report with human-readable uncovered tuples. */
 export interface CoverageReport {
@@ -15,6 +21,10 @@ export interface CoverageReport {
   coveredTuples: number;
   coverageRatio: number;
   uncovered: UncoveredTuple[];
+  uncoveredCount: number;
+  omittedUncovered: number;
+  invalidTests: Array<{ testIndex: number; reason: string }>;
+  error: ErrorInfo;
 }
 
 /** Equivalence class coverage report. */
@@ -22,6 +32,7 @@ export interface ClassCoverageReport {
   totalClassTuples: number;
   coveredClassTuples: number;
   coverageRatio: number;
+  error: ErrorInfo;
 }
 
 /**
@@ -64,6 +75,124 @@ function testCovers(test: TestCase, paramIndices: number[], valueIndices: number
   return true;
 }
 
+// Independent feasibility oracle. Keep this separate from the generation core
+// so cross-surface validation remains an algorithmically independent check.
+function validatorSearch(
+  params: Parameter[],
+  constraints: ConstraintNode[],
+  assignment: number[],
+  cursor: number,
+): boolean {
+  for (const constraint of constraints) {
+    if (constraint.evaluate(assignment) === ConstraintResult.False) {
+      return false;
+    }
+  }
+  while (cursor < params.length && assignment[cursor] !== UNASSIGNED) {
+    ++cursor;
+  }
+  if (cursor === params.length) {
+    return constraints.every(
+      (constraint) => constraint.evaluate(assignment) === ConstraintResult.True,
+    );
+  }
+  for (let vi = 0; vi < params[cursor].size; ++vi) {
+    if (params[cursor].isInvalid(vi)) {
+      continue;
+    }
+    assignment[cursor] = vi;
+    if (validatorSearch(params, constraints, assignment, cursor + 1)) {
+      return true;
+    }
+  }
+  assignment[cursor] = UNASSIGNED;
+  return false;
+}
+
+function hasSatisfyingCompletion(
+  params: Parameter[],
+  constraints: ConstraintNode[],
+  partial: number[],
+): boolean {
+  return validatorSearch(params, constraints, partial.slice(), 0);
+}
+
+function validatePositiveTest(
+  test: TestCase,
+  params: Parameter[],
+  constraints: ConstraintNode[],
+): string {
+  if (test.values.length !== params.length) {
+    return `expected ${params.length} value(s), got ${test.values.length}`;
+  }
+  for (let pi = 0; pi < params.length; ++pi) {
+    const vi = test.values[pi];
+    if (!Number.isInteger(vi) || vi < 0 || vi >= params[pi].size) {
+      return `value index ${vi} is out of range for parameter ${params[pi].name}`;
+    }
+    if (params[pi].isInvalid(vi)) {
+      return `value ${params[pi].name}=${params[pi].values[vi]} is marked invalid`;
+    }
+  }
+  if (
+    !constraints.every((constraint) => constraint.evaluate(test.values) === ConstraintResult.True)
+  ) {
+    return 'constraint evaluation is false or indeterminate';
+  }
+  return '';
+}
+
+function preflightEnumeration(params: Parameter[], strength: number): ErrorInfo {
+  const n = params.length;
+  if (strength === 0 || strength > n) {
+    return okError();
+  }
+  if (checkedBinomial(n, strength, MAX_COMBINATIONS) === null) {
+    return {
+      code: ErrorCode.TupleExplosion,
+      message: 'parameter combination metadata exceeds safety limit',
+      detail: `Combinations exceed limit: ${MAX_COMBINATIONS}. Reduce strength or parameter count.`,
+    };
+  }
+
+  const combo = Array.from({ length: strength }, (_, index) => index);
+  let total = 0;
+  for (;;) {
+    let product = 1;
+    for (const pi of combo) {
+      product *= params[pi].size;
+      if (!Number.isSafeInteger(product) || product > MAX_TUPLES) {
+        return {
+          code: ErrorCode.TupleExplosion,
+          message: 't-wise tuple count exceeds safety limit',
+          detail: `Total tuples exceed limit: ${MAX_TUPLES}`,
+        };
+      }
+    }
+    total += product;
+    if (!Number.isSafeInteger(total) || total > MAX_TUPLES) {
+      return {
+        code: ErrorCode.TupleExplosion,
+        message: 't-wise tuple count exceeds safety limit',
+        detail: `Total tuples exceed limit: ${MAX_TUPLES}`,
+      };
+    }
+
+    let pos = strength - 1;
+    while (pos >= 0 && combo[pos] === n - strength + pos) {
+      --pos;
+    }
+    if (pos < 0) {
+      break;
+    }
+    ++combo[pos];
+    for (let index = pos + 1; index < strength; ++index) {
+      combo[index] = combo[index - 1] + 1;
+    }
+  }
+  return okError();
+}
+
 /**
  * Independently validate t-wise coverage of a test suite.
  *
@@ -84,6 +213,10 @@ export function validateCoverage(
     coveredTuples: 0,
     coverageRatio: 0,
     uncovered: [],
+    uncoveredCount: 0,
+    omittedUncovered: 0,
+    invalidTests: [],
+    error: okError(),
   };
 
   const n = params.length;
@@ -95,11 +228,25 @@ export function validateCoverage(
     return report;
   }
 
+  report.error = preflightEnumeration(params, strength);
+  if (report.error.code !== ErrorCode.Ok) {
+    return report;
+  }
+
   // Step 1: Generate all C(n, strength) combinations of parameter indices.
   const combinations = generateCombinations(n, strength);
 
   // Reusable assignment buffer for constraint evaluation.
   const assignment = new Array<number>(n).fill(UNASSIGNED);
+  const validTests: TestCase[] = [];
+  for (let index = 0; index < tests.length; ++index) {
+    const reason = validatePositiveTest(tests[index], params, constraints);
+    if (reason.length === 0) {
+      validTests.push(tests[index]);
+    } else {
+      report.invalidTests.push({ testIndex: index, reason });
+    }
+  }
 
   for (const combo of combinations) {
     // Step 2: Enumerate all value tuples (cartesian product) for this combination.
@@ -139,13 +286,7 @@ export function validateCoverage(
         for (let i = 0; i < strength; ++i) {
           assignment[combo[i]] = valueIndices[i];
         }
-        let excluded = false;
-        for (const c of constraints) {
-          if (c.evaluate(assignment) === ConstraintResult.False) {
-            excluded = true;
-            break;
-          }
-        }
+        const excluded = !hasSatisfyingCompletion(params, constraints, assignment);
         for (let i = 0; i < strength; ++i) {
           assignment[combo[i]] = UNASSIGNED;
         }
@@ -158,7 +299,7 @@ export function validateCoverage(
 
       // Step 3: Check if any test case covers this value tuple.
       let covered = false;
-      for (const test of tests) {
+      for (const test of validTests) {
         if (testCovers(test, combo, valueIndices)) {
           covered = true;
           break;
@@ -168,6 +309,10 @@ export function validateCoverage(
       if (covered) {
         ++report.coveredTuples;
       } else {
+        ++report.uncoveredCount;
+        if (report.uncovered.length >= MAX_DIAGNOSTIC_TUPLES) {
+          continue;
+        }
         // Build the UncoveredTuple with human-readable strings.
         const tuple: string[] = [];
         const paramNames: string[] = [];
@@ -185,6 +330,7 @@ export function validateCoverage(
       }
     }
   }
+  report.omittedUncovered = report.uncoveredCount - report.uncovered.length;
 
   // Compute coverage ratio. When there are no tuples, coverage is vacuously 1.0.
   if (report.totalTuples === 0) {
@@ -247,13 +393,7 @@ function classTupleHasValidRepresentative(
     for (let i = 0; i < k; ++i) {
       assignment[comboParamIndices[i]] = candidates[i][choice[i]];
     }
-    let violated = false;
-    for (const c of constraints) {
-      if (c.evaluate(assignment) === ConstraintResult.False) {
-        violated = true;
-        break;
-      }
-    }
+    const violated = !hasSatisfyingCompletion(params, constraints, assignment);
     for (let i = 0; i < k; ++i) {
       assignment[comboParamIndices[i]] = UNASSIGNED;
     }
@@ -301,11 +441,17 @@ export function computeClassCoverage(
     totalClassTuples: 0,
     coveredClassTuples: 0,
     coverageRatio: 0,
+    error: okError(),
   };
 
   const n = params.length;
 
   if (strength === 0 || strength > n) {
+    return report;
+  }
+
+  report.error = preflightEnumeration(params, strength);
+  if (report.error.code !== ErrorCode.Ok) {
     return report;
   }
 
@@ -328,6 +474,9 @@ export function computeClassCoverage(
 
   // Generate all C(classN, effectiveStrength) combinations of class-enabled parameters.
   const combinations = generateCombinations(classN, effectiveStrength);
+  const validTests = tests.filter(
+    (test) => validatePositiveTest(test, params, constraints).length === 0,
+  );
 
   // For each combination, enumerate all class tuples (cartesian product of unique classes).
   for (const combo of combinations) {
@@ -376,7 +525,7 @@ export function computeClassCoverage(
 
       // Check if any test case covers this class tuple.
       let covered = false;
-      for (const test of tests) {
+      for (const test of validTests) {
         let matches = true;
         for (let k = 0; k < effectiveStrength; ++k) {
           const pi = classParams[combo[k]];
@@ -405,6 +554,8 @@ export function computeClassCoverage(
 
   if (report.totalClassTuples > 0) {
     report.coverageRatio = report.coveredClassTuples / report.totalClassTuples;
+  } else {
+    report.coverageRatio = 1.0;
   }
 
   return report;

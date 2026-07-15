@@ -1,6 +1,14 @@
 # CLI リファレンス
 
+`coverwise` native CLIはnpm packageには含まれません。Linux x64版は
+[GitHub Releases](https://github.com/libraz/coverwise/releases) から取得できます。ソースbuild時の
+pathは`build/bin/coverwise`で、CMake install後は指定prefix配下の`bin/coverwise`です。
+
 `coverwise` コマンドラインツールは JSON 入力を読み込み、JSON 出力を書き出します。
+
+すべてのコマンド出力は CLI schema version `1` を使用し、`"schemaVersion": 1` を含みます。
+v1 では空の配列フィールドも常に出力し、suggestionを`{ description, testCase }`形式へ変更し、
+statsの名称を`subModelCount`、`constraintCount`、`parameters`へ統一しています。
 
 ## コマンド
 
@@ -44,6 +52,7 @@ coverwise generate <input.json> [> output.json]
 
 ```json
 {
+  "schemaVersion": 1,
   "tests": [
     { "os": "Windows", "browser": "Chrome" },
     { "os": "macOS", "browser": "Firefox" }
@@ -51,6 +60,8 @@ coverwise generate <input.json> [> output.json]
   "negativeTests": [],
   "coverage": 1.0,
   "uncovered": [],
+  "uncoveredCount": 0,
+  "omittedUncovered": 0,
   "stats": {
     "totalTuples": 9,
     "coveredTuples": 9,
@@ -79,6 +90,7 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
 
 ```json
 {
+  "schemaVersion": 1,
   "totalTuples": 9,
   "coveredTuples": 7,
   "coverageRatio": 0.778,
@@ -86,9 +98,13 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
     {
       "tuple": ["os=Windows", "browser=Safari"],
       "params": ["os", "browser"],
+      "reason": "never covered",
       "display": "os=Windows, browser=Safari"
     }
-  ]
+  ],
+  "uncoveredCount": 2,
+  "omittedUncovered": 0,
+  "invalidTests": []
 }
 ```
 
@@ -115,14 +131,15 @@ coverwise stats <input.json>
 
 ```json
 {
+  "schemaVersion": 1,
   "parameterCount": 3,
   "totalValues": 8,
   "strength": 2,
   "totalTuples": 29,
   "estimatedTests": 10,
-  "subModels": 0,
+  "subModelCount": 0,
   "constraintCount": 1,
-  "parametersDetail": [
+  "parameters": [
     { "name": "os", "valueCount": 3, "invalidCount": 0 },
     { "name": "browser", "valueCount": 3, "invalidCount": 0 },
     { "name": "theme", "valueCount": 2, "invalidCount": 0 }

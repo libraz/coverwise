@@ -63,3 +63,15 @@ TEST(ValidateParametersTest, RejectsDuplicateParameterName) {
   EXPECT_EQ(err.code, Error::Code::kInvalidInput);
   EXPECT_EQ(err.message, "Duplicate parameter name 'os'");
 }
+
+TEST(ValidateParametersTest, RejectsAliasPrimaryAndCaseOnlyCollisions) {
+  Parameter alias_collision{"browser", {"chrome", "safari"}};
+  alias_collision.set_aliases({{"safari"}, {}});
+  EXPECT_EQ(coverwise::model::ValidateParameters({alias_collision}).code,
+            coverwise::model::Error::Code::kInvalidInput);
+
+  Parameter case_collision{"os", {"OS", "other"}};
+  case_collision.set_aliases({{}, {"os"}});
+  EXPECT_EQ(coverwise::model::ValidateParameters({case_collision}).code,
+            coverwise::model::Error::Code::kInvalidInput);
+}

@@ -36,10 +36,7 @@ import {
 } from '../../src/ts/core/generator.js';
 import type { ConstraintNode } from '../../src/ts/model/constraint-ast.js';
 import { parseConstraint } from '../../src/ts/model/constraint-parser.js';
-import {
-  annotateClassCoverage,
-  validateCoverage as internalValidateCoverage,
-} from '../../src/ts/validator/coverage-validator.js';
+import { validateCoverage as internalValidateCoverage } from '../../src/ts/validator/coverage-validator.js';
 import type {
   CoverageReport,
   CoverwiseErrorCode,
@@ -52,6 +49,8 @@ import type {
 } from '../types.js';
 import { CoverwiseError } from '../types.js';
 import {
+  validateConstraints,
+  validateExtendMode,
   validateGenerateInput,
   validateParameters,
   validateStrength,
@@ -132,9 +131,6 @@ export function generate(input: GenerateInput): GenerateResult {
   throwOnResultError(result.error);
   const strength = input.strength ?? 2;
 
-  // Annotate equivalence class coverage if applicable.
-  annotateClassCoverage(result, params, strength);
-
   return toPublicResult(result, params, strength);
 }
 
@@ -157,6 +153,7 @@ export function analyzeCoverage(
 ): CoverageReport {
   validateParameters(parameters);
   validateTestArray(tests, 'tests');
+  validateConstraints(constraints);
   const s = validateStrength(strength, pureScalarError);
   const params = toInternalParams(parameters);
   const internalTests = tests.map((tc) => toInternalTestCase(tc, params));
@@ -179,6 +176,7 @@ export function analyzeCoverage(
   }
 
   const report = internalValidateCoverage(params, internalTests, s, parsedConstraints);
+  throwOnResultError(report.error);
   const result = toPublicCoverageReport(report);
   // When there are no tuples, coverage is vacuously 1.0.
   if (result.totalTuples === 0) {
@@ -196,16 +194,19 @@ export function analyzeCoverage(
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
   validateTestArray(existing, 'existing');
   validateInput(input);
+  validateExtendMode(input.mode);
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);
-  const internalExisting = existing.map((tc) => toInternalTestCase(tc, params));
+  const internalExisting = existing.map((tc) => toInternalTestCase(tc, params, true));
   const strength = input.strength ?? 2;
   const result = internalExtend(internalExisting, opts);
   throwOnResultError(result.error);
 
-  annotateClassCoverage(result, params, strength);
-
-  return toPublicResult(result, params, strength);
+  const publicResult = toPublicResult(result, params, strength);
+  for (let i = 0; i < existing.length; ++i) {
+    publicResult.tests[i] = existing[i];
+  }
+  return publicResult;
 }
 
 /**
@@ -216,6 +217,7 @@ export function estimateModel(input: GenerateInput): ModelStats {
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);
   const stats = internalEstimateModel(opts);
+  throwOnResultError(stats.error);
   return toPublicModelStats(stats);
 }
 

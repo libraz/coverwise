@@ -6,6 +6,7 @@
 
 #include "core/generator.h"
 #include "model/constraint_ast.h"
+#include "model/constraint_parser.h"
 #include "model/generate_options.h"
 #include "model/parameter.h"
 #include "model/test_case.h"

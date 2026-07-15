@@ -1,13 +1,13 @@
 # WASM bindings via Emscripten embind
 
-if(BUILD_WASM)
+if(COVERWISE_BUILD_WASM)
   add_executable(coverwise_wasm bindings.cpp)
   target_link_libraries(coverwise_wasm PRIVATE coverwise_lib)
 
   set_target_properties(coverwise_wasm PROPERTIES
     OUTPUT_NAME "coverwise"
     SUFFIX ".js"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/dist"
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/dist"
   )
 
   # Enable C++ exception catching at the JS<->C++ boundary. Without this,

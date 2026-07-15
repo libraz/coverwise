@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -318,6 +319,25 @@ TEST(GeneratorTest, ConstraintsAndSubModelsCombined) {
   EXPECT_EQ(con_report.violations, 0u);
 }
 
+TEST(GeneratorTest, ClassCoverageUsesGenerationConstraints) {
+  GenerateOptions opts;
+  Parameter a("A", {"a0", "a1"});
+  a.set_equivalence_classes({"c0", "c1"});
+  Parameter b("B", {"b0", "b1"});
+  b.set_equivalence_classes({"d0", "d1"});
+  opts.parameters = {a, b};
+  opts.constraint_expressions = {"IF A=a1 THEN B=b1"};
+  opts.strength = 2;
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok());
+  ASSERT_TRUE(result.class_coverage.has_value());
+  EXPECT_EQ(result.class_coverage->total_class_tuples, 3u);
+  EXPECT_EQ(result.class_coverage->covered_class_tuples, 3u);
+  EXPECT_DOUBLE_EQ(result.class_coverage->class_coverage_ratio, 1.0);
+}
+
 TEST(GeneratorTest, NegativeTesting) {
   GenerateOptions opts;
   opts.parameters = {
@@ -351,6 +371,55 @@ TEST(GeneratorTest, NegativeTesting) {
     }
     EXPECT_EQ(invalid_count, 1u) << "Negative test must have exactly 1 invalid value";
   }
+}
+
+TEST(GeneratorTest, NegativeTestingCoversRequestedThreeWiseTuples) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "bad"}, {false, true}},
+      {"B", {"b0", "b1"}, {}},
+      {"C", {"c0", "c1", "c2"}, {}},
+  };
+  opts.strength = 3;
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok());
+  std::set<std::pair<uint32_t, uint32_t>> covered;
+  for (const auto& test : result.negative_tests) {
+    if (test.values[0] == 1) covered.emplace(test.values[1], test.values[2]);
+  }
+  EXPECT_EQ(covered.size(), 6u);
+  EXPECT_TRUE(result.warnings.empty());
+}
+
+TEST(GeneratorTest, NegativeTestingSingleParameterProducesOneExample) {
+  GenerateOptions opts;
+  opts.parameters = {{"A", {"valid", "bad"}, {false, true}}};
+  opts.strength = 1;
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok());
+  ASSERT_EQ(result.negative_tests.size(), 1u);
+  EXPECT_EQ(result.negative_tests[0].values, (std::vector<uint32_t>{1}));
+}
+
+TEST(GeneratorTest, NegativeTestingWarnsWhenInvalidValueCannotSatisfyConstraints) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"valid", "bad"}, {false, true}},
+      {"B", {"b0", "b1"}, {}},
+  };
+  opts.strength = 2;
+  opts.constraint_expressions = {"A!=bad"};
+
+  auto result = Generate(opts);
+
+  EXPECT_TRUE(result.negative_tests.empty());
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Negative coverage incomplete for A=bad"),
+            result.warnings.end());
 }
 
 TEST(GeneratorTest, LargeModelFullCoverage) {
@@ -434,6 +503,8 @@ TEST(GeneratorConstraintIntegrityTest, FullyUnsatisfiableParameterEmitsNoViolati
 
   EXPECT_EQ(CountPositiveViolations(result, opts), 0u);
   EXPECT_TRUE(result.tests.empty());
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_EQ(result.error.message, "Constraints are unsatisfiable");
 }
 
 // ---------------------------------------------------------------------------
@@ -469,6 +540,47 @@ TEST(GeneratorErrorSignalTest, SuccessfulGenerationLeavesErrorOk) {
 
   EXPECT_TRUE(result.error.ok());
   EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+}
+
+TEST(GeneratorSemanticValidationTest, RejectsMetadataLengthMismatch) {
+  GenerateOptions opts;
+  Parameter param{"A", {"0", "1"}, {}};
+  param.set_invalid({false});
+  opts.parameters = {param, {"B", {"0", "1"}, {}}};
+  auto result = Generate(opts);
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
+}
+
+TEST(GeneratorSemanticValidationTest, RejectsDuplicateSubModelParameter) {
+  GenerateOptions opts;
+  opts.parameters = {{"A", {"0", "1"}, {}}, {"B", {"0", "1"}, {}}};
+  opts.sub_models = {{{"A", "A"}, 2}};
+  auto result = Generate(opts);
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
+}
+
+TEST(GeneratorSemanticValidationTest, RejectsSeedOutsideUint32Domain) {
+  GenerateOptions opts;
+  opts.parameters = {{"A", {"0", "1"}, {}}, {"B", {"0", "1"}, {}}};
+  opts.seed = static_cast<uint64_t>(UINT32_MAX) + 1;
+  auto result = Generate(opts);
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
+}
+
+TEST(GeneratorSemanticValidationTest, RejectsNonFiniteWeight) {
+  GenerateOptions opts;
+  opts.parameters = {{"A", {"0", "1"}, {}}, {"B", {"0", "1"}, {}}};
+  opts.weights.entries["A"]["0"] = std::numeric_limits<double>::infinity();
+  auto result = Generate(opts);
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
+}
+
+TEST(GeneratorSemanticValidationTest, EstimateReportsStructuredError) {
+  GenerateOptions opts;
+  opts.parameters = {{"A", {"0", "1"}, {}}};
+  opts.strength = 2;
+  auto stats = EstimateModel(opts);
+  EXPECT_EQ(stats.error.code, coverwise::model::Error::Code::kInvalidInput);
 }
 
 TEST(GeneratorErrorSignalTest, IncompleteCoverageReportsBelowOneWithoutError) {
@@ -539,6 +651,67 @@ TEST(GeneratorExtendTest, ExtendPartialImprovesCoverage) {
   EXPECT_TRUE(found) << "Existing test {0,0,0} should be preserved";
 }
 
+TEST(GeneratorExtendTest, StrictPreservesInvalidExistingPrefixAndExcludesItFromCoverage) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  opts.constraint_expressions = {"IF A=1 THEN B=1"};
+
+  std::vector<TestCase> existing = {
+      TestCase{{1, 0}},   // Constraint violation.
+      TestCase{{0}},      // Missing column.
+      TestCase{{0, 99}},  // Out-of-range value.
+  };
+  auto result = Extend(existing, opts, ExtendMode::kStrict);
+
+  ASSERT_TRUE(result.error.ok());
+  ASSERT_GE(result.tests.size(), existing.size());
+  for (size_t i = 0; i < existing.size(); ++i) {
+    EXPECT_EQ(result.tests[i].values, existing[i].values);
+  }
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_EQ(result.stats.covered_tuples, result.stats.total_tuples);
+  EXPECT_EQ(std::count_if(result.warnings.begin(), result.warnings.end(),
+                          [](const auto& warning) {
+                            return warning.find("preserved but excluded from coverage") !=
+                                   std::string::npos;
+                          }),
+            3);
+}
+
+TEST(GeneratorExtendTest, StrictKeepsAdditionalSeedsAfterExistingPrefix) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  opts.seeds = {TestCase{{1, 1}}};
+
+  auto result = Extend({TestCase{{0, 0}}}, opts, ExtendMode::kStrict);
+
+  ASSERT_TRUE(result.error.ok());
+  ASSERT_GE(result.tests.size(), 2u);
+  EXPECT_EQ(result.tests[0].values, (std::vector<uint32_t>{0, 0}));
+  EXPECT_EQ(result.tests[1].values, (std::vector<uint32_t>{1, 1}));
+}
+
+TEST(GeneratorExtendTest, RejectsMaxTestsBelowExistingCount) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  opts.max_tests = 1;
+
+  auto result = Extend({TestCase{{0, 0}}, TestCase{{1, 1}}}, opts, ExtendMode::kStrict);
+
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_NE(result.error.message.find("existing test count"), std::string::npos);
+  EXPECT_TRUE(result.tests.empty());
+}
+
 // ---------------------------------------------------------------------------
 // EstimateModel tests
 // ---------------------------------------------------------------------------
@@ -579,7 +752,7 @@ TEST(EstimateModelTest, WithSubModels) {
   opts.strength = 2;
 
   SubModel sm;
-  sm.parameter_names = {"A", "B"};
+  sm.parameter_names = {"A", "B", "C"};
   sm.strength = 3;
   opts.sub_models = {sm};
 
@@ -587,6 +760,30 @@ TEST(EstimateModelTest, WithSubModels) {
 
   EXPECT_EQ(stats.parameter_count, 3u);
   EXPECT_EQ(stats.sub_model_count, 1u);
+  // Global pairwise: 12. Three-wise sub-model: 8. Raw total: 20.
+  EXPECT_EQ(stats.total_tuples, 20u);
+
+  auto generated = Generate(opts);
+  ASSERT_TRUE(generated.error.ok());
+  EXPECT_EQ(generated.stats.total_tuples, stats.total_tuples);
+}
+
+TEST(EstimateModelTest, CombinedSubModelBudgetReturnsTupleExplosion) {
+  std::vector<std::string> values;
+  values.reserve(3000);
+  for (int i = 0; i < 3000; ++i) values.push_back(std::to_string(i));
+
+  GenerateOptions opts;
+  opts.parameters = {{"A", values}, {"B", values}};
+  opts.strength = 2;
+  opts.sub_models = {{{"A", "B"}, 2}};
+
+  auto stats = EstimateModel(opts);
+  EXPECT_EQ(stats.error.code, coverwise::model::Error::Code::kTupleExplosion);
+  EXPECT_NE(stats.error.message.find("Combined global and sub-model"), std::string::npos);
+
+  auto generated = Generate(opts);
+  EXPECT_EQ(generated.error.code, coverwise::model::Error::Code::kTupleExplosion);
 }
 
 TEST(EstimateModelTest, TotalTuplesMatchesFormula) {
@@ -634,9 +831,9 @@ TEST(GeneratorParityTest, IncompleteCoverageMaxTestsWarning) {
             result.warnings.end());
 }
 
-// Incomplete coverage caused by constraints making some tuples unreachable
-// (without a maxTests cap) must emit the canonical zero-score warning string.
-TEST(GeneratorParityTest, IncompleteCoverageUnreachableWarning) {
+// Tuples that cannot be extended to a complete satisfying assignment are not
+// part of the required coverage universe.
+TEST(GeneratorParityTest, UnreachableTupleIsExcludedFromUniverse) {
   GenerateOptions opts;
   opts.parameters = {
       {"A", {"0", "1"}, {}},
@@ -645,9 +842,7 @@ TEST(GeneratorParityTest, IncompleteCoverageUnreachableWarning) {
   };
   opts.strength = 2;
   opts.seed = 1;
-  // Each constraint spans three parameters, so it evaluates to unknown on a
-  // pairwise partial assignment and is not pre-excluded; together they make the
-  // pair (A=0, B=1) impossible to complete, leaving it permanently uncovered.
+  // The constraints interact to make (A=0, B=1) impossible to complete.
   opts.constraint_expressions = {
       "IF A=0 AND B=1 THEN C!=0",
       "IF A=0 AND B=1 THEN C!=1",
@@ -655,45 +850,45 @@ TEST(GeneratorParityTest, IncompleteCoverageUnreachableWarning) {
 
   auto result = Generate(opts);
 
-  EXPECT_LT(result.coverage, 1.0);
-  EXPECT_NE(
-      std::find(result.warnings.begin(), result.warnings.end(),
-                "Generation stopped before reaching 100% coverage after 50 consecutive zero-score "
-                "candidates"),
-      result.warnings.end());
+  EXPECT_TRUE(result.error.ok());
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(result.uncovered.empty());
+  EXPECT_TRUE(result.warnings.empty());
 }
 
-// estimateModel clamps the degenerate product (parameterCount <= strength) at
-// UINT32_MAX, matching the TS surface.
-TEST(GeneratorParityTest, EstimateDegenerateClampsToUint32Max) {
+// estimateModel rejects a degenerate product above the allocation budget.
+TEST(GeneratorParityTest, EstimateDegenerateReturnsTupleExplosion) {
   GenerateOptions opts;
+  std::vector<std::string> values;
+  for (uint32_t i = 0; i < 1000; ++i) values.push_back(std::to_string(i));
   opts.parameters = {
-      {"A", std::vector<std::string>(1000, "x"), {}},
-      {"B", std::vector<std::string>(1000, "x"), {}},
-      {"C", std::vector<std::string>(1000, "x"), {}},
-      {"D", std::vector<std::string>(1000, "x"), {}},
+      {"A", values, {}},
+      {"B", values, {}},
+      {"C", values, {}},
+      {"D", values, {}},
   };
   opts.strength = 4;  // parameterCount == strength -> product path.
 
   auto stats = EstimateModel(opts);
 
-  // 1000^4 overflows 32 bits, so the estimate clamps to UINT32_MAX.
-  EXPECT_EQ(stats.estimated_tests, 4294967295u);
+  EXPECT_EQ(stats.error.code, coverwise::model::Error::Code::kTupleExplosion);
+  EXPECT_EQ(stats.estimated_tests, 0u);
 }
 
-// estimateModel on a large non-degenerate model yields the same clamped value
-// as the TS surface.
-TEST(GeneratorParityTest, EstimateLargeModelMatchesTs) {
+// estimateModel rejects a large non-degenerate model before generation.
+TEST(GeneratorParityTest, EstimateLargeModelReturnsTupleExplosion) {
   GenerateOptions opts;
+  std::vector<std::string> values;
+  for (uint32_t i = 0; i < 1000; ++i) values.push_back(std::to_string(i));
   for (int i = 0; i < 5; ++i) {
-    opts.parameters.push_back({"p" + std::to_string(i), std::vector<std::string>(1000, "x"), {}});
+    opts.parameters.push_back({"p" + std::to_string(i), values, {}});
   }
   opts.strength = 3;  // parameterCount(5) > strength(3) -> estimate path.
 
   auto stats = EstimateModel(opts);
 
-  // 1000^3 * ceil(log2(5)) = 1e9 * 3 = 3e9, below the C(5,3)*1000^3 tuple cap.
-  EXPECT_EQ(stats.estimated_tests, 3000000000u);
+  EXPECT_EQ(stats.error.code, coverwise::model::Error::Code::kTupleExplosion);
+  EXPECT_EQ(stats.estimated_tests, 0u);
 }
 
 // ---------------------------------------------------------------------------
@@ -734,28 +929,25 @@ TEST(WeightConfigTest, EmptyReturnsTrueWhenNoEntries) {
 // Generator edge cases
 // ---------------------------------------------------------------------------
 
-// Edge: empty parameters → coverage 1.0, 0 tests
-TEST(GeneratorEdgeCaseTest, EmptyParameters) {
+TEST(GeneratorEdgeCaseTest, EmptyParametersAreInvalid) {
   GenerateOptions opts;
   opts.strength = 2;
   auto result = Generate(opts);
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
   EXPECT_TRUE(result.tests.empty());
   EXPECT_EQ(result.stats.total_tuples, 0u);
 }
 
-// Edge: single parameter → no pairs, coverage 1.0
-TEST(GeneratorEdgeCaseTest, SingleParameter) {
+TEST(GeneratorEdgeCaseTest, StrengthAboveSingleParameterIsInvalid) {
   GenerateOptions opts;
   opts.parameters = {{"os", {"win", "mac", "linux"}, {}}};
   opts.strength = 2;
   auto result = Generate(opts);
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
   EXPECT_EQ(result.stats.total_tuples, 0u);
 }
 
-// Edge: strength = 0 → vacuous coverage, 0 tests
-TEST(GeneratorEdgeCaseTest, StrengthZero) {
+TEST(GeneratorEdgeCaseTest, StrengthZeroIsInvalid) {
   GenerateOptions opts;
   opts.parameters = {
       {"a", {"1", "2", "3"}, {}},
@@ -765,18 +957,17 @@ TEST(GeneratorEdgeCaseTest, StrengthZero) {
   opts.strength = 0;
   opts.seed = 42;
   auto result = Generate(opts);
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
   EXPECT_TRUE(result.tests.empty());
   EXPECT_EQ(result.stats.total_tuples, 0u);
 }
 
-// Edge: strength > param count → coverage 1.0
-TEST(GeneratorEdgeCaseTest, StrengthExceedsParamCount) {
+TEST(GeneratorEdgeCaseTest, StrengthExceedsParamCountIsInvalid) {
   GenerateOptions opts;
   opts.parameters = {{"a", {"1", "2"}, {}}, {"b", {"1", "2"}, {}}};
   opts.strength = 5;
   auto result = Generate(opts);
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
   EXPECT_TRUE(result.tests.empty());
 }
 
@@ -806,6 +997,8 @@ TEST(GeneratorEdgeCaseTest, MaxTestsOne) {
   EXPECT_EQ(result.tests.size(), 1u);
   EXPECT_LT(result.coverage, 1.0);
   EXPECT_FALSE(result.uncovered.empty());
+  ASSERT_FALSE(result.suggestions.empty());
+  EXPECT_EQ(result.suggestions[0].test_case.values.size(), opts.parameters.size());
 }
 
 // Edge: seeds fill max_tests → no additional tests generated
@@ -845,6 +1038,7 @@ TEST(EstimateModelEdgeTest, ZeroParameters) {
   EXPECT_EQ(stats.parameter_count, 0u);
   EXPECT_EQ(stats.total_values, 0u);
   EXPECT_EQ(stats.total_tuples, 0u);
+  EXPECT_EQ(stats.error.code, coverwise::model::Error::Code::kInvalidInput);
 }
 
 // Edge: EstimateModel with 1 parameter
@@ -853,12 +1047,13 @@ TEST(EstimateModelEdgeTest, SingleParameter) {
   opts.parameters = {{"os", {"win", "mac", "linux"}, {}}};
   opts.strength = 2;
   auto stats = EstimateModel(opts);
-  EXPECT_EQ(stats.parameter_count, 1u);
-  EXPECT_EQ(stats.total_tuples, 0u);  // C(1,2) = 0
+  EXPECT_EQ(stats.parameter_count, 0u);
+  EXPECT_EQ(stats.total_tuples, 0u);
+  EXPECT_EQ(stats.error.code, coverwise::model::Error::Code::kInvalidInput);
 }
 
-// Edge: EstimateModel large values don't overflow
-TEST(EstimateModelEdgeTest, LargeValuesNoOverflow) {
+// Edge: EstimateModel rejects a raw tuple upper bound above the safe budget.
+TEST(EstimateModelEdgeTest, LargeValuesReturnTupleExplosion) {
   GenerateOptions opts;
   // 10 params × 100 values at strength 3 → 100^3 = 1M, should not overflow
   for (int i = 0; i < 10; i++) {
@@ -868,7 +1063,6 @@ TEST(EstimateModelEdgeTest, LargeValuesNoOverflow) {
   }
   opts.strength = 3;
   auto stats = EstimateModel(opts);
-  EXPECT_GT(stats.estimated_tests, 0u);
-  // Should not have wrapped around to a small number
-  EXPECT_GE(stats.estimated_tests, 1000u);
+  EXPECT_EQ(stats.error.code, coverwise::model::Error::Code::kTupleExplosion);
+  EXPECT_EQ(stats.estimated_tests, 0u);
 }

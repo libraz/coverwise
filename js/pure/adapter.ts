@@ -154,6 +154,7 @@ export function toInternalParams(params: PublicParameter[]): InternalParameter[]
 export function toInternalTestCase(
   tc: PublicTestCase,
   params: InternalParameter[],
+  allowUnknown = false,
 ): InternalTestCase {
   const values: number[] = new Array(params.length).fill(UNASSIGNED);
   for (let i = 0; i < params.length; ++i) {
@@ -162,7 +163,13 @@ export function toInternalTestCase(
       const valStr = valueToString(tc[paramName]);
       const idx = params[i].findValueIndex(valStr);
       if (idx === UNASSIGNED) {
-        throw new Error(`Unknown value '${valStr}' for parameter '${paramName}'`);
+        if (allowUnknown) {
+          continue;
+        }
+        throw new CoverwiseError(
+          'INVALID_INPUT',
+          `Unknown value '${valStr}' for parameter '${paramName}'`,
+        );
       }
       values[i] = idx;
     }
@@ -235,30 +242,55 @@ export function toInternalOptions(
  * CLI's canonical shape so every surface expands the same value set.
  */
 function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
-  if (typeof p.type !== 'string') {
+  if (p.type === undefined) {
     return null;
+  }
+  if (p.type !== 'integer' && p.type !== 'float') {
+    throw new CoverwiseError('INVALID_INPUT', `Invalid boundary type for parameter '${p.name}'`);
   }
   const range = p.range;
   if (
     !Array.isArray(range) ||
     range.length !== 2 ||
     typeof range[0] !== 'number' ||
-    typeof range[1] !== 'number'
+    typeof range[1] !== 'number' ||
+    !Number.isFinite(range[0]) ||
+    !Number.isFinite(range[1]) ||
+    range[0] > range[1]
   ) {
-    return null;
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      `Boundary range must be a finite ordered [min, max] pair for parameter '${p.name}'`,
+    );
   }
   if (p.type === 'integer') {
+    if (
+      !Number.isSafeInteger(range[0]) ||
+      !Number.isSafeInteger(range[1]) ||
+      range[0] <= Number.MIN_SAFE_INTEGER ||
+      range[1] >= Number.MAX_SAFE_INTEGER
+    ) {
+      throw new CoverwiseError(
+        'INVALID_INPUT',
+        `Integer boundary endpoints must be safe integers allowing +/-1 for '${p.name}'`,
+      );
+    }
     return { type: BoundaryType.Integer, minValue: range[0], maxValue: range[1], step: 1.0 };
   }
-  if (p.type === 'float') {
-    return {
-      type: BoundaryType.Float,
-      minValue: range[0],
-      maxValue: range[1],
-      step: typeof p.step === 'number' ? p.step : 1.0,
-    };
+  const step = p.step ?? 1.0;
+  if (typeof step !== 'number' || !Number.isFinite(step) || step <= 0) {
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      `Boundary step must be finite and positive for parameter '${p.name}'`,
+    );
   }
-  return null;
+  if (!Number.isFinite(range[0] - step) || !Number.isFinite(range[1] + step)) {
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      `Boundary expansion must produce finite values for parameter '${p.name}'`,
+    );
+  }
+  return { type: BoundaryType.Float, minValue: range[0], maxValue: range[1], step };
 }
 
 /**
@@ -271,9 +303,9 @@ export function toPublicTestCase(
   params: InternalParameter[],
   rotation: number,
 ): PublicTestCase {
-  const result: PublicTestCase = {};
+  const result = Object.create(null) as PublicTestCase;
   for (let i = 0; i < params.length && i < tc.values.length; ++i) {
-    if (tc.values[i] !== UNASSIGNED) {
+    if (tc.values[i] !== UNASSIGNED && tc.values[i] >= 0 && tc.values[i] < params[i].size) {
       result[params[i].name] = params[i].displayName(tc.values[i], rotation);
     }
   }
@@ -314,6 +346,8 @@ export function toPublicResult(
     negativeTests,
     coverage: result.coverage,
     uncovered,
+    uncoveredCount: result.uncoveredCount,
+    omittedUncovered: result.omittedUncovered,
     stats: {
       totalTuples: result.stats.totalTuples,
       coveredTuples: result.stats.coveredTuples,
@@ -344,6 +378,9 @@ export function toPublicCoverageReport(report: InternalCoverageReport): PublicCo
     coveredTuples: report.coveredTuples,
     coverageRatio: report.coverageRatio,
     uncovered: report.uncovered.map(toPublicUncoveredTuple),
+    uncoveredCount: report.uncoveredCount,
+    omittedUncovered: report.omittedUncovered,
+    invalidTests: report.invalidTests,
   };
 }
 

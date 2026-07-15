@@ -8,10 +8,14 @@
 #include <vector>
 
 #include "algo/greedy.h"
+#include "core/constraint_solver.h"
 #include "core/coverage_engine.h"
 #include "model/constraint_ast.h"
 #include "model/constraint_parser.h"
+#include "model/options_validation.h"
 #include "util/rng.h"
+#include "util/string_util.h"
+#include "validator/coverage_validator.h"
 
 namespace coverwise {
 namespace core {
@@ -85,7 +89,7 @@ std::vector<std::vector<bool>> BuildValidOnlyMask(const std::vector<model::Param
 std::string ValidatePositiveSeed(const model::TestCase& seed,
                                  const std::vector<model::Parameter>& params,
                                  const std::vector<model::Constraint>& constraints) {
-  if (seed.values.size() < params.size()) {
+  if (seed.values.size() != params.size()) {
     return "expected " + std::to_string(params.size()) + " value(s), got " +
            std::to_string(seed.values.size());
   }
@@ -102,7 +106,7 @@ std::string ValidatePositiveSeed(const model::TestCase& seed,
   }
 
   for (const auto& constraint : constraints) {
-    if (constraint->Evaluate(seed.values) == model::ConstraintResult::kFalse) {
+    if (constraint->Evaluate(seed.values) != model::ConstraintResult::kTrue) {
       return "violates a constraint";
     }
   }
@@ -139,7 +143,8 @@ std::vector<std::vector<bool>> BuildNegativeMask(const std::vector<model::Parame
 /// coverage. Each negative test case contains exactly one invalid value.
 void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t strength,
                            const std::vector<model::Constraint>& constraints, util::Rng& rng,
-                           std::vector<model::TestCase>& negative_tests) {
+                           std::vector<model::TestCase>& negative_tests,
+                           std::vector<std::string>& warnings) {
   constexpr uint32_t kMaxRetries = 50;
 
   for (uint32_t pi = 0; pi < static_cast<uint32_t>(params.size()); ++pi) {
@@ -152,26 +157,16 @@ void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t
       if (!fresh_result.second.ok()) continue;
       auto& fresh_cov = fresh_result.first;
 
-      // Exclude constraint-invalid tuples.
-      fresh_cov.ExcludeInvalidTuples(constraints);
-
       // Build mask: pi can only be vi, others can only be valid.
       auto neg_mask = BuildNegativeMask(params, pi, vi);
+      fresh_cov.ExcludeTuplesOutsideMask(neg_mask);
+      fresh_cov.ExcludeTuplesNotContaining(pi, vi);
+      fresh_cov.ExcludeInvalidTuples(constraints, neg_mask);
 
-      // Generate test cases with this mask until coverage of relevant tuples
-      // is complete or we hit retry limit.
+      // Cover every requested-strength tuple containing the fixed invalid value.
       uint32_t retries = 0;
-      // We cannot easily check "complete for this invalid value only", so
-      // generate a bounded number of tests.
-      // Bound: at most sum of valid_count of other params (generous upper bound).
-      uint32_t max_neg_tests = 0;
-      for (uint32_t pj = 0; pj < static_cast<uint32_t>(params.size()); ++pj) {
-        if (pj != pi) max_neg_tests = std::max(max_neg_tests, params[pj].valid_count());
-      }
-      if (max_neg_tests == 0) max_neg_tests = 1;
-
-      uint32_t generated = 0;
-      while (generated < max_neg_tests) {
+      const size_t start_size = negative_tests.size();
+      while (!fresh_cov.IsComplete()) {
         auto neg_score_fn = [&fresh_cov](const model::TestCase& partial, uint32_t pi, uint32_t vi) {
           return fresh_cov.ScoreValue(partial, pi, vi);
         };
@@ -189,7 +184,21 @@ void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t
         retries = 0;
         fresh_cov.AddTestCase(tc);
         negative_tests.push_back(std::move(tc));
-        ++generated;
+      }
+
+      // If constraints removed the entire t-wise target universe, still emit
+      // one single-fault example whenever a satisfying assignment exists.
+      if (negative_tests.size() == start_size) {
+        auto neg_score_fn = [&fresh_cov](const model::TestCase& partial, uint32_t p, uint32_t v) {
+          return fresh_cov.ScoreValue(partial, p, v);
+        };
+        auto tc = algo::GreedyConstruct(params, neg_score_fn, constraints, rng, neg_mask);
+        if (tc) negative_tests.push_back(std::move(*tc));
+      }
+
+      if (!fresh_cov.IsComplete() || negative_tests.size() == start_size) {
+        warnings.push_back("Negative coverage incomplete for " + params[pi].name + "=" +
+                           params[pi].values[vi]);
       }
     }
   }
@@ -214,22 +223,60 @@ std::vector<std::vector<double>> ResolveWeights(const std::vector<model::Paramet
 /// @brief Apply boundary value expansion to parameters with boundary configs.
 void ApplyBoundaryExpansion(GenerateOptions& opts) {
   if (opts.boundary_configs.empty()) return;
+  const auto original_params = opts.parameters;
   for (auto& param : opts.parameters) {
     auto it = opts.boundary_configs.find(param.name);
     if (it != opts.boundary_configs.end()) {
       param = model::ExpandBoundaryValues(param, it->second);
     }
   }
+
+  // Test cases carry indices into the input value arrays. Boundary expansion
+  // sorts and inserts values, so remap every valid old index by value identity.
+  for (auto& test : opts.seeds) {
+    for (size_t pi = 0; pi < test.values.size() && pi < original_params.size(); ++pi) {
+      const uint32_t old_index = test.values[pi];
+      if (old_index >= original_params[pi].size()) continue;
+      const auto& old_value = original_params[pi].values[old_index];
+      uint32_t new_index = opts.parameters[pi].find_value_index(old_value);
+      if (new_index == model::kUnassigned && util::IsNumeric(old_value)) {
+        const double numeric = util::ToDouble(old_value);
+        for (uint32_t vi = 0; vi < opts.parameters[pi].size(); ++vi) {
+          const auto& candidate = opts.parameters[pi].values[vi];
+          if (util::IsNumeric(candidate) && util::ToDouble(candidate) == numeric) {
+            new_index = vi;
+            break;
+          }
+        }
+      }
+      if (new_index != model::kUnassigned) test.values[pi] = new_index;
+    }
+  }
 }
 
 }  // namespace
 
-model::GenerateResult Generate(const GenerateOptions& options) {
+model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preserved_seed_count) {
   model::GenerateResult result;
+  result.parameters = options.parameters;
+
+  result.error = model::ValidateGenerateOptions(options);
+  if (!result.error.ok()) {
+    result.warnings.push_back(result.error.message +
+                              (result.error.detail.empty() ? "" : ": " + result.error.detail));
+    return result;
+  }
 
   // Apply boundary value expansion to parameters that have boundary configs.
   GenerateOptions opts = options;
   ApplyBoundaryExpansion(opts);
+  result.parameters = opts.parameters;
+  auto expanded_param_error = model::ValidateParameters(opts.parameters);
+  if (!expanded_param_error.ok()) {
+    result.error = expanded_param_error;
+    result.warnings.push_back(result.error.message);
+    return result;
+  }
 
   bool has_invalid = model::HasInvalidValues(opts.parameters);
 
@@ -241,6 +288,7 @@ model::GenerateResult Generate(const GenerateOptions& options) {
     return result;
   }
   auto coverage = std::move(coverage_result.first);
+  uint64_t allocated_tuples = coverage.TotalTuples();
 
   // Create sub-model engines.
   std::vector<CoverageEngine> sub_engines;
@@ -264,6 +312,14 @@ model::GenerateResult Generate(const GenerateOptions& options) {
       result.error = sm_err;
       return result;
     }
+    if (eng.TotalTuples() > CoverageEngine::kMaxTuples - allocated_tuples) {
+      result.error = {model::Error::Code::kTupleExplosion,
+                      "Combined global and sub-model tuple count exceeds safe limit",
+                      "limit=" + std::to_string(CoverageEngine::kMaxTuples)};
+      result.warnings.push_back(result.error.message + ": " + result.error.detail);
+      return result;
+    }
+    allocated_tuples += eng.TotalTuples();
     sub_engines.push_back(std::move(eng));
   }
 
@@ -277,6 +333,19 @@ model::GenerateResult Generate(const GenerateOptions& options) {
       return result;
     }
     constraints.push_back(std::move(parse_result.constraint));
+  }
+
+  // Reject a contradictory model before tuple accounting or generation. This
+  // also supplies the same valid-value semantics used by tuple feasibility.
+  if (!constraints.empty()) {
+    model::TestCase witness;
+    witness.values.assign(opts.parameters.size(), model::kUnassigned);
+    if (!CompleteValidAssignment(opts.parameters, constraints, witness)) {
+      result.error = {model::Error::Code::kConstraintError, "Constraints are unsatisfiable",
+                      "No complete assignment using valid values satisfies all constraints"};
+      result.warnings.push_back(result.error.message + ": " + result.error.detail);
+      return result;
+    }
   }
 
   // Exclude tuples that are inherently invalid due to constraints.
@@ -304,7 +373,9 @@ model::GenerateResult Generate(const GenerateOptions& options) {
 
   util::Rng rng(opts.seed);
 
-  // Pre-load seed tests into all engines.
+  // Pre-load seed tests into all engines. In strict extension mode the existing
+  // prefix is retained byte-for-byte even when it no longer matches the model;
+  // invalid preserved rows are excluded from coverage accounting.
   bool dropped_for_max_tests = false;
   for (size_t si = 0; si < opts.seeds.size(); ++si) {
     const auto& seed_test = opts.seeds[si];
@@ -314,7 +385,14 @@ model::GenerateResult Generate(const GenerateOptions& options) {
     }
     auto seed_error = ValidatePositiveSeed(seed_test, opts.parameters, constraints);
     if (!seed_error.empty()) {
-      result.warnings.push_back("Seed test " + std::to_string(si) + " ignored: " + seed_error);
+      if (si < preserved_seed_count) {
+        result.tests.push_back(seed_test);
+        result.warnings.push_back("Existing test " + std::to_string(si) +
+                                  " preserved but excluded from coverage: " + seed_error);
+      } else {
+        result.warnings.push_back("Seed test " + std::to_string(si - preserved_seed_count) +
+                                  " ignored: " + seed_error);
+      }
       continue;
     }
     coverage.AddTestCase(seed_test);
@@ -385,21 +463,46 @@ model::GenerateResult Generate(const GenerateOptions& options) {
 
   // Generate negative tests if any parameter has invalid values.
   if (has_invalid) {
-    GenerateNegativeTests(opts.parameters, opts.strength, constraints, rng, result.negative_tests);
+    GenerateNegativeTests(opts.parameters, opts.strength, constraints, rng, result.negative_tests,
+                          result.warnings);
   }
 
   // Collect uncovered tuples from all engines.
   if (!AllComplete(coverage, sub_engines)) {
+    result.uncovered_count = coverage.TotalTuples() - coverage.CoveredCount();
+    for (const auto& eng : sub_engines) {
+      result.uncovered_count += eng.TotalTuples() - eng.CoveredCount();
+    }
+
     auto global_uncovered = coverage.GetUncoveredTuples(opts.parameters);
     result.uncovered.insert(result.uncovered.end(), global_uncovered.begin(),
                             global_uncovered.end());
     for (const auto& eng : sub_engines) {
-      auto sub_uncovered = eng.GetUncoveredTuples(opts.parameters);
+      uint32_t remaining = result.uncovered.size() >= CoverageEngine::kMaxDiagnosticTuples
+                               ? 0
+                               : CoverageEngine::kMaxDiagnosticTuples - result.uncovered.size();
+      auto sub_uncovered = eng.GetUncoveredTuples(opts.parameters, remaining);
       result.uncovered.insert(result.uncovered.end(), sub_uncovered.begin(), sub_uncovered.end());
     }
+    result.omitted_uncovered = result.uncovered_count - result.uncovered.size();
+
+    constexpr size_t kMaxSuggestions = 100;
     for (const auto& ut : result.uncovered) {
+      if (result.suggestions.size() >= kMaxSuggestions) break;
+      model::TestCase witness;
+      witness.values.assign(opts.parameters.size(), model::kUnassigned);
+      for (const auto& entry : ut.tuple) {
+        for (uint32_t pi = 0; pi < opts.parameters.size(); ++pi) {
+          const std::string prefix = opts.parameters[pi].name + "=";
+          if (entry.rfind(prefix, 0) != 0) continue;
+          witness.values[pi] = opts.parameters[pi].find_value_index(entry.substr(prefix.size()));
+          break;
+        }
+      }
+      if (!CompleteValidAssignment(opts.parameters, constraints, witness)) continue;
       model::Suggestion suggestion;
       suggestion.description = "Add test: " + ut.ToString();
+      suggestion.test_case = std::move(witness);
       result.suggestions.push_back(std::move(suggestion));
     }
   }
@@ -422,8 +525,15 @@ model::GenerateResult Generate(const GenerateOptions& options) {
   }
   result.stats.test_count = static_cast<uint32_t>(result.tests.size());
 
+  // Class coverage belongs to the generation result itself. Annotating here
+  // uses the exact parsed constraints and effective (boundary-expanded)
+  // parameters, keeping every public wrapper on the same semantics.
+  validator::AnnotateClassCoverage(result, opts.parameters, opts.strength, constraints);
+
   return result;
 }
+
+model::GenerateResult Generate(const GenerateOptions& options) { return GenerateImpl(options, 0); }
 
 model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
                              const GenerateOptions& options, ExtendMode mode) {
@@ -434,19 +544,31 @@ model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
   // future mode cannot be silently treated as strict.
   switch (mode) {
     case ExtendMode::kStrict:
-      opts.seeds = existing;
+      if (opts.max_tests > 0 && existing.size() > static_cast<size_t>(opts.max_tests)) {
+        model::GenerateResult result;
+        result.error = {model::Error::Code::kInvalidInput,
+                        "maxTests cannot be smaller than the existing test count",
+                        "maxTests=" + std::to_string(opts.max_tests) +
+                            ", existing=" + std::to_string(existing.size())};
+        result.warnings.push_back(result.error.message + ": " + result.error.detail);
+        return result;
+      }
+      opts.seeds.insert(opts.seeds.begin(), existing.begin(), existing.end());
       break;
   }
 
-  return Generate(opts);
+  return GenerateImpl(opts, existing.size());
 }
 
 ModelStats EstimateModel(const GenerateOptions& options) {
+  ModelStats stats;
+  stats.error = model::ValidateGenerateOptions(options);
+  if (!stats.error.ok()) return stats;
+
   // Apply boundary expansion for estimation.
   GenerateOptions opts = options;
   ApplyBoundaryExpansion(opts);
 
-  ModelStats stats;
   stats.parameter_count = static_cast<uint32_t>(opts.parameters.size());
   stats.strength = opts.strength;
   stats.sub_model_count = static_cast<uint32_t>(opts.sub_models.size());
@@ -465,10 +587,33 @@ ModelStats EstimateModel(const GenerateOptions& options) {
     stats.parameters.push_back(std::move(detail));
   }
 
-  // Compute exact total tuples using CoverageEngine.
+  // Compute the raw global + sub-model tuple upper bound using the same engine
+  // definitions and combined allocation budget as generation. Constraints are
+  // intentionally not subtracted because estimation does not solve the model.
   auto [coverage, err] = CoverageEngine::Create(opts.parameters, opts.strength);
-  if (err.ok()) {
-    stats.total_tuples = coverage.TotalTuples();
+  if (!err.ok()) {
+    stats.error = err;
+    return stats;
+  }
+  stats.total_tuples = coverage.TotalTuples();
+  for (const auto& sm : opts.sub_models) {
+    auto [indices, resolve_error] = ResolveParamNames(sm.parameter_names, opts.parameters);
+    if (!resolve_error.empty()) {
+      stats.error = {model::Error::Code::kInvalidInput, resolve_error, ""};
+      return stats;
+    }
+    auto [sub_coverage, sub_error] = CoverageEngine::Create(opts.parameters, indices, sm.strength);
+    if (!sub_error.ok()) {
+      stats.error = sub_error;
+      return stats;
+    }
+    if (sub_coverage.TotalTuples() > CoverageEngine::kMaxTuples - stats.total_tuples) {
+      stats.error = {model::Error::Code::kTupleExplosion,
+                     "Combined global and sub-model tuple count exceeds safe limit",
+                     "limit=" + std::to_string(CoverageEngine::kMaxTuples)};
+      return stats;
+    }
+    stats.total_tuples += sub_coverage.TotalTuples();
   }
 
   // Estimate test count: upper bound is max_values^strength.

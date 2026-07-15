@@ -15,16 +15,21 @@ yarn add @libraz/coverwise
 ```bash
 git clone https://github.com/libraz/coverwise.git
 cd coverwise
-make build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cmake --build build --parallel
+cmake --install build --prefix ./install
 ```
 
 ### CLI
 
-ソースからビルド：
+Linux x64版は [GitHub Releases](https://github.com/libraz/coverwise/releases) から取得できます。
+npm packageにはnative CLIは含まれません。ソースからビルドする場合：
 
 ```bash
 make build
-# バイナリは build/coverwise に生成
+# バイナリは build/bin/coverwise に生成
+cmake --install build --prefix ./install
+# install/bin/coverwise にインストール
 ```
 
 ## 最初のテストスイート

@@ -177,5 +177,63 @@ describe('error shape and input validation', () => {
       };
       expect(result.coverage).toBe(1.0);
     });
+
+    const malformedNestedInputs: Array<{ label: string; input: GenerateInput }> = [
+      {
+        label: 'constraints is not a string array',
+        input: { parameters: okParams, constraints: 'A=a' as unknown as string[] },
+      },
+      {
+        label: 'seed is missing a parameter',
+        input: { parameters: okParams, seeds: [{ os: 'win' }] },
+      },
+      {
+        label: 'ParameterValue aliases is not an array',
+        input: {
+          parameters: [
+            { name: 'os', values: [{ value: 'win', aliases: 'windows' as unknown as string[] }] },
+            okParams[1],
+          ],
+        },
+      },
+      {
+        label: 'subModels has a malformed parameter list',
+        input: {
+          parameters: okParams,
+          subModels: [{ parameters: 'os' as unknown as string[], strength: 1 }],
+        },
+      },
+      {
+        label: 'weight is non-finite',
+        input: { parameters: okParams, weights: { os: { win: Number.NaN } } },
+      },
+      {
+        label: 'boundary step is non-positive',
+        input: {
+          parameters: [
+            { name: 'ratio', values: ['0.5'], type: 'float', range: [0, 1], step: 0 },
+            okParams[1],
+          ],
+        },
+      },
+    ];
+
+    for (const { label, input } of malformedNestedInputs) {
+      it(`both surfaces reject ${label} with CoverwiseError`, () => {
+        for (const surface of surfaces) {
+          const err = capture(() => surface.generate(input));
+          expect(err).toBeInstanceOf(CoverwiseError);
+          expect((err as CoverwiseError).code).toBe('INVALID_INPUT');
+        }
+      });
+    }
+
+    it('both surfaces use CoverwiseError for invalid numeric scalars', () => {
+      for (const surface of surfaces) {
+        const err = capture(() => surface.generate({ parameters: okParams, seed: -1 }));
+        expect(err).toBeInstanceOf(CoverwiseError);
+        expect((err as CoverwiseError).code).toBe('INVALID_INPUT');
+      }
+    });
   });
 });

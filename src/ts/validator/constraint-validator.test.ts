@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EqualsNode, ImpliesNode, NotEqualsNode } from '../model/constraint-ast.js';
-import type { TestCase } from '../model/test-case.js';
+import { type TestCase, UNASSIGNED } from '../model/test-case.js';
 import { validateConstraintReport, validateConstraints } from './constraint-validator.js';
 
 describe('validateConstraints', () => {
@@ -81,6 +81,13 @@ describe('validateConstraints', () => {
     expect(violations[0].description).toContain('os = mac');
     expect(violations[0].description).toContain(constraint.toString());
   });
+
+  it('reports an indeterminate partial assignment as a violation', () => {
+    const tests: TestCase[] = [{ values: [1, UNASSIGNED] }];
+    const violations = validateConstraints(tests, [macImpliesNotIe]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].testIndex).toBe(0);
+  });
 });
 
 describe('validateConstraintReport', () => {
@@ -126,6 +133,12 @@ describe('validateConstraintReport', () => {
 
     const report = validateConstraintReport(tests, [macImpliesNotIe, alsoNotIe]);
     // Should count only once per test (breaks on first violation)
+    expect(report.violations).toBe(1);
+    expect(report.violatingIndices).toEqual([0]);
+  });
+
+  it('counts an indeterminate partial assignment once', () => {
+    const report = validateConstraintReport([{ values: [1, UNASSIGNED] }], [macImpliesNotIe]);
     expect(report.violations).toBe(1);
     expect(report.violatingIndices).toEqual([0]);
   });

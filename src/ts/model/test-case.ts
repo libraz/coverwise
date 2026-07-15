@@ -1,6 +1,7 @@
 /// Test case and result representations.
 
 import { type ErrorInfo, okError } from './error.js';
+import type { Parameter } from './parameter.js';
 
 /** Sentinel value indicating an unassigned parameter (matches C++ UINT32_MAX). */
 export const UNASSIGNED = 0xffffffff;
@@ -53,6 +54,8 @@ export interface Suggestion {
  * understanding total workload.
  */
 export interface GenerateResult {
+  /** Effective parameter value space used by generation (after boundary expansion). */
+  parameters: Parameter[];
   /** Positive tests (no invalid values). */
   tests: TestCase[];
   /** Negative tests (exactly 1 invalid value each). */
@@ -60,6 +63,9 @@ export interface GenerateResult {
   /** Minimum coverage ratio across all engines. */
   coverage: number;
   uncovered: UncoveredTuple[];
+  /** Total uncovered tuples before diagnostic truncation. */
+  uncoveredCount: number;
+  omittedUncovered: number;
   stats: GenerateStats;
   suggestions: Suggestion[];
   warnings: string[];
@@ -98,10 +104,13 @@ export function createGenerateStats(): GenerateStats {
 /** Create a default GenerateResult. */
 export function createGenerateResult(): GenerateResult {
   return {
+    parameters: [],
     tests: [],
     negativeTests: [],
     coverage: 0,
     uncovered: [],
+    uncoveredCount: 0,
+    omittedUncovered: 0,
     stats: createGenerateStats(),
     suggestions: [],
     warnings: [],

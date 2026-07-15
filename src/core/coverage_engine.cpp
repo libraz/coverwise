@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <limits>
 #include <vector>
 
+#include "core/constraint_solver.h"
 #include "model/parameter.h"
 #include "util/combinatorics.h"
 
@@ -15,13 +17,63 @@ namespace core {
 namespace {
 
 /// @brief Build an error for when tuple count exceeds the safety limit.
-model::Error MakeTupleExplosionError(uint32_t total_tuples, uint32_t max_tuples) {
+model::Error MakeTupleExplosionError(uint64_t total_tuples, uint64_t max_tuples) {
   model::Error err;
   err.code = model::Error::Code::kTupleExplosion;
   err.message = "t-wise tuple count exceeds safety limit";
   err.detail = "Total tuples: " + std::to_string(total_tuples) +
                ", limit: " + std::to_string(max_tuples) + ". Reduce strength or parameter count.";
   return err;
+}
+
+model::Error PreflightModel(const std::vector<model::Parameter>& params,
+                            const std::vector<uint32_t>& subset, uint32_t strength,
+                            uint32_t& total_tuples) {
+  const uint32_t n = static_cast<uint32_t>(subset.empty() ? params.size() : subset.size());
+  if (strength == 0 || strength > n) {
+    total_tuples = 0;
+    return {};
+  }
+
+  uint64_t combination_count = 0;
+  if (!util::CheckedBinomial(n, strength, CoverageEngine::kMaxCombinations, combination_count)) {
+    model::Error err;
+    err.code = model::Error::Code::kTupleExplosion;
+    err.message = "parameter combination metadata exceeds safety limit";
+    err.detail = "Combinations exceed limit: " + std::to_string(CoverageEngine::kMaxCombinations) +
+                 ". Reduce strength or parameter count.";
+    return err;
+  }
+
+  std::vector<uint32_t> combo(strength);
+  for (uint32_t i = 0; i < strength; ++i) combo[i] = i;
+  uint64_t total = 0;
+  for (;;) {
+    uint64_t product = 1;
+    for (uint32_t local : combo) {
+      uint32_t pi = subset.empty() ? local : subset[local];
+      uint64_t radix = params[pi].size();
+      if (radix != 0 && product > CoverageEngine::kMaxTuples / radix) {
+        return MakeTupleExplosionError(CoverageEngine::kMaxTuples + 1ULL,
+                                       CoverageEngine::kMaxTuples);
+      }
+      product *= radix;
+    }
+    if (total > CoverageEngine::kMaxTuples - product) {
+      return MakeTupleExplosionError(total + product, CoverageEngine::kMaxTuples);
+    }
+    total += product;
+
+    int pos = static_cast<int>(strength) - 1;
+    while (pos >= 0 && combo[pos] == n - strength + static_cast<uint32_t>(pos)) --pos;
+    if (pos < 0) break;
+    ++combo[pos];
+    for (uint32_t i = static_cast<uint32_t>(pos) + 1; i < strength; ++i) {
+      combo[i] = combo[i - 1] + 1;
+    }
+  }
+  total_tuples = static_cast<uint32_t>(total);
+  return {};
 }
 
 }  // namespace
@@ -31,6 +83,8 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
   CoverageEngine engine;
   engine.params_ = params;
   engine.strength_ = strength;
+  auto preflight_error = PreflightModel(params, {}, strength, engine.total_tuples_);
+  if (!preflight_error.ok()) return {CoverageEngine{}, preflight_error};
   engine.InitCombinations();
   engine.total_tuples_ = engine.ComputeTotalTuples();
 
@@ -50,6 +104,8 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
   engine.params_ = all_params;
   engine.strength_ = strength;
   engine.param_subset_ = param_subset;
+  auto preflight_error = PreflightModel(all_params, param_subset, strength, engine.total_tuples_);
+  if (!preflight_error.ok()) return {CoverageEngine{}, preflight_error};
   engine.InitCombinationsFromSubset();
   engine.total_tuples_ = engine.ComputeTotalTuples();
 
@@ -209,11 +265,13 @@ uint32_t CoverageEngine::ScoreCandidate(const model::TestCase& candidate) const 
 }
 
 std::vector<model::UncoveredTuple> CoverageEngine::GetUncoveredTuples(
-    const std::vector<model::Parameter>& params) const {
+    const std::vector<model::Parameter>& params, uint32_t limit) const {
   std::vector<model::UncoveredTuple> result;
+  result.reserve(std::min(limit, TotalTuples() - CoveredCount()));
 
-  ForEachTuple([&](uint32_t /*global_index*/, const std::vector<uint32_t>& combo,
-                   const std::vector<uint32_t>& value_indices) {
+  ForEachTupleUntil([&](uint32_t /*global_index*/, const std::vector<uint32_t>& combo,
+                        const std::vector<uint32_t>& value_indices) {
+    if (result.size() >= limit) return false;
     model::UncoveredTuple ut;
     for (uint32_t j = 0; j < combo.size(); ++j) {
       uint32_t pi = combo[j];
@@ -221,12 +279,14 @@ std::vector<model::UncoveredTuple> CoverageEngine::GetUncoveredTuples(
       ut.tuple.push_back(params[pi].name + "=" + params[pi].values[value_indices[j]]);
     }
     result.push_back(std::move(ut));
+    return result.size() < limit;
   });
 
   return result;
 }
 
-void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& constraints) {
+void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& constraints,
+                                          const std::vector<std::vector<bool>>& allowed_values) {
   if (constraints.empty()) return;
 
   uint32_t num_params = static_cast<uint32_t>(params_.size());
@@ -239,17 +299,15 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
       assignment[combo[j]] = value_indices[j];
     }
 
-    // Evaluate all constraints against this partial assignment.
-    bool invalid = false;
-    for (const auto& constraint : constraints) {
-      auto eval_result = constraint->Evaluate(assignment);
-      if (eval_result == model::ConstraintResult::kFalse) {
-        invalid = true;
-        break;
-      }
-    }
+    // A tuple belongs to the coverage universe only when it can be extended to
+    // a complete assignment using valid values. Evaluating the partial tuple
+    // alone is insufficient for interacting implications.
+    model::TestCase witness{assignment};
+    bool invalid = allowed_values.empty()
+                       ? !CompleteValidAssignment(params_, constraints, witness)
+                       : !CompleteAssignment(params_, constraints, allowed_values, witness);
 
-    if (invalid) {
+    if (invalid && !covered_.Test(global_index)) {
       covered_.Set(global_index);
       ++invalid_tuples_;
     }
@@ -275,7 +333,45 @@ void CoverageEngine::ExcludeInvalidValues() {
       }
     }
 
-    if (contains_invalid) {
+    if (contains_invalid && !covered_.Test(global_index)) {
+      covered_.Set(global_index);
+      ++invalid_tuples_;
+    }
+  });
+}
+
+void CoverageEngine::ExcludeTuplesOutsideMask(
+    const std::vector<std::vector<bool>>& allowed_values) {
+  if (allowed_values.size() != params_.size()) return;
+  ForEachTuple([&](uint32_t global_index, const std::vector<uint32_t>& combo,
+                   const std::vector<uint32_t>& value_indices) {
+    bool excluded = false;
+    for (size_t j = 0; j < combo.size(); ++j) {
+      uint32_t pi = combo[j];
+      uint32_t vi = value_indices[j];
+      if (allowed_values[pi].size() != params_[pi].size() || !allowed_values[pi][vi]) {
+        excluded = true;
+        break;
+      }
+    }
+    if (excluded && !covered_.Test(global_index)) {
+      covered_.Set(global_index);
+      ++invalid_tuples_;
+    }
+  });
+}
+
+void CoverageEngine::ExcludeTuplesNotContaining(uint32_t param_index, uint32_t value_index) {
+  ForEachTuple([&](uint32_t global_index, const std::vector<uint32_t>& combo,
+                   const std::vector<uint32_t>& value_indices) {
+    bool contains = false;
+    for (size_t j = 0; j < combo.size(); ++j) {
+      if (combo[j] == param_index && value_indices[j] == value_index) {
+        contains = true;
+        break;
+      }
+    }
+    if (!contains && !covered_.Test(global_index)) {
       covered_.Set(global_index);
       ++invalid_tuples_;
     }

@@ -26,6 +26,10 @@ class CoverageEngine {
   /// @brief Maximum number of tuples before refusing to proceed.
   /// ~16M tuples ≈ 2MB bitset. Beyond this, performance degrades.
   static constexpr uint32_t kMaxTuples = 16'000'000;
+  /// Maximum materialized parameter combinations and lookup-table rows.
+  static constexpr uint32_t kMaxCombinations = 1'000'000;
+  /// Maximum number of human-readable uncovered tuples returned per result.
+  static constexpr uint32_t kMaxDiagnosticTuples = 1'000;
 
   /// @brief Initialize coverage tracking for the given parameters and strength.
   /// @param params The parameter definitions.
@@ -65,7 +69,14 @@ class CoverageEngine {
   /// constraints. If any constraint returns kFalse, the tuple is marked
   /// as covered (excluded) and does not count toward coverage goals.
   /// @param constraints Active constraints to evaluate.
-  void ExcludeInvalidTuples(const std::vector<model::Constraint>& constraints);
+  void ExcludeInvalidTuples(const std::vector<model::Constraint>& constraints,
+                            const std::vector<std::vector<bool>>& allowed_values = {});
+
+  /// Exclude tuples containing any value disallowed by the mask.
+  void ExcludeTuplesOutsideMask(const std::vector<std::vector<bool>>& allowed_values);
+
+  /// Exclude tuples that do not contain the fixed parameter/value pair.
+  void ExcludeTuplesNotContaining(uint32_t param_index, uint32_t value_index);
 
   /// @brief Exclude tuples that contain values marked as invalid in parameters.
   ///
@@ -92,7 +103,7 @@ class CoverageEngine {
   /// @param params Parameter definitions (for resolving names and values).
   /// @return Vector of uncovered tuples with human-readable representations.
   std::vector<model::UncoveredTuple> GetUncoveredTuples(
-      const std::vector<model::Parameter>& params) const;
+      const std::vector<model::Parameter>& params, uint32_t limit = kMaxDiagnosticTuples) const;
 
  private:
   CoverageEngine() = default;
@@ -156,6 +167,26 @@ class CoverageEngine {
 
         util::DecodeMixedRadix(vi, radixes, value_indices);
         fn(global_index, combo, value_indices);
+      }
+    }
+  }
+
+  template <typename Fn>
+  void ForEachTupleUntil(Fn fn) const {
+    std::vector<uint32_t> radixes(strength_);
+    std::vector<uint32_t> value_indices(strength_);
+    for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
+      const auto& combo = param_combinations_[ci];
+      uint32_t product = 1;
+      for (uint32_t j = 0; j < combo.size(); ++j) {
+        radixes[j] = params_[combo[j]].size();
+        product *= radixes[j];
+      }
+      for (uint32_t vi = 0; vi < product; ++vi) {
+        uint32_t global_index = combination_offsets_[ci] + vi;
+        if (covered_.Test(global_index)) continue;
+        util::DecodeMixedRadix(vi, radixes, value_indices);
+        if (!fn(global_index, combo, value_indices)) return;
       }
     }
   }

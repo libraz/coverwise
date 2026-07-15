@@ -1,6 +1,8 @@
 # coverwise tests
 
 include(FetchContent)
+# Test dependencies must not become part of coverwise's install component.
+set(INSTALL_GTEST OFF)
 FetchContent_Declare(
   googletest
   GIT_REPOSITORY https://github.com/google/googletest.git
@@ -13,7 +15,10 @@ include(GoogleTest)
 
 function(coverwise_add_test TEST_NAME TEST_SOURCE)
   add_executable(${TEST_NAME} ${TEST_SOURCE})
-  target_link_libraries(${TEST_NAME} PRIVATE coverwise_lib GTest::gtest_main)
+  target_compile_features(${TEST_NAME} PRIVATE cxx_std_17)
+  target_link_libraries(${TEST_NAME} PRIVATE coverwise::coverwise GTest::gtest_main)
+  coverwise_enable_warnings(${TEST_NAME})
+  coverwise_enable_sanitizers(${TEST_NAME})
   gtest_discover_tests(${TEST_NAME})
 endfunction()
 
@@ -48,9 +53,42 @@ coverwise_add_test(benchmark_test integration/benchmark_test.cpp)
 
 # CLI integration test drives the built coverwise binary via popen.
 # Requires the CLI target, which only exists for native (non-WASM) builds.
-if(BUILD_CLI AND NOT BUILD_WASM)
+if(COVERWISE_BUILD_CLI AND NOT COVERWISE_BUILD_WASM)
   coverwise_add_test(cli_test integration/cli_test.cpp)
   target_compile_definitions(cli_test
     PRIVATE COVERWISE_CLI_PATH="$<TARGET_FILE:coverwise>")
   add_dependencies(cli_test coverwise)
 endif()
+
+add_test(NAME cmake_add_subdirectory_fixture
+  COMMAND ${CMAKE_COMMAND}
+    -DMODE=add_subdirectory
+    -DCONFIG=$<CONFIG>
+    -DCOVERWISE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+    -DCOVERWISE_BINARY_DIR=${PROJECT_BINARY_DIR}
+    -DFIXTURE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/add_subdirectory
+    -DFIXTURE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/cmake-add-subdirectory
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_fixture.cmake
+)
+
+add_test(NAME cmake_find_package_fixture
+  COMMAND ${CMAKE_COMMAND}
+    -DMODE=find_package
+    -DCONFIG=$<CONFIG>
+    -DCOVERWISE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+    -DCOVERWISE_BINARY_DIR=${PROJECT_BINARY_DIR}
+    -DFIXTURE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/find_package
+    -DFIXTURE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/cmake-find-package
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_fixture.cmake
+)
+
+add_test(NAME docs_cpp_api_fixture
+  COMMAND ${CMAKE_COMMAND}
+    -DMODE=find_package
+    -DCONFIG=$<CONFIG>
+    -DCOVERWISE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+    -DCOVERWISE_BINARY_DIR=${PROJECT_BINARY_DIR}
+    -DFIXTURE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/docs_cpp_api
+    -DFIXTURE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/docs-cpp-api
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_fixture.cmake
+)

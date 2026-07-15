@@ -410,16 +410,21 @@ export class LikeNode implements ConstraintNode {
 
 /** Test whether a string matches a glob pattern (* and ?). */
 export function globMatch(pattern: string, text: string): boolean {
+  const patternCodepoints = Array.from(pattern);
+  const textCodepoints = Array.from(text);
   let pi = 0;
   let ti = 0;
   let starPi = -1;
   let starTi = 0;
 
-  while (ti < text.length) {
-    if (pi < pattern.length && (pattern[pi] === '?' || pattern[pi] === text[ti])) {
+  while (ti < textCodepoints.length) {
+    if (
+      pi < patternCodepoints.length &&
+      (patternCodepoints[pi] === '?' || patternCodepoints[pi] === textCodepoints[ti])
+    ) {
       pi++;
       ti++;
-    } else if (pi < pattern.length && pattern[pi] === '*') {
+    } else if (pi < patternCodepoints.length && patternCodepoints[pi] === '*') {
       starPi = pi;
       starTi = ti;
       pi++;
@@ -432,10 +437,10 @@ export function globMatch(pattern: string, text: string): boolean {
     }
   }
 
-  while (pi < pattern.length && pattern[pi] === '*') {
+  while (pi < patternCodepoints.length && patternCodepoints[pi] === '*') {
     pi++;
   }
-  return pi === pattern.length;
+  return pi === patternCodepoints.length;
 }
 
 /**

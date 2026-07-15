@@ -16,6 +16,11 @@ namespace util {
 /// @return Vector of sorted index vectors. Empty if k == 0 or k > n.
 std::vector<std::vector<uint32_t>> GenerateCombinations(uint32_t n, uint32_t k);
 
+/// @brief Compute C(n, k) with a caller-provided safety limit.
+/// @return true and writes the exact value when it is <= limit; false when the
+///         result exceeds the limit or 64-bit arithmetic would overflow.
+bool CheckedBinomial(uint32_t n, uint32_t k, uint64_t limit, uint64_t& result);
+
 /// @brief Decode a flat (mixed-radix) index into per-position value indices.
 /// @param flat_index The flat index to decode.
 /// @param radixes The radix (number of values) for each position, in order.

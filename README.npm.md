@@ -103,7 +103,11 @@ Function-based API (`init()` + `generate()`, `analyzeCoverage()`, ...) is also a
 - **Boundary values** — Auto-expand integer/float ranges
 - **Equivalence classes** — Class-level coverage tracking
 - **Seed tests** — Build on existing tests incrementally
-- **Deterministic** — Same input + seed = same output
+- **Deterministic** — Same valid input + seed = identical output across native C++, WASM, and Pure TS ([parity tests](https://github.com/libraz/coverwise/blob/main/js/compat.test.ts))
+
+For valid, satisfiable models within the resource budget, generation without a restrictive
+`maxTests` limit targets 100% coverage. Constraint-unreachable tuples are excluded from the
+required universe, and coverage is checked by an independent validator.
 
 ## Requirements
 

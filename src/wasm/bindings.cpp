@@ -21,6 +21,7 @@
 #include "model/boundary.h"
 #include "model/constraint_parser.h"
 #include "model/error.h"
+#include "model/options_validation.h"
 #include "model/parameter.h"
 #include "validator/coverage_validator.h"
 
@@ -177,6 +178,14 @@ coverwise::model::Parameter ParseParameter(val js_param) {
   // describes the value space used for both generation and rendering.
   auto boundary = ParseBoundaryConfigForParam(js_param);
   if (boundary) {
+    coverwise::model::GenerateOptions validation;
+    validation.parameters = {param};
+    validation.strength = 1;
+    validation.boundary_configs[param.name] = *boundary;
+    auto boundary_error = coverwise::model::ValidateGenerateOptions(validation);
+    if (!boundary_error.ok()) {
+      throw std::runtime_error(boundary_error.message);
+    }
     param = coverwise::model::ExpandBoundaryValues(param, *boundary);
   }
   return param;
@@ -254,7 +263,8 @@ std::vector<coverwise::model::Parameter> ParseParameters(val js_params) {
 /// The JS test case is a map of param_name -> value_string. We resolve each
 /// value to its index using find_value_index.
 coverwise::model::TestCase ParseTestCase(val js_test,
-                                         const std::vector<coverwise::model::Parameter>& params) {
+                                         const std::vector<coverwise::model::Parameter>& params,
+                                         bool allow_unknown = false) {
   coverwise::model::TestCase tc;
   tc.values.resize(params.size(), coverwise::model::kUnassigned);
 
@@ -272,6 +282,7 @@ coverwise::model::TestCase ParseTestCase(val js_test,
         std::string val_str = JsValueToString(js_test[key]);
         uint32_t idx = params[i].find_value_index(val_str);
         if (idx == UINT32_MAX) {
+          if (allow_unknown) break;
           throw std::runtime_error("Unknown value '" + val_str + "' for parameter '" +
                                    params[i].name + "'");
         }
@@ -285,7 +296,8 @@ coverwise::model::TestCase ParseTestCase(val js_test,
 
 /// @brief Parse a JS array of test case objects into C++ TestCase vector.
 std::vector<coverwise::model::TestCase> ParseTestCases(
-    val js_tests, const std::vector<coverwise::model::Parameter>& params) {
+    val js_tests, const std::vector<coverwise::model::Parameter>& params,
+    bool allow_unknown = false) {
   if (!val::global("Array").call<bool>("isArray", js_tests)) {
     throw std::runtime_error("Invalid tests: must be an array.");
   }
@@ -293,7 +305,7 @@ std::vector<coverwise::model::TestCase> ParseTestCases(
   uint32_t count = js_tests["length"].as<uint32_t>();
   tests.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
-    tests.push_back(ParseTestCase(js_tests[i], params));
+    tests.push_back(ParseTestCase(js_tests[i], params, allow_unknown));
   }
   return tests;
 }
@@ -419,9 +431,9 @@ coverwise::model::GenerateOptions ParseGenerateOptions(val input) {
 /// Uses display_name() for alias rotation.
 val TestCaseToJS(const coverwise::model::TestCase& tc,
                  const std::vector<coverwise::model::Parameter>& params, uint32_t rotation) {
-  val obj = val::object();
+  val obj = val::global("Object").call<val>("create", val::null());
   for (uint32_t i = 0; i < params.size() && i < tc.values.size(); ++i) {
-    if (tc.values[i] != coverwise::model::kUnassigned) {
+    if (tc.values[i] != coverwise::model::kUnassigned && tc.values[i] < params[i].size()) {
       obj.set(params[i].name, params[i].display_name(tc.values[i], rotation));
     }
   }
@@ -483,11 +495,13 @@ val GenerateResultToJS(const coverwise::model::GenerateResult& result,
 
   // uncovered
   obj.set("uncovered", UncoveredToJS(result.uncovered));
+  obj.set("uncoveredCount", static_cast<double>(result.uncovered_count));
+  obj.set("omittedUncovered", static_cast<double>(result.omitted_uncovered));
 
   // stats
   val stats = val::object();
-  stats.set("totalTuples", result.stats.total_tuples);
-  stats.set("coveredTuples", result.stats.covered_tuples);
+  stats.set("totalTuples", static_cast<double>(result.stats.total_tuples));
+  stats.set("coveredTuples", static_cast<double>(result.stats.covered_tuples));
   stats.set("testCount", result.stats.test_count);
   obj.set("stats", stats);
 
@@ -511,8 +525,8 @@ val GenerateResultToJS(const coverwise::model::GenerateResult& result,
   // classCoverage (if available)
   if (result.class_coverage) {
     val cc = val::object();
-    cc.set("totalClassTuples", result.class_coverage->total_class_tuples);
-    cc.set("coveredClassTuples", result.class_coverage->covered_class_tuples);
+    cc.set("totalClassTuples", static_cast<double>(result.class_coverage->total_class_tuples));
+    cc.set("coveredClassTuples", static_cast<double>(result.class_coverage->covered_class_tuples));
     cc.set("classCoverageRatio", result.class_coverage->class_coverage_ratio);
     obj.set("classCoverage", cc);
   }
@@ -523,10 +537,20 @@ val GenerateResultToJS(const coverwise::model::GenerateResult& result,
 /// @brief Convert a CoverageReport to a JS object.
 val CoverageReportToJS(const coverwise::validator::CoverageReport& report) {
   val obj = val::object();
-  obj.set("totalTuples", report.total_tuples);
-  obj.set("coveredTuples", report.covered_tuples);
+  obj.set("totalTuples", static_cast<double>(report.total_tuples));
+  obj.set("coveredTuples", static_cast<double>(report.covered_tuples));
   obj.set("coverageRatio", report.coverage_ratio);
   obj.set("uncovered", UncoveredToJS(report.uncovered));
+  obj.set("uncoveredCount", static_cast<double>(report.uncovered_count));
+  obj.set("omittedUncovered", static_cast<double>(report.omitted_uncovered));
+  val invalid_tests = val::array();
+  for (const auto& invalid : report.invalid_tests) {
+    val item = val::object();
+    item.set("testIndex", invalid.test_index);
+    item.set("reason", invalid.reason);
+    invalid_tests.call<void>("push", item);
+  }
+  obj.set("invalidTests", invalid_tests);
   return obj;
 }
 
@@ -536,7 +560,7 @@ val ModelStatsToJS(const coverwise::model::ModelStats& stats) {
   obj.set("parameterCount", stats.parameter_count);
   obj.set("totalValues", stats.total_values);
   obj.set("strength", stats.strength);
-  obj.set("totalTuples", stats.total_tuples);
+  obj.set("totalTuples", static_cast<double>(stats.total_tuples));
   obj.set("estimatedTests", stats.estimated_tests);
   obj.set("subModelCount", stats.sub_model_count);
   obj.set("constraintCount", stats.constraint_count);
@@ -597,10 +621,8 @@ val wasmGenerate(val input) {
       return MakeError(result.error);
     }
 
-    // Annotate equivalence class coverage if any parameter has classes defined.
-    coverwise::validator::AnnotateClassCoverage(result, opts.parameters, opts.strength);
-
-    return GenerateResultToJS(result, opts.parameters, opts.strength);
+    const auto& effective_params = result.parameters.empty() ? opts.parameters : result.parameters;
+    return GenerateResultToJS(result, effective_params, opts.strength);
   } catch (const std::exception& e) {
     return MakeError(e.what());
   }
@@ -635,6 +657,9 @@ val wasmAnalyzeCoverage(val js_params, val js_tests, val js_strength, val js_con
     }
 
     auto report = coverwise::validator::ValidateCoverage(params, tests, strength, constraints);
+    if (!report.error.ok()) {
+      return MakeError(report.error);
+    }
     return CoverageReportToJS(report);
   } catch (const std::exception& e) {
     return MakeError(e.what());
@@ -649,12 +674,13 @@ val wasmAnalyzeCoverage(val js_params, val js_tests, val js_strength, val js_con
 val wasmExtendTests(val js_existing, val input) {
   try {
     auto opts = ParseGenerateOptions(input);
-    auto existing = ParseTestCases(js_existing, opts.parameters);
+    auto existing = ParseTestCases(js_existing, opts.parameters, true);
     auto result = coverwise::core::Extend(existing, opts);
     if (!result.error.ok()) {
       return MakeError(result.error);
     }
-    return GenerateResultToJS(result, opts.parameters, opts.strength);
+    const auto& effective_params = result.parameters.empty() ? opts.parameters : result.parameters;
+    return GenerateResultToJS(result, effective_params, opts.strength);
   } catch (const std::exception& e) {
     return MakeError(e.what());
   }
@@ -669,6 +695,9 @@ val wasmEstimateModel(val input) {
   try {
     auto opts = ParseGenerateOptions(input);
     auto stats = coverwise::core::EstimateModel(opts);
+    if (!stats.error.ok()) {
+      return MakeError(stats.error);
+    }
     return ModelStatsToJS(stats);
   } catch (const std::exception& e) {
     return MakeError(e.what());

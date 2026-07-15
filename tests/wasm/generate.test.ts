@@ -125,9 +125,8 @@ describe('coverwise WASM', () => {
     });
 
     it('rejects a non-positive sub-model strength at the binding boundary', () => {
-      // The JS wrapper does not pre-validate subModels[].strength, so this
-      // exercises the WASM binding's own validation (ParseSubModels). A zero
-      // strength would otherwise be silently truncated into a no-op sub-model.
+      // The shared runtime boundary rejects malformed sub-model strengths before
+      // they can be truncated into a no-op by any engine.
       const base = {
         parameters: [
           { name: 'A', values: ['1', '2', '3'] },
@@ -138,10 +137,10 @@ describe('coverwise WASM', () => {
       };
       expect(() =>
         generate({ ...base, subModels: [{ parameters: ['A', 'B'], strength: 0 }] }),
-      ).toThrow(/Invalid subModel strength/);
+      ).toThrow(/Invalid subModels\[0\]/);
       expect(() =>
         generate({ ...base, subModels: [{ parameters: ['A', 'B'], strength: 2.5 }] }),
-      ).toThrow(/Invalid subModel strength/);
+      ).toThrow(/Invalid subModels\[0\]/);
     });
 
     it('generates negative tests for invalid values', () => {

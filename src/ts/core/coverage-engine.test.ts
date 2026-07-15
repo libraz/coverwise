@@ -89,6 +89,13 @@ describe('CoverageEngine', () => {
       // C(8,2) = 28, each 100*100 = 10000 -> 280000.
       expect(result.engine.totalTuples).toBe(280000);
     });
+
+    it('rejects combination metadata before materializing it', () => {
+      const params = Array.from({ length: 200 }, (_, i) => new Parameter(`P${i}`, ['only']));
+      const result = CoverageEngine.create(params, 3);
+      expect(result.error.code).toBe(ErrorCode.TupleExplosion);
+      expect(result.error.message).toBe('parameter combination metadata exceeds safety limit');
+    });
   });
 
   describe('addTestCase()', () => {

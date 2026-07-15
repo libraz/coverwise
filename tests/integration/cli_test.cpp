@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 // Path to the built coverwise CLI binary, injected by CMake.
 #ifndef COVERWISE_CLI_PATH
@@ -91,6 +92,148 @@ TEST(CliReadFileTest, MissingVsEmptyFileDistinctDiagnostics) {
   EXPECT_EQ(empty.exit_code, 3) << empty.stdout_text;
   EXPECT_NE(empty.stdout_text.find("is empty"), std::string::npos) << empty.stdout_text;
   EXPECT_EQ(empty.stdout_text.find("cannot open file"), std::string::npos) << empty.stdout_text;
+}
+
+TEST(CliJsonTest, RejectsTrailingGarbageMalformedNumbersEscapesAndSurrogates) {
+  const std::vector<std::string> malformed = {
+      R"({"parameters":[{"name":"a","values":["0"]},{"name":"b","values":["0"]}]}) trailing)",
+      R"({"parameters":[{"name":"a","values":[0e]},{"name":"b","values":["0"]}]})",
+      R"({"parameters":[{"name":"a","values":[01]},{"name":"b","values":["0"]}]})",
+      R"({"parameters":[{"name":"a","values":["bad\q"]},{"name":"b","values":["0"]}]})",
+      R"({"parameters":[{"name":"a","values":["\uDC00"]},{"name":"b","values":["0"]}]})",
+      R"({"parameters":[{"name":"a","values":[1e9999]},{"name":"b","values":["0"]}]})",
+  };
+
+  for (size_t i = 0; i < malformed.size(); ++i) {
+    const std::string path = TempPath("malformed_" + std::to_string(i) + ".json");
+    WriteFile(path, malformed[i]);
+    auto result = RunCliCaptureStderr("generate " + path);
+    EXPECT_EQ(result.exit_code, 3) << "case " << i << ": " << result.stdout_text;
+    EXPECT_NE(result.stdout_text.find("error:"), std::string::npos) << result.stdout_text;
+  }
+}
+
+TEST(CliJsonTest, WriterEscapesEveryC0ControlCharacter) {
+  const std::string input = R"({
+    "parameters": [
+      {"name": "a", "values": ["x\b\f\u0001"]},
+      {"name": "b", "values": ["0"]}
+    ]
+  })";
+  const std::string path = TempPath("controls.json");
+  WriteFile(path, input);
+
+  auto result = RunCli("generate " + path);
+
+  ASSERT_EQ(result.exit_code, 0) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find("x\\b\\f\\u0001"), std::string::npos) << result.stdout_text;
+  for (unsigned char c : result.stdout_text) {
+    EXPECT_FALSE(c <= 0x1F && c != '\n' && c != '\r' && c != '\t')
+        << "unescaped control byte " << static_cast<int>(c);
+  }
+}
+
+TEST(CliGenerateTest, RejectsWrongTypeAndOutOfRangeScalars) {
+  const std::vector<std::string> fields = {
+      R"("strength":"2")",    R"("strength":1.5)", R"("seed":-1)",
+      R"("seed":4294967296)", R"("maxTests":-1)",  R"("maxTests":2.5)",
+  };
+  for (size_t i = 0; i < fields.size(); ++i) {
+    const std::string input =
+        R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}],)" +
+        fields[i] + "}";
+    const std::string path = TempPath("scalar_" + std::to_string(i) + ".json");
+    WriteFile(path, input);
+    auto result = RunCliCaptureStderr("generate " + path);
+    EXPECT_EQ(result.exit_code, 3) << "case " << i << ": " << result.stdout_text;
+  }
+}
+
+TEST(CliGenerateTest, RejectsMalformedParameterValueMetadata) {
+  const std::vector<std::string> values = {
+      R"({"value":"0","invalid":"true"})",
+      R"({"value":"0","aliases":"zero"})",
+      R"({"value":"0","aliases":[""]})",
+      R"({"value":"0","class":7})",
+  };
+  for (size_t i = 0; i < values.size(); ++i) {
+    const std::string input = R"({"parameters":[{"name":"a","values":[)" + values[i] +
+                              R"(]},{"name":"b","values":["0"]}]})";
+    const std::string path = TempPath("metadata_" + std::to_string(i) + ".json");
+    WriteFile(path, input);
+    auto result = RunCliCaptureStderr("generate " + path);
+    EXPECT_EQ(result.exit_code, 3) << "case " << i << ": " << result.stdout_text;
+  }
+}
+
+TEST(CliGenerateTest, EmptyBoundaryValuesAreExpanded) {
+  const std::string input = R"({
+    "parameters": [
+      {"name": "n", "values": [], "type": "integer", "range": [0, 1]},
+      {"name": "mode", "values": ["on", "off"]}
+    ]
+  })";
+  const std::string path = TempPath("empty_boundary.json");
+  WriteFile(path, input);
+
+  auto result = RunCli("generate " + path);
+  ASSERT_EQ(result.exit_code, 0) << result.stdout_text;
+  for (const char* expected : {"\"n\":\"-1\"", "\"n\":\"0\"", "\"n\":\"1\"", "\"n\":\"2\""}) {
+    EXPECT_NE(result.stdout_text.find(expected), std::string::npos) << result.stdout_text;
+  }
+}
+
+TEST(CliArgumentTest, GenerateAndStatsRejectExtraArguments) {
+  const std::string input =
+      R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}]})";
+  const std::string path = TempPath("extra_args.json");
+  WriteFile(path, input);
+
+  EXPECT_EQ(RunCli("generate " + path + " extra").exit_code, 3);
+  EXPECT_EQ(RunCli("stats " + path + " extra").exit_code, 3);
+}
+
+TEST(CliSchemaTest, GenerateAnalyzeAndStatsUseVersionedStableFields) {
+  const std::string input = R"({
+    "parameters": [
+      {"name": "a", "values": ["0", "1"]},
+      {"name": "b", "values": ["0", "1"]}
+    ],
+    "maxTests": 1
+  })";
+  const std::string input_path = TempPath("schema_input.json");
+  WriteFile(input_path, input);
+
+  auto generated = RunCli("generate " + input_path);
+  EXPECT_EQ(generated.exit_code, 2) << generated.stdout_text;
+  for (const char* field : {"\"schemaVersion\":1", "\"tests\":", "\"negativeTests\":[]",
+                            "\"uncoveredCount\":", "\"omittedUncovered\":", "\"stats\":",
+                            "\"suggestions\":", "\"warnings\":", "\"strength\":"}) {
+    EXPECT_NE(generated.stdout_text.find(field), std::string::npos)
+        << "missing " << field << " in " << generated.stdout_text;
+  }
+  EXPECT_NE(generated.stdout_text.find("\"testCase\":"), std::string::npos)
+      << generated.stdout_text;
+  EXPECT_NE(generated.stdout_text.find("\"display\":"), std::string::npos) << generated.stdout_text;
+
+  const std::string params_path = TempPath("schema_params.json");
+  const std::string tests_path = TempPath("schema_tests.json");
+  WriteFile(params_path, R"([{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}])");
+  WriteFile(tests_path, R"([{"a":"0","b":"0"}])");
+  auto analyzed = RunCli("analyze --params " + params_path + " --tests " + tests_path);
+  EXPECT_EQ(analyzed.exit_code, 2) << analyzed.stdout_text;
+  EXPECT_NE(analyzed.stdout_text.find("\"schemaVersion\":1"), std::string::npos);
+  EXPECT_NE(analyzed.stdout_text.find("\"invalidTests\":[]"), std::string::npos);
+  EXPECT_NE(analyzed.stdout_text.find("\"display\":"), std::string::npos);
+
+  auto stats = RunCli("stats " + input_path);
+  EXPECT_EQ(stats.exit_code, 0) << stats.stdout_text;
+  EXPECT_NE(stats.stdout_text.find("\"schemaVersion\":1"), std::string::npos);
+  EXPECT_NE(stats.stdout_text.find("\"subModelCount\":"), std::string::npos);
+  EXPECT_NE(stats.stdout_text.find("\"constraintCount\":"), std::string::npos);
+  EXPECT_NE(stats.stdout_text.find("\"parameters\":"), std::string::npos);
+  EXPECT_EQ(stats.stdout_text.find("\"subModels\":"), std::string::npos);
+  EXPECT_EQ(stats.stdout_text.find("\"constraints\":"), std::string::npos);
 }
 
 // analyze with --strength 3 validates a complete 3-wise suite (exit 0).

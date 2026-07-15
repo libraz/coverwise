@@ -43,6 +43,7 @@ import type {
 } from './types.js';
 import { CoverwiseError, errorCodeFromNumber } from './types.js';
 import {
+  validateConstraints,
   validateExtendMode,
   validateGenerateInput,
   validateParameters,
@@ -117,10 +118,7 @@ function getModule(): WasmModule {
 
 // --- Input Validation ---
 
-// The WASM surface historically throws a plain `Error` for the numeric scalar
-// checks (strength/maxTests/seed); preserve that by injecting this factory into
-// the shared validators.
-const wasmScalarError = (message: string): Error => new Error(message);
+const wasmScalarError = (message: string): Error => new CoverwiseError('INVALID_INPUT', message);
 
 function validateInput(input: GenerateInput): void {
   validateGenerateInput(input, wasmScalarError);
@@ -183,6 +181,7 @@ export function analyzeCoverage(
 ): CoverageReport {
   validateParameters(parameters);
   validateTestArray(tests, 'tests');
+  validateConstraints(constraints);
   const s = validateStrength(strength, wasmScalarError);
   const mod = getModule();
   const result = checkResult<CoverageReport>(
@@ -208,6 +207,9 @@ export function extendTests(existing: TestCase[], input: ExtendInput): GenerateR
   const mod = getModule();
   const result = checkResult<GenerateResult>(mod.extendTests(existing, input));
   result.negativeTests = result.negativeTests ?? [];
+  for (let i = 0; i < existing.length; ++i) {
+    result.tests[i] = existing[i];
+  }
   return result;
 }
 

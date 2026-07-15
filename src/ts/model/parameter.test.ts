@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasInvalidValues, Parameter, UNASSIGNED } from './parameter.js';
+import { hasInvalidValues, Parameter, UNASSIGNED, validateParameters } from './parameter.js';
 
 describe('Parameter', () => {
   describe('constructor', () => {
@@ -258,5 +258,17 @@ describe('hasInvalidValues (utility function)', () => {
 
   it('returns false for empty array', () => {
     expect(hasInvalidValues([])).toBe(false);
+  });
+});
+
+describe('validateParameters', () => {
+  it('rejects alias-primary and case-only collisions', () => {
+    const aliasCollision = new Parameter('browser', ['chrome', 'safari']);
+    aliasCollision.setAliases([['safari'], []]);
+    expect(validateParameters([aliasCollision])).toContain('Ambiguous');
+
+    const caseCollision = new Parameter('os', ['OS', 'other']);
+    caseCollision.setAliases([[], ['os']]);
+    expect(validateParameters([caseCollision])).toContain('Ambiguous');
   });
 });

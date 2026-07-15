@@ -75,7 +75,8 @@ struct ModelStats {
   uint32_t parameter_count = 0;
   uint32_t total_values = 0;
   uint32_t strength = 0;
-  uint32_t total_tuples = 0;
+  /// Raw global + sub-model tuple upper bound before constraint exclusion.
+  uint64_t total_tuples = 0;
   uint32_t estimated_tests = 0;
   uint32_t sub_model_count = 0;
   uint32_t constraint_count = 0;
@@ -87,6 +88,7 @@ struct ModelStats {
     uint32_t invalid_count = 0;
   };
   std::vector<ParamDetail> parameters;
+  Error error;
 };
 
 }  // namespace model

@@ -15,16 +15,21 @@ yarn add @libraz/coverwise
 ```bash
 git clone https://github.com/libraz/coverwise.git
 cd coverwise
-make build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cmake --build build --parallel
+cmake --install build --prefix ./install
 ```
 
 ### CLI
 
-Build from source:
+Linux x64 archives are available from [GitHub Releases](https://github.com/libraz/coverwise/releases).
+The npm package does not install the native CLI. To build it from source:
 
 ```bash
 make build
-# Binary at build/coverwise
+# Binary at build/bin/coverwise
+cmake --install build --prefix ./install
+# Installed binary at install/bin/coverwise
 ```
 
 ## Your First Test Suite

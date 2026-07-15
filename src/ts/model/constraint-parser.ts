@@ -47,6 +47,11 @@ export interface ParseOptions {
 }
 
 const NOT_FOUND = 0xffffffff;
+const MAX_EXPRESSION_BYTES = 64 * 1024;
+const MAX_TOKENS = 4096;
+const MAX_AST_DEPTH = 128;
+const MAX_AST_NODES = 1024;
+const MIN_NORMAL_NUMBER = 2.2250738585072014e-308;
 
 // --- Token types ---
 
@@ -107,26 +112,31 @@ function isGlobPatternChar(c: string): boolean {
   return isIdentChar(c) || c === '*' || c === '?' || c === '.';
 }
 
-/**
- * Convert a UTF-16 code-unit offset into a string to a Unicode codepoint offset.
- *
- * Error positions are reported as codepoint offsets so that the unit matches the
- * C++ surface (which counts codepoints, not bytes). For a string made entirely of
- * Basic Multilingual Plane characters this is identical to the code-unit offset;
- * astral characters (surrogate pairs) count as a single codepoint.
- */
-function utf16OffsetToCodepoint(s: string, utf16Offset: number): number {
+function buildCodepointPositions(value: string): number[] {
+  const positions = new Array<number>(value.length + 1);
   let codepoints = 0;
-  for (let i = 0; i < utf16Offset && i < s.length; i++) {
-    const code = s.charCodeAt(i);
-    // Skip the trailing half of a surrogate pair; the leading half already
-    // accounted for the whole codepoint.
-    if (code >= 0xdc00 && code <= 0xdfff) {
-      continue;
+  for (let i = 0; i < value.length; i++) {
+    positions[i] = codepoints;
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < value.length) {
+      const next = value.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        positions[++i] = codepoints;
+      }
     }
     codepoints++;
   }
-  return codepoints;
+  positions[value.length] = codepoints;
+  return positions;
+}
+
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const codepoint = character.codePointAt(0) ?? 0;
+    bytes += codepoint <= 0x7f ? 1 : codepoint <= 0x7ff ? 2 : codepoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
 }
 
 function isDigit(c: string): boolean {
@@ -136,6 +146,71 @@ function isDigit(c: string): boolean {
 
 function isSpace(c: string): boolean {
   return c === ' ' || c === '\t' || c === '\n' || c === '\r';
+}
+
+function isComparisonToken(type: TokenType): boolean {
+  return (
+    type === TokenType.Equals ||
+    type === TokenType.NotEquals ||
+    type === TokenType.Less ||
+    type === TokenType.LessEqual ||
+    type === TokenType.Greater ||
+    type === TokenType.GreaterEqual
+  );
+}
+
+function scanDecimal(value: string, start: number, allowSignOrLeadingDot: boolean): number {
+  let i = start;
+  if (allowSignOrLeadingDot && (value[i] === '+' || value[i] === '-')) {
+    i++;
+  }
+  let digits = 0;
+  while (i < value.length && isDigit(value[i])) {
+    digits++;
+    i++;
+  }
+  if (i < value.length && value[i] === '.') {
+    i++;
+    while (i < value.length && isDigit(value[i])) {
+      digits++;
+      i++;
+    }
+  }
+  if (digits === 0) {
+    return start;
+  }
+
+  if (i < value.length && (value[i] === 'e' || value[i] === 'E')) {
+    const exponentStart = i;
+    i++;
+    if (value[i] === '+' || value[i] === '-') {
+      i++;
+    }
+    const exponentDigitsStart = i;
+    while (i < value.length && isDigit(value[i])) {
+      i++;
+    }
+    if (i === exponentDigitsStart) {
+      return exponentStart;
+    }
+  }
+  return i;
+}
+
+function parseFiniteDecimal(value: string): number | null {
+  if (!isNumericString(value)) {
+    return null;
+  }
+  const parsed = Number(value);
+  const mantissa = value.split(/[eE]/, 1)[0];
+  const hasNonzeroDigit = /[1-9]/.test(mantissa);
+  if (
+    !Number.isFinite(parsed) ||
+    (hasNonzeroDigit && (parsed === 0 || Math.abs(parsed) < MIN_NORMAL_NUMBER))
+  ) {
+    return null;
+  }
+  return parsed;
 }
 
 function classifyKeyword(upper: string): TokenType {
@@ -173,6 +248,7 @@ function tokenize(expr: string): TokenizeResult {
   let i = 0;
   const len = expr.length;
   let expectPattern = false;
+  const codepointPositions = buildCodepointPositions(expr);
 
   while (i < len) {
     if (isSpace(expr[i])) {
@@ -180,9 +256,19 @@ function tokenize(expr: string): TokenizeResult {
       continue;
     }
 
-    // Token positions are reported as codepoint offsets (matching the C++ surface);
-    // i remains the UTF-16 code-unit cursor used to scan the string.
-    const start = utf16OffsetToCodepoint(expr, i);
+    if (tokens.length >= MAX_TOKENS) {
+      return {
+        tokens: [],
+        error: {
+          code: ErrorCode.ConstraintError,
+          message: `Constraint token limit exceeded (maximum ${MAX_TOKENS})`,
+          detail: 'Simplify or split the constraint expression',
+        },
+      };
+    }
+
+    // Positions were computed once while scanning, avoiding a prefix rescan per token.
+    const start = codepointPositions[i];
 
     if (expr[i] === '(') {
       tokens.push({ type: TokenType.LParen, text: '(', position: start });
@@ -251,54 +337,37 @@ function tokenize(expr: string): TokenizeResult {
       continue;
     }
 
-    // Negative number: '-' followed by digit, only at the start of the expression
-    // or immediately after a comparison operator. Note the deliberate asymmetry: a
-    // value like '-1' inside an IN set ('p IN {-1}') is preceded by '{' or ',', so
-    // it is NOT tokenized here as a Number; it falls through to the identifier
-    // scanner ('-' is an ident char) and is matched as the literal text '-1'.
-    // This is harmless because value resolution is string-based, so both paths
-    // yield the same value name. Keep this rule identical in the C++ tokenizer.
-    if (expr[i] === '-' && i + 1 < len && isDigit(expr[i + 1])) {
-      let isNegativeNum = tokens.length === 0;
-      if (!isNegativeNum && tokens.length > 0) {
-        const prev = tokens[tokens.length - 1].type;
-        isNegativeNum =
-          prev === TokenType.Equals ||
-          prev === TokenType.NotEquals ||
-          prev === TokenType.Less ||
-          prev === TokenType.LessEqual ||
-          prev === TokenType.Greater ||
-          prev === TokenType.GreaterEqual;
-      }
-      if (isNegativeNum) {
-        let j = i + 1;
-        while (j < len && (isDigit(expr[j]) || expr[j] === '.')) {
-          j++;
-        }
-        const num = expr.substring(i, j);
-        tokens.push({ type: TokenType.Number, text: num, position: start });
-        i = j;
-        expectPattern = false;
-        continue;
-      }
-    }
-
-    // Number literal
-    if (isDigit(expr[i])) {
-      let j = i;
-      while (j < len && (isDigit(expr[j]) || expr[j] === '.')) {
-        j++;
-      }
+    // Number literal. Signs and a leading dot are accepted only after an operator,
+    // preserving string values such as '-1' inside IN sets as identifiers.
+    const afterComparison = tokens.length > 0 && isComparisonToken(tokens[tokens.length - 1].type);
+    const numericStart =
+      isDigit(expr[i]) ||
+      (afterComparison &&
+        (expr[i] === '+' ||
+          expr[i] === '-' ||
+          (expr[i] === '.' && i + 1 < len && isDigit(expr[i + 1]))));
+    if (numericStart) {
+      let j = scanDecimal(expr, i, afterComparison);
       // If followed by identifier chars, it's actually an identifier (e.g., "3d")
-      if (j < len && isIdentChar(expr[j]) && expr[j] !== '-') {
+      if (j > i && j < len && isIdentChar(expr[j]) && expr[i] !== '+') {
+        j = i;
         while (j < len && isIdentChar(expr[j])) {
           j++;
         }
         const word = expr.substring(i, j);
         tokens.push({ type: TokenType.Identifier, text: word, position: start });
-      } else {
+      } else if (j > i) {
         const num = expr.substring(i, j);
         tokens.push({ type: TokenType.Number, text: num, position: start });
+      } else {
+        return {
+          tokens: [],
+          error: {
+            code: ErrorCode.ConstraintError,
+            message: `Invalid decimal literal at position ${start}`,
+            detail: 'Expected a finite decimal number',
+          },
+        };
       }
       i = j;
       expectPattern = false;
@@ -395,7 +464,46 @@ function tokenize(expr: string): TokenizeResult {
     };
   }
 
-  tokens.push({ type: TokenType.End, text: '', position: utf16OffsetToCodepoint(expr, len) });
+  let parenDepth = 0;
+  let recursiveSyntax = 0;
+  for (const token of tokens) {
+    if (token.type === TokenType.LParen) {
+      parenDepth++;
+      if (parenDepth > MAX_AST_DEPTH) {
+        return {
+          tokens: [],
+          error: {
+            code: ErrorCode.ConstraintError,
+            message: `Constraint nesting depth limit exceeded (maximum ${MAX_AST_DEPTH})`,
+            detail: 'Simplify or split the constraint expression',
+          },
+        };
+      }
+    } else if (token.type === TokenType.RParen && parenDepth > 0) {
+      parenDepth--;
+    }
+    if (
+      token.type === TokenType.Not ||
+      token.type === TokenType.Implies ||
+      token.type === TokenType.If ||
+      token.type === TokenType.LParen
+    ) {
+      recursiveSyntax++;
+      const addsAstNode = token.type !== TokenType.LParen;
+      if (recursiveSyntax > MAX_AST_DEPTH || (addsAstNode && recursiveSyntax >= MAX_AST_DEPTH)) {
+        return {
+          tokens: [],
+          error: {
+            code: ErrorCode.ConstraintError,
+            message: `Constraint AST depth limit exceeded (maximum ${MAX_AST_DEPTH})`,
+            detail: 'Simplify or split the constraint expression',
+          },
+        };
+      }
+    }
+  }
+
+  tokens.push({ type: TokenType.End, text: '', position: codepointPositions[len] });
   return { tokens, error: okError() };
 }
 
@@ -518,6 +626,7 @@ function isValueOfParam(
 
 class Parser {
   private pos: number;
+  private nodeCount = 0;
 
   constructor(
     private readonly tokens: Token[],
@@ -565,6 +674,46 @@ class Parser {
     return false;
   }
 
+  private makeNode(constraint: ConstraintNode): ParseResult {
+    this.nodeCount++;
+    if (this.nodeCount > MAX_AST_NODES) {
+      return {
+        constraint: null,
+        error: {
+          code: ErrorCode.ConstraintError,
+          message: `Constraint AST node limit exceeded (maximum ${MAX_AST_NODES})`,
+          detail: 'Simplify or split the constraint expression',
+        },
+      };
+    }
+    return { constraint, error: okError() };
+  }
+
+  private buildBalanced(
+    terms: ConstraintNode[],
+    begin: number,
+    end: number,
+    isAnd: boolean,
+  ): ParseResult {
+    if (end - begin === 1) {
+      return { constraint: terms[begin], error: okError() };
+    }
+    const middle = begin + Math.floor((end - begin) / 2);
+    const left = this.buildBalanced(terms, begin, middle, isAnd);
+    if (left.error.code !== ErrorCode.Ok || left.constraint === null) {
+      return left;
+    }
+    const right = this.buildBalanced(terms, middle, end, isAnd);
+    if (right.error.code !== ErrorCode.Ok || right.constraint === null) {
+      return right;
+    }
+    return this.makeNode(
+      isAnd
+        ? new AndNode(left.constraint, right.constraint)
+        : new OrNode(left.constraint, right.constraint),
+    );
+  }
+
   private parseExpression(): ParseResult {
     return this.parseImpliesExpr();
   }
@@ -573,7 +722,7 @@ class Parser {
     if (this.current().type === TokenType.If) {
       this.advance();
       const antecedent = this.parseOrExpr();
-      if (antecedent.error.code !== ErrorCode.Ok) {
+      if (antecedent.error.code !== ErrorCode.Ok || antecedent.constraint === null) {
         return antecedent;
       }
       if (this.current().type !== TokenType.Then) {
@@ -588,7 +737,7 @@ class Parser {
       }
       this.advance();
       const consequent = this.parseOrExpr();
-      if (consequent.error.code !== ErrorCode.Ok) {
+      if (consequent.error.code !== ErrorCode.Ok || consequent.constraint === null) {
         return consequent;
       }
 
@@ -596,94 +745,82 @@ class Parser {
       if (this.current().type === TokenType.Else) {
         this.advance();
         const elseBranch = this.parseOrExpr();
-        if (elseBranch.error.code !== ErrorCode.Ok) {
+        if (elseBranch.error.code !== ErrorCode.Ok || elseBranch.constraint === null) {
           return elseBranch;
         }
-        return {
-          constraint: new IfThenElseNode(
-            antecedent.constraint!,
-            consequent.constraint!,
-            elseBranch.constraint!,
-          ),
-          error: okError(),
-        };
+        return this.makeNode(
+          new IfThenElseNode(antecedent.constraint, consequent.constraint, elseBranch.constraint),
+        );
       }
 
-      return {
-        constraint: new ImpliesNode(antecedent.constraint!, consequent.constraint!),
-        error: okError(),
-      };
+      return this.makeNode(new ImpliesNode(antecedent.constraint, consequent.constraint));
     }
 
     const left = this.parseOrExpr();
-    if (left.error.code !== ErrorCode.Ok) {
+    if (left.error.code !== ErrorCode.Ok || left.constraint === null) {
       return left;
     }
 
     if (this.match(TokenType.Implies)) {
       const right = this.parseOrExpr();
-      if (right.error.code !== ErrorCode.Ok) {
+      if (right.error.code !== ErrorCode.Ok || right.constraint === null) {
         return right;
       }
-      return {
-        constraint: new ImpliesNode(left.constraint!, right.constraint!),
-        error: okError(),
-      };
+      return this.makeNode(new ImpliesNode(left.constraint, right.constraint));
     }
 
     return left;
   }
 
   private parseOrExpr(): ParseResult {
-    let left = this.parseAndExpr();
-    if (left.error.code !== ErrorCode.Ok) {
-      return left;
+    const first = this.parseAndExpr();
+    if (first.error.code !== ErrorCode.Ok || first.constraint === null) {
+      return first;
     }
+    const terms: ConstraintNode[] = [first.constraint];
 
     while (this.match(TokenType.Or)) {
       const right = this.parseAndExpr();
       if (right.error.code !== ErrorCode.Ok) {
         return right;
       }
-      left = {
-        constraint: new OrNode(left.constraint!, right.constraint!),
-        error: okError(),
-      };
+      if (right.constraint === null) {
+        return right;
+      }
+      terms.push(right.constraint);
     }
 
-    return left;
+    return this.buildBalanced(terms, 0, terms.length, false);
   }
 
   private parseAndExpr(): ParseResult {
-    let left = this.parseUnaryExpr();
-    if (left.error.code !== ErrorCode.Ok) {
-      return left;
+    const first = this.parseUnaryExpr();
+    if (first.error.code !== ErrorCode.Ok || first.constraint === null) {
+      return first;
     }
+    const terms: ConstraintNode[] = [first.constraint];
 
     while (this.match(TokenType.And)) {
       const right = this.parseUnaryExpr();
       if (right.error.code !== ErrorCode.Ok) {
         return right;
       }
-      left = {
-        constraint: new AndNode(left.constraint!, right.constraint!),
-        error: okError(),
-      };
+      if (right.constraint === null) {
+        return right;
+      }
+      terms.push(right.constraint);
     }
 
-    return left;
+    return this.buildBalanced(terms, 0, terms.length, true);
   }
 
   private parseUnaryExpr(): ParseResult {
     if (this.match(TokenType.Not)) {
       const child = this.parseUnaryExpr();
-      if (child.error.code !== ErrorCode.Ok) {
+      if (child.error.code !== ErrorCode.Ok || child.constraint === null) {
         return child;
       }
-      return {
-        constraint: new NotNode(child.constraint!),
-        error: okError(),
-      };
+      return this.makeNode(new NotNode(child.constraint));
     }
     return this.parseAtom();
   }
@@ -796,15 +933,9 @@ class Parser {
           return { constraint: null, error: rv.error };
         }
         if (isEquals) {
-          return {
-            constraint: new EqualsNode(leftParam, rv.valueIndex),
-            error: okError(),
-          };
+          return this.makeNode(new EqualsNode(leftParam, rv.valueIndex));
         }
-        return {
-          constraint: new NotEqualsNode(leftParam, rv.valueIndex),
-          error: okError(),
-        };
+        return this.makeNode(new NotEqualsNode(leftParam, rv.valueIndex));
       }
 
       // If it's a parameter name, do param-to-param comparison
@@ -814,25 +945,23 @@ class Parser {
           return { constraint: null, error: rp2.error };
         }
         if (isEquals) {
-          return {
-            constraint: new ParamEqualsNode(
+          return this.makeNode(
+            new ParamEqualsNode(
               leftParam,
               rp2.paramIndex,
               this.params[leftParam].values,
               this.params[rp2.paramIndex].values,
             ),
-            error: okError(),
-          };
+          );
         }
-        return {
-          constraint: new ParamNotEqualsNode(
+        return this.makeNode(
+          new ParamNotEqualsNode(
             leftParam,
             rp2.paramIndex,
             this.params[leftParam].values,
             this.params[rp2.paramIndex].values,
           ),
-          error: okError(),
-        };
+        );
       }
 
       // Neither a value nor a parameter -- error
@@ -940,10 +1069,7 @@ class Parser {
       };
     }
 
-    return {
-      constraint: new InNode(paramIdx, valueIndices),
-      error: okError(),
-    };
+    return this.makeNode(new InNode(paramIdx, valueIndices));
   }
 
   private parseLikeExpr(paramTok: Token): ParseResult {
@@ -967,10 +1093,7 @@ class Parser {
     }
     const patternTok = this.advance();
 
-    return {
-      constraint: new LikeNode(paramIdx, patternTok.text, this.params[paramIdx].values),
-      error: okError(),
-    };
+    return this.makeNode(new LikeNode(paramIdx, patternTok.text, this.params[paramIdx].values));
   }
 
   private parseRelationalRhs(paramTok: Token, opType: TokenType): ParseResult {
@@ -1007,16 +1130,20 @@ class Parser {
 
     if (this.current().type === TokenType.Number) {
       const numTok = this.advance();
-      const literal = Number.parseFloat(numTok.text);
-      return {
-        constraint: RelationalNode.fromLiteral(
-          leftParam,
-          op,
-          literal,
-          this.params[leftParam].values,
-        ),
-        error: okError(),
-      };
+      const literal = parseFiniteDecimal(numTok.text);
+      if (literal === null) {
+        return {
+          constraint: null,
+          error: {
+            code: ErrorCode.ConstraintError,
+            message: `Invalid or out-of-range decimal literal '${numTok.text}' at position ${numTok.position}`,
+            detail: 'Relational literals must be finite, representable decimal numbers',
+          },
+        };
+      }
+      return this.makeNode(
+        RelationalNode.fromLiteral(leftParam, op, literal, this.params[leftParam].values),
+      );
     }
 
     if (this.current().type === TokenType.Identifier) {
@@ -1027,29 +1154,32 @@ class Parser {
         if (rp2.error.code !== ErrorCode.Ok) {
           return { constraint: null, error: rp2.error };
         }
-        return {
-          constraint: RelationalNode.fromParams(
+        return this.makeNode(
+          RelationalNode.fromParams(
             leftParam,
             op,
             rp2.paramIndex,
             this.params[leftParam].values,
             this.params[rp2.paramIndex].values,
           ),
-          error: okError(),
-        };
+        );
       }
       // Try parsing as a number
       if (isNumericString(rhsTok.text)) {
-        const literal = Number.parseFloat(rhsTok.text);
-        return {
-          constraint: RelationalNode.fromLiteral(
-            leftParam,
-            op,
-            literal,
-            this.params[leftParam].values,
-          ),
-          error: okError(),
-        };
+        const literal = parseFiniteDecimal(rhsTok.text);
+        if (literal === null) {
+          return {
+            constraint: null,
+            error: {
+              code: ErrorCode.ConstraintError,
+              message: `Invalid or out-of-range decimal literal '${rhsTok.text}' at position ${rhsTok.position}`,
+              detail: 'Relational literals must be finite, representable decimal numbers',
+            },
+          };
+        }
+        return this.makeNode(
+          RelationalNode.fromLiteral(leftParam, op, literal, this.params[leftParam].values),
+        );
       }
       return {
         constraint: null,
@@ -1109,6 +1239,16 @@ export function parseConstraint(
         code: ErrorCode.ConstraintError,
         message: 'Empty constraint expression',
         detail: 'Provide a non-empty constraint string',
+      },
+    };
+  }
+  if (utf8ByteLength(expression) > MAX_EXPRESSION_BYTES) {
+    return {
+      constraint: null,
+      error: {
+        code: ErrorCode.ConstraintError,
+        message: `Constraint expression byte limit exceeded (maximum ${MAX_EXPRESSION_BYTES})`,
+        detail: 'Simplify or split the constraint expression',
       },
     };
   }

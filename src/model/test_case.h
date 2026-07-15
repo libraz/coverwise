@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "model/error.h"
+#include "model/parameter.h"
 
 namespace coverwise {
 namespace model {
@@ -37,15 +38,15 @@ struct UncoveredTuple {
 
 /// @brief Generation statistics for evaluation and comparison.
 struct GenerateStats {
-  uint32_t total_tuples = 0;
-  uint32_t covered_tuples = 0;
+  uint64_t total_tuples = 0;
+  uint64_t covered_tuples = 0;
   uint32_t test_count = 0;
 };
 
 /// @brief Equivalence class coverage metrics.
 struct ClassCoverage {
-  uint32_t total_class_tuples = 0;
-  uint32_t covered_class_tuples = 0;
+  uint64_t total_class_tuples = 0;
+  uint64_t covered_class_tuples = 0;
   double class_coverage_ratio = 0.0;
 };
 
@@ -64,10 +65,17 @@ struct Suggestion {
 /// from `coverage`. Use `coverage` for pass/fail decisions; use `stats` for
 /// understanding total workload.
 struct GenerateResult {
+  /// @brief Effective parameter value space used by generation.
+  ///
+  /// Boundary expansion can reorder and add values, so callers must render
+  /// TestCase indices against this vector rather than the input options.
+  std::vector<Parameter> parameters;
   std::vector<TestCase> tests;           ///< Positive tests (no invalid values)
   std::vector<TestCase> negative_tests;  ///< Negative tests (exactly 1 invalid value each)
   double coverage = 0.0;                 ///< Minimum coverage ratio across all engines
   std::vector<UncoveredTuple> uncovered;
+  uint64_t uncovered_count = 0;  ///< Total uncovered tuples before diagnostic truncation.
+  uint64_t omitted_uncovered = 0;
   GenerateStats stats;
   std::vector<Suggestion> suggestions;
   std::vector<std::string> warnings;

@@ -15,6 +15,10 @@ namespace validator {
 
 namespace {
 
+constexpr uint64_t kMaxTuples = 16'000'000;
+constexpr uint64_t kMaxCombinations = 1'000'000;
+constexpr size_t kMaxDiagnosticTuples = 1'000;
+
 /// @brief Check if a test case covers a specific value tuple for given parameter indices.
 ///
 /// @param test The test case to check.
@@ -32,6 +36,109 @@ bool TestCovers(const model::TestCase& test, const std::vector<uint32_t>& param_
   return true;
 }
 
+// Independent feasibility oracle. This intentionally does not use the core
+// solver so validator agreement cannot be caused by shared implementation.
+bool ValidatorSearch(const std::vector<model::Parameter>& params,
+                     const std::vector<model::Constraint>& constraints,
+                     std::vector<uint32_t>& assignment, uint32_t cursor) {
+  for (const auto& constraint : constraints) {
+    if (constraint->Evaluate(assignment) == model::ConstraintResult::kFalse) {
+      return false;
+    }
+  }
+  while (cursor < params.size() && assignment[cursor] != model::kUnassigned) {
+    ++cursor;
+  }
+  if (cursor == params.size()) {
+    for (const auto& constraint : constraints) {
+      if (constraint->Evaluate(assignment) != model::ConstraintResult::kTrue) {
+        return false;
+      }
+    }
+    return true;
+  }
+  for (uint32_t vi = 0; vi < params[cursor].size(); ++vi) {
+    if (params[cursor].is_invalid(vi)) continue;
+    assignment[cursor] = vi;
+    if (ValidatorSearch(params, constraints, assignment, cursor + 1)) return true;
+  }
+  assignment[cursor] = model::kUnassigned;
+  return false;
+}
+
+bool HasSatisfyingCompletion(const std::vector<model::Parameter>& params,
+                             const std::vector<model::Constraint>& constraints,
+                             const std::vector<uint32_t>& partial) {
+  auto assignment = partial;
+  return ValidatorSearch(params, constraints, assignment, 0);
+}
+
+std::string ValidatePositiveTest(const model::TestCase& test,
+                                 const std::vector<model::Parameter>& params,
+                                 const std::vector<model::Constraint>& constraints) {
+  if (test.values.size() != params.size()) {
+    return "expected " + std::to_string(params.size()) + " value(s), got " +
+           std::to_string(test.values.size());
+  }
+  for (uint32_t pi = 0; pi < params.size(); ++pi) {
+    uint32_t vi = test.values[pi];
+    if (vi >= params[pi].size()) {
+      return "value index " + std::to_string(vi) + " is out of range for parameter " +
+             params[pi].name;
+    }
+    if (params[pi].is_invalid(vi)) {
+      return "value " + params[pi].name + "=" + params[pi].values[vi] + " is marked invalid";
+    }
+  }
+  for (const auto& constraint : constraints) {
+    if (constraint->Evaluate(test.values) != model::ConstraintResult::kTrue) {
+      return "constraint evaluation is false or indeterminate";
+    }
+  }
+  return {};
+}
+
+model::Error PreflightEnumeration(const std::vector<model::Parameter>& params, uint32_t strength) {
+  const uint32_t n = static_cast<uint32_t>(params.size());
+  if (strength == 0 || strength > n) return {};
+  uint64_t combinations = 0;
+  if (!util::CheckedBinomial(n, strength, kMaxCombinations, combinations)) {
+    return {model::Error::Code::kTupleExplosion,
+            "parameter combination metadata exceeds safety limit",
+            "Combinations exceed limit: " + std::to_string(kMaxCombinations) +
+                ". Reduce strength or parameter count."};
+  }
+
+  std::vector<uint32_t> combo(strength);
+  for (uint32_t i = 0; i < strength; ++i) combo[i] = i;
+  uint64_t total = 0;
+  for (;;) {
+    uint64_t product = 1;
+    for (uint32_t pi : combo) {
+      uint64_t radix = params[pi].size();
+      if (radix != 0 && product > kMaxTuples / radix) {
+        return {model::Error::Code::kTupleExplosion, "t-wise tuple count exceeds safety limit",
+                "Total tuples exceed limit: " + std::to_string(kMaxTuples)};
+      }
+      product *= radix;
+    }
+    if (total > kMaxTuples - product) {
+      return {model::Error::Code::kTupleExplosion, "t-wise tuple count exceeds safety limit",
+              "Total tuples exceed limit: " + std::to_string(kMaxTuples)};
+    }
+    total += product;
+
+    int pos = static_cast<int>(strength) - 1;
+    while (pos >= 0 && combo[pos] == n - strength + static_cast<uint32_t>(pos)) --pos;
+    if (pos < 0) break;
+    ++combo[pos];
+    for (uint32_t i = static_cast<uint32_t>(pos) + 1; i < strength; ++i) {
+      combo[i] = combo[i - 1] + 1;
+    }
+  }
+  return {};
+}
+
 }  // namespace
 
 CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
@@ -47,11 +154,24 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
     return report;
   }
 
+  report.error = PreflightEnumeration(params, strength);
+  if (!report.error.ok()) return report;
+
   // Step 1: Generate all C(n, strength) combinations of parameter indices.
   auto combinations = util::GenerateCombinations(n, strength);
 
   // Reusable assignment buffer for constraint evaluation.
   std::vector<uint32_t> assignment(n, model::kUnassigned);
+  std::vector<const model::TestCase*> valid_tests;
+  valid_tests.reserve(tests.size());
+  for (uint32_t i = 0; i < tests.size(); ++i) {
+    auto reason = ValidatePositiveTest(tests[i], params, constraints);
+    if (reason.empty()) {
+      valid_tests.push_back(&tests[i]);
+    } else {
+      report.invalid_tests.push_back({i, std::move(reason)});
+    }
+  }
 
   for (const auto& combo : combinations) {
     // Step 2: Enumerate all value tuples (cartesian product) for this combination.
@@ -95,13 +215,7 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
         for (uint32_t j = 0; j < strength; ++j) {
           assignment[combo[j]] = value_indices[j];
         }
-        bool excluded = false;
-        for (const auto& c : constraints) {
-          if (c->Evaluate(assignment) == model::ConstraintResult::kFalse) {
-            excluded = true;
-            break;
-          }
-        }
+        bool excluded = !HasSatisfyingCompletion(params, constraints, assignment);
         // Reset assignment for reuse.
         for (uint32_t j = 0; j < strength; ++j) {
           assignment[combo[j]] = model::kUnassigned;
@@ -115,8 +229,8 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
 
       // Step 3: Check if any test case covers this value tuple.
       bool covered = false;
-      for (const auto& test : tests) {
-        if (TestCovers(test, combo, value_indices)) {
+      for (const auto* test : valid_tests) {
+        if (TestCovers(*test, combo, value_indices)) {
           covered = true;
           break;
         }
@@ -125,6 +239,8 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
       if (covered) {
         ++report.covered_tuples;
       } else {
+        ++report.uncovered_count;
+        if (report.uncovered.size() >= kMaxDiagnosticTuples) continue;
         // Build the UncoveredTuple with human-readable strings.
         model::UncoveredTuple uncovered;
         uncovered.reason = "never covered";
@@ -138,6 +254,7 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
       }
     }
   }
+  report.omitted_uncovered = report.uncovered_count - report.uncovered.size();
 
   // Compute coverage ratio. When there are no tuples, coverage is vacuously 1.0.
   if (report.total_tuples == 0) {
@@ -194,13 +311,7 @@ bool ClassTupleHasValidRepresentative(const std::vector<model::Parameter>& param
     for (uint32_t i = 0; i < k; ++i) {
       assignment[class_param_indices[i]] = candidates[i][choice[i]];
     }
-    bool violated = false;
-    for (const auto& c : constraints) {
-      if (c->Evaluate(assignment) == model::ConstraintResult::kFalse) {
-        violated = true;
-        break;
-      }
-    }
+    bool violated = !HasSatisfyingCompletion(params, constraints, assignment);
     for (uint32_t i = 0; i < k; ++i) {
       assignment[class_param_indices[i]] = model::kUnassigned;
     }
@@ -231,6 +342,9 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
     return report;
   }
 
+  report.error = PreflightEnumeration(params, strength);
+  if (!report.error.ok()) return report;
+
   // Identify parameters that have equivalence classes.
   std::vector<uint32_t> class_params;
   for (uint32_t i = 0; i < n; ++i) {
@@ -250,6 +364,11 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
 
   // Generate all C(class_n, effective_strength) combinations of class-enabled parameters.
   auto combinations = util::GenerateCombinations(class_n, effective_strength);
+  std::vector<const model::TestCase*> valid_tests;
+  valid_tests.reserve(tests.size());
+  for (const auto& test : tests) {
+    if (ValidatePositiveTest(test, params, constraints).empty()) valid_tests.push_back(&test);
+  }
 
   // For each combination, enumerate all class tuples (cartesian product of unique classes).
   // Use a set of string tuples to track covered class combinations.
@@ -299,15 +418,11 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
 
       // Check if any test case covers this class tuple.
       bool covered = false;
-      for (const auto& test : tests) {
+      for (const auto* test : valid_tests) {
         bool matches = true;
         for (uint32_t k = 0; k < effective_strength; ++k) {
           uint32_t pi = class_params[combo[k]];
-          if (pi >= static_cast<uint32_t>(test.values.size())) {
-            matches = false;
-            break;
-          }
-          uint32_t vi = test.values[pi];
+          uint32_t vi = test->values[pi];
           const std::string& test_class = params[pi].equivalence_class(vi);
           if (test_class != classes_per_param[k][class_indices[k]]) {
             matches = false;
@@ -329,6 +444,8 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
   if (report.total_class_tuples > 0) {
     report.coverage_ratio = static_cast<double>(report.covered_class_tuples) /
                             static_cast<double>(report.total_class_tuples);
+  } else {
+    report.coverage_ratio = 1.0;
   }
 
   return report;

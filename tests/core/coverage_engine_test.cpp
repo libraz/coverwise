@@ -160,6 +160,16 @@ TEST(CoverageEngineTest, TupleExplosionLimit) {
   EXPECT_EQ(err.code, coverwise::model::Error::Code::kTupleExplosion);
 }
 
+TEST(CoverageEngineTest, CombinationMetadataLimitCheckedBeforeMaterialization) {
+  std::vector<Parameter> params;
+  for (uint32_t pi = 0; pi < 200; ++pi) {
+    params.push_back({"P" + std::to_string(pi), {"only"}, {}});
+  }
+  auto [engine, err] = CoverageEngine::Create(params, 3);
+  EXPECT_EQ(err.code, coverwise::model::Error::Code::kTupleExplosion);
+  EXPECT_EQ(err.message, "parameter combination metadata exceeds safety limit");
+}
+
 TEST(CoverageEngineTest, TupleExplosionErrorMessageParity) {
   // Over-the-limit model must produce a structured kTupleExplosion error whose
   // message is identical to the TypeScript surface (see coverage-engine.test.ts:

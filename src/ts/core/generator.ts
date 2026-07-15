@@ -13,6 +13,7 @@ import {
   getWeight,
   isWeightConfigEmpty,
   type ModelStats,
+  validateGenerateOptions,
   type WeightConfig,
 } from '../model/generate-options.js';
 import { hasInvalidValues, Parameter } from '../model/parameter.js';
@@ -21,9 +22,12 @@ import {
   type GenerateResult,
   type Suggestion,
   type TestCase,
+  UNASSIGNED,
   uncoveredTupleToString,
 } from '../model/test-case.js';
 import { Rng } from '../util/rng.js';
+import { annotateClassCoverage } from '../validator/coverage-validator.js';
+import { completeValidAssignment } from './constraint-solver.js';
 import { CoverageEngine } from './coverage-engine.js';
 
 /// Resolve parameter names to sorted indices.
@@ -91,7 +95,7 @@ function validatePositiveSeed(
   params: Parameter[],
   constraints: readonly ConstraintNode[],
 ): string {
-  if (seed.values.length < params.length) {
+  if (seed.values.length !== params.length) {
     return `expected ${params.length} value(s), got ${seed.values.length}`;
   }
 
@@ -106,7 +110,7 @@ function validatePositiveSeed(
   }
 
   for (const constraint of constraints) {
-    if (constraint.evaluate(seed.values) === ConstraintResult.False) {
+    if (constraint.evaluate(seed.values) !== ConstraintResult.True) {
       return 'violates a constraint';
     }
   }
@@ -150,6 +154,7 @@ function generateNegativeTests(
   constraints: ConstraintNode[],
   rng: Rng,
   negativeTests: TestCase[],
+  warnings: string[],
 ): void {
   const kMaxRetries = 50;
 
@@ -167,28 +172,16 @@ function generateNegativeTests(
       }
       const freshCov = freshResult.engine;
 
-      // Exclude constraint-invalid tuples.
-      freshCov.excludeInvalidTuples(constraints);
-
       // Build mask: pi can only be vi, others can only be valid.
       const negMask = buildNegativeMask(params, pi, vi);
+      freshCov.excludeTuplesOutsideMask(negMask);
+      freshCov.excludeTuplesNotContaining(pi, vi);
+      freshCov.excludeInvalidTuples(constraints, negMask);
 
-      // Generate test cases with this mask until coverage of relevant tuples
-      // is complete or we hit retry limit.
+      // Cover every requested-strength tuple containing the fixed invalid value.
       let retries = 0;
-      // Bound: at most max valid_count of other params (generous upper bound).
-      let maxNegTests = 0;
-      for (let pj = 0; pj < params.length; ++pj) {
-        if (pj !== pi) {
-          maxNegTests = Math.max(maxNegTests, params[pj].validCount);
-        }
-      }
-      if (maxNegTests === 0) {
-        maxNegTests = 1;
-      }
-
-      let generated = 0;
-      while (generated < maxNegTests) {
+      const startSize = negativeTests.length;
+      while (!freshCov.isComplete) {
         const negScoreFn: ScoreFn = (partial, paramIdx, valIdx) => {
           return freshCov.scoreValue(partial, paramIdx, valIdx);
         };
@@ -209,7 +202,21 @@ function generateNegativeTests(
         retries = 0;
         freshCov.addTestCase(tc);
         negativeTests.push(tc);
-        ++generated;
+      }
+
+      if (negativeTests.length === startSize) {
+        const negScoreFn: ScoreFn = (partial, paramIdx, valIdx) =>
+          freshCov.scoreValue(partial, paramIdx, valIdx);
+        const tc = greedyConstruct(params, negScoreFn, constraints, rng, negMask);
+        if (tc !== null) {
+          negativeTests.push(tc);
+        }
+      }
+
+      if (!freshCov.isComplete || negativeTests.length === startSize) {
+        warnings.push(
+          `Negative coverage incomplete for ${params[pi].name}=${params[pi].values[vi]}`,
+        );
       }
     }
   }
@@ -239,7 +246,7 @@ function resolveWeights(params: Parameter[], config: WeightConfig): number[][] {
 /// intentionally dropped — mirroring expandBoundaryValues. Otherwise the aliases
 /// and classes carried on the options are restored on the rebuilt Parameter so
 /// constraint resolution and class coverage see them.
-function applyBoundaryExpansion(opts: GenerateOptions): Parameter[] {
+function applyBoundaryExpansion(opts: GenerateOptions): { params: Parameter[]; seeds: TestCase[] } {
   const params: Parameter[] = [];
   for (const p of opts.parameters) {
     const param = p.invalid
@@ -258,16 +265,50 @@ function applyBoundaryExpansion(opts: GenerateOptions): Parameter[] {
       params.push(param);
     }
   }
-  return params;
+  const seeds = opts.seeds.map((seed) => {
+    const values = [...seed.values];
+    for (let pi = 0; pi < values.length && pi < opts.parameters.length; ++pi) {
+      const oldIndex = values[pi];
+      const oldParam = opts.parameters[pi];
+      if (!Number.isInteger(oldIndex) || oldIndex < 0 || oldIndex >= oldParam.values.length) {
+        continue;
+      }
+      const oldValue = oldParam.values[oldIndex];
+      let newIndex = params[pi].findValueIndex(oldValue);
+      if (newIndex === UNASSIGNED && Number.isFinite(Number(oldValue))) {
+        newIndex = params[pi].values.findIndex(
+          (candidate) =>
+            Number.isFinite(Number(candidate)) && Number(candidate) === Number(oldValue),
+        );
+      }
+      if (newIndex !== UNASSIGNED && newIndex >= 0) {
+        values[pi] = newIndex;
+      }
+    }
+    return { values };
+  });
+  return { params, seeds };
 }
 
 /// Generate a covering array for the given options.
 /// @returns The generated test suite with coverage metadata, stats, and suggestions.
-export function generate(options: GenerateOptions): GenerateResult {
+function generateImpl(options: GenerateOptions, preservedSeedCount: number): GenerateResult {
   const result = createGenerateResult();
 
+  result.error = validateGenerateOptions(options);
+  if (result.error.code !== ErrorCode.Ok) {
+    result.warnings.push(
+      result.error.detail
+        ? `${result.error.message}: ${result.error.detail}`
+        : result.error.message,
+    );
+    return result;
+  }
+
   // Apply boundary value expansion to parameters that have boundary configs.
-  const params = applyBoundaryExpansion(options);
+  const expanded = applyBoundaryExpansion(options);
+  const params = expanded.params;
+  result.parameters = params;
 
   const hasInvalid = hasInvalidValues(params);
 
@@ -278,6 +319,7 @@ export function generate(options: GenerateOptions): GenerateResult {
     return result;
   }
   const coverage = coverageResult.engine;
+  let allocatedTuples = coverage.totalTuples;
 
   // Create sub-model engines.
   const subEngines: CoverageEngine[] = [];
@@ -305,6 +347,16 @@ export function generate(options: GenerateOptions): GenerateResult {
       result.error = smResult.error;
       return result;
     }
+    if (smResult.engine.totalTuples > CoverageEngine.MAX_TUPLES - allocatedTuples) {
+      result.error = {
+        code: ErrorCode.TupleExplosion,
+        message: 'Combined global and sub-model tuple count exceeds safe limit',
+        detail: `limit=${CoverageEngine.MAX_TUPLES}`,
+      };
+      result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+      return result;
+    }
+    allocatedTuples += smResult.engine.totalTuples;
     subEngines.push(smResult.engine);
   }
 
@@ -327,6 +379,21 @@ export function generate(options: GenerateOptions): GenerateResult {
       return result;
     }
     constraints.push(parseResult.constraint);
+  }
+
+  if (
+    constraints.length > 0 &&
+    completeValidAssignment(params, constraints, {
+      values: new Array(params.length).fill(UNASSIGNED),
+    }) === null
+  ) {
+    result.error = {
+      code: ErrorCode.ConstraintError,
+      message: 'Constraints are unsatisfiable',
+      detail: 'No complete assignment using valid values satisfies all constraints',
+    };
+    result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    return result;
   }
 
   // Exclude tuples that are inherently invalid due to constraints.
@@ -354,17 +421,26 @@ export function generate(options: GenerateOptions): GenerateResult {
 
   const rng = new Rng(options.seed);
 
-  // Pre-load seed tests into all engines.
+  // Pre-load seed tests into all engines. Strict extension retains the existing
+  // prefix even when a row no longer matches the model, but such rows do not
+  // contribute to coverage.
   let droppedForMaxTests = false;
-  for (let si = 0; si < options.seeds.length; ++si) {
-    const seedTest = options.seeds[si];
+  for (let si = 0; si < expanded.seeds.length; ++si) {
+    const seedTest = expanded.seeds[si];
     if (options.maxTests > 0 && result.tests.length >= options.maxTests) {
       droppedForMaxTests = true;
       break;
     }
     const seedError = validatePositiveSeed(seedTest, params, constraints);
     if (seedError.length > 0) {
-      result.warnings.push(`Seed test ${si} ignored: ${seedError}`);
+      if (si < preservedSeedCount) {
+        result.tests.push(seedTest);
+        result.warnings.push(
+          `Existing test ${si} preserved but excluded from coverage: ${seedError}`,
+        );
+      } else {
+        result.warnings.push(`Seed test ${si - preservedSeedCount} ignored: ${seedError}`);
+      }
       continue;
     }
     coverage.addTestCase(seedTest);
@@ -376,7 +452,7 @@ export function generate(options: GenerateOptions): GenerateResult {
 
   if (droppedForMaxTests) {
     result.warnings.push(
-      `Seed test count (${options.seeds.length}) exceeds maxTests (${options.maxTests}); some seeds were dropped`,
+      `Seed test count (${expanded.seeds.length}) exceeds maxTests (${options.maxTests}); some seeds were dropped`,
     );
   }
 
@@ -442,25 +518,56 @@ export function generate(options: GenerateOptions): GenerateResult {
 
   // Generate negative tests if any parameter has invalid values.
   if (hasInvalid) {
-    generateNegativeTests(params, options.strength, constraints, rng, result.negativeTests);
+    generateNegativeTests(
+      params,
+      options.strength,
+      constraints,
+      rng,
+      result.negativeTests,
+      result.warnings,
+    );
   }
 
   // Collect uncovered tuples from all engines.
   if (!allComplete(coverage, subEngines)) {
+    result.uncoveredCount = coverage.totalTuples - coverage.coveredCount;
+    for (const eng of subEngines) {
+      result.uncoveredCount += eng.totalTuples - eng.coveredCount;
+    }
     const globalUncovered = coverage.getUncoveredTuples(params);
     for (const ut of globalUncovered) {
       result.uncovered.push(ut);
     }
     for (const eng of subEngines) {
-      const subUncovered = eng.getUncoveredTuples(params);
+      const remaining = Math.max(0, CoverageEngine.MAX_DIAGNOSTIC_TUPLES - result.uncovered.length);
+      const subUncovered = eng.getUncoveredTuples(params, remaining);
       for (const ut of subUncovered) {
         result.uncovered.push(ut);
       }
     }
+    result.omittedUncovered = result.uncoveredCount - result.uncovered.length;
     for (const ut of result.uncovered) {
+      if (result.suggestions.length >= 100) {
+        break;
+      }
+      const partial = new Array<number>(params.length).fill(UNASSIGNED);
+      for (const entry of ut.tuple) {
+        for (let pi = 0; pi < params.length; ++pi) {
+          const prefix = `${params[pi].name}=`;
+          if (!entry.startsWith(prefix)) {
+            continue;
+          }
+          partial[pi] = params[pi].findValueIndex(entry.slice(prefix.length));
+          break;
+        }
+      }
+      const witness = completeValidAssignment(params, constraints, { values: partial });
+      if (witness === null) {
+        continue;
+      }
       const suggestion: Suggestion = {
         description: `Add test: ${uncoveredTupleToString(ut)}`,
-        testCase: { values: [] },
+        testCase: witness,
       };
       result.suggestions.push(suggestion);
     }
@@ -481,30 +588,63 @@ export function generate(options: GenerateOptions): GenerateResult {
   }
   result.stats.testCount = result.tests.length;
 
+  // Use the exact parsed constraints and effective parameters so all wrappers
+  // expose identical class-coverage semantics for generate and extend.
+  annotateClassCoverage(result, params, options.strength, constraints);
+
   return result;
+}
+
+export function generate(options: GenerateOptions): GenerateResult {
+  return generateImpl(options, 0);
 }
 
 /// Extend an existing test suite to improve coverage.
 export function extend(
   existing: TestCase[],
   options: GenerateOptions,
-  _mode: ExtendMode = ExtendMode.Strict,
+  mode: ExtendMode = ExtendMode.Strict,
 ): GenerateResult {
+  if (mode !== ExtendMode.Strict) {
+    const result = createGenerateResult();
+    result.error = {
+      code: ErrorCode.InvalidInput,
+      message: `Unsupported extend mode: ${String(mode)}`,
+      detail: 'Supported modes: strict',
+    };
+    result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    return result;
+  }
+  if (options.maxTests > 0 && existing.length > options.maxTests) {
+    const result = createGenerateResult();
+    result.error = {
+      code: ErrorCode.InvalidInput,
+      message: 'maxTests cannot be smaller than the existing test count',
+      detail: `maxTests=${options.maxTests}, existing=${existing.length}`,
+    };
+    result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    return result;
+  }
   const opts: GenerateOptions = {
     ...options,
-    seeds: existing,
+    seeds: [...existing, ...options.seeds],
   };
-  return generate(opts);
+  return generateImpl(opts, existing.length);
 }
 
 /// Estimate model statistics without running generation.
 /// @param options The generation options to analyze.
 /// @returns Model statistics including estimated test count.
 export function estimateModel(options: GenerateOptions): ModelStats {
-  // Apply boundary expansion for estimation.
-  const params = applyBoundaryExpansion(options);
-
   const stats = createModelStats();
+  stats.error = validateGenerateOptions(options);
+  if (stats.error.code !== ErrorCode.Ok) {
+    return stats;
+  }
+
+  // Apply boundary expansion for estimation.
+  const params = applyBoundaryExpansion(options).params;
+
   stats.parameterCount = params.length;
   stats.strength = options.strength;
   stats.subModelCount = options.subModels.length;
@@ -523,10 +663,34 @@ export function estimateModel(options: GenerateOptions): ModelStats {
     });
   }
 
-  // Compute exact total tuples using CoverageEngine.
+  // Raw global + sub-model upper bound before constraint exclusion, using the
+  // same combined allocation budget as generation.
   const createResult = CoverageEngine.create(params, options.strength);
-  if (createResult.error.code === ErrorCode.Ok) {
-    stats.totalTuples = createResult.engine.totalTuples;
+  if (createResult.error.code !== ErrorCode.Ok) {
+    stats.error = createResult.error;
+    return stats;
+  }
+  stats.totalTuples = createResult.engine.totalTuples;
+  for (const subModel of options.subModels) {
+    const resolved = resolveParamNames(subModel.parameterNames, params);
+    if (resolved.error.length > 0) {
+      stats.error = { code: ErrorCode.InvalidInput, message: resolved.error, detail: '' };
+      return stats;
+    }
+    const subResult = CoverageEngine.createFromSubset(params, resolved.indices, subModel.strength);
+    if (subResult.error.code !== ErrorCode.Ok) {
+      stats.error = subResult.error;
+      return stats;
+    }
+    if (subResult.engine.totalTuples > CoverageEngine.MAX_TUPLES - stats.totalTuples) {
+      stats.error = {
+        code: ErrorCode.TupleExplosion,
+        message: 'Combined global and sub-model tuple count exceeds safe limit',
+        detail: `limit=${CoverageEngine.MAX_TUPLES}`,
+      };
+      return stats;
+    }
+    stats.totalTuples += subResult.engine.totalTuples;
   }
 
   // Estimate test count.

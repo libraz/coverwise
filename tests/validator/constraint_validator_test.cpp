@@ -187,7 +187,7 @@ TEST(ConstraintValidatorTest, TestCountedOnceAcrossMultipleConstraints) {
 }
 
 // Edge: constraint with kUnknown result (partial assignment)
-TEST(ConstraintValidatorTest, PartialAssignmentNoViolation) {
+TEST(ConstraintValidatorTest, PartialAssignmentIsIndeterminateViolation) {
   // Test case with kUnassigned value
   std::vector<TestCase> tests = {MakeTest({0, coverwise::model::kUnassigned})};
   std::vector<Constraint> constraints;
@@ -195,6 +195,7 @@ TEST(ConstraintValidatorTest, PartialAssignmentNoViolation) {
   constraints.push_back(std::make_unique<ImpliesNode>(std::make_unique<EqualsNode>(0, 0),
                                                       std::make_unique<NotEqualsNode>(1, 0)));
   auto report = ValidateConstraints(tests, constraints);
-  // kUnknown should NOT count as violation
-  EXPECT_EQ(report.violations, 0u);
+  // An independent validator must not certify an indeterminate test as valid.
+  EXPECT_EQ(report.violations, 1u);
+  EXPECT_EQ(report.violating_indices, std::vector<uint32_t>({0}));
 }

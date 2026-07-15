@@ -76,6 +76,7 @@ interface WasmGenerateResult {
   coverage: number;
   uncovered: WasmUncoveredTuple[];
   stats: WasmGenerateStats;
+  error: { code: number; message: string; detail: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +205,7 @@ function tsGenerate(input: WasmGenerateInput): WasmGenerateResult {
     coverage: result.coverage,
     uncovered: result.uncovered,
     stats: result.stats,
+    error: result.error,
   };
 }
 
@@ -241,6 +243,7 @@ function tsExtendTests(existing: WasmTestCase[], input: WasmGenerateInput): Wasm
     coverage: result.coverage,
     uncovered: result.uncovered,
     stats: result.stats,
+    error: result.error,
   };
 }
 
@@ -537,18 +540,18 @@ describe('constraints + sub-models combined', () => {
 });
 
 describe('edge cases', () => {
-  it('empty parameters -> coverage 1.0, no tests', () => {
+  it('empty parameters -> invalid input', () => {
     const result = tsGenerate({ parameters: [] });
-    expect(result.coverage).toBe(1.0);
+    expect(result.error.code).toBe(3);
     expect(result.tests).toHaveLength(0);
     expect(result.stats.totalTuples).toBe(0);
   });
 
-  it('single parameter -> coverage 1.0 (no pairs)', () => {
+  it('single parameter with pairwise strength -> invalid input', () => {
     const result = tsGenerate({
       parameters: [{ name: 'os', values: ['win', 'mac', 'linux'] }],
     });
-    expect(result.coverage).toBe(1.0);
+    expect(result.error.code).toBe(3);
     expect(result.stats.totalTuples).toBe(0);
   });
 
@@ -577,7 +580,7 @@ describe('edge cases', () => {
     expect(result.stats.totalTuples).toBe(5);
   });
 
-  it('strength > param count -> coverage 1.0, no tests', () => {
+  it('strength > param count -> invalid input', () => {
     const result = tsGenerate({
       parameters: [
         { name: 'a', values: ['1', '2'] },
@@ -585,7 +588,7 @@ describe('edge cases', () => {
       ],
       strength: 5,
     });
-    expect(result.coverage).toBe(1.0);
+    expect(result.error.code).toBe(3);
     expect(result.tests).toHaveLength(0);
   });
 
@@ -672,16 +675,16 @@ describe('extendTests() edge cases', () => {
 describe('estimateModel() edge cases', () => {
   it('0 parameters', () => {
     const stats = tsEstimateModel({ parameters: [] });
-    expect(stats.parameterCount).toBe(0);
+    expect(stats.error.code).toBe(3);
     expect(stats.totalValues).toBe(0);
     expect(stats.totalTuples).toBe(0);
   });
 
-  it('1 parameter -> 0 tuples for pairwise', () => {
+  it('1 parameter -> invalid pairwise estimate', () => {
     const stats = tsEstimateModel({
       parameters: [{ name: 'a', values: ['1', '2', '3'] }],
     });
-    expect(stats.parameterCount).toBe(1);
+    expect(stats.error.code).toBe(3);
     expect(stats.totalTuples).toBe(0);
   });
 });
@@ -883,9 +886,9 @@ describe('mixed type parameter values', () => {
       ],
     });
     expect(result.coverage).toBe(1.0);
-    expect(result.negativeTests).toBeDefined();
-    expect(result.negativeTests?.length).toBeGreaterThan(0);
-    for (const nt of result.negativeTests!) {
+    const negativeTests = result.negativeTests ?? [];
+    expect(negativeTests.length).toBeGreaterThan(0);
+    for (const nt of negativeTests) {
       expect(nt.port).toBe('0');
     }
   });
@@ -901,8 +904,9 @@ describe('mixed type parameter values', () => {
       ],
     });
     expect(result.coverage).toBe(1.0);
-    expect(result.negativeTests).toBeDefined();
-    for (const nt of result.negativeTests!) {
+    const negativeTests = result.negativeTests ?? [];
+    expect(negativeTests.length).toBeGreaterThan(0);
+    for (const nt of negativeTests) {
       expect(nt.flag).toBe('false');
     }
   });

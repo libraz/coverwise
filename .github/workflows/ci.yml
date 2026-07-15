@@ -23,20 +23,27 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: volta-cli/action@v5
       - run: yarn install --immutable
       - run: yarn lint
+      - run: yarn format:check
+      - name: Enforce independent validator dependency boundary
+        run: |
+          if git grep -n "core/" -- src/validator src/ts/validator; then
+            echo "Validators must not depend on generator/core internals" >&2
+            exit 1
+          fi
 
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: volta-cli/action@v5
       - uses: mymindstorm/setup-emsdk@v16
 
       - name: Cache CMake dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/_deps
           key: ${{ runner.os }}-cmake-deps-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}
@@ -44,7 +51,7 @@ jobs:
             ${{ runner.os }}-cmake-deps-
 
       - name: Cache ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ${{ runner.os }}-ccache-${{ github.sha }}
@@ -87,7 +94,7 @@ jobs:
           lcov --extract build/coverage/coverage.info "${PWD}/src/*" --output-file build/coverage/coverage_filtered.info --ignore-errors unused
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./build/coverage/coverage_filtered.info
@@ -97,4 +104,39 @@ jobs:
 
       - run: yarn install --immutable
       - run: yarn build
-      - run: yarn test
+      - run: yarn test:coverage
+
+      - name: Upload JavaScript coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/coverage-final.json
+          flags: javascript
+          name: codecov-coverwise-js
+          fail_ci_if_error: false
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - name: Configure ASan and UBSan
+        run: |
+          cmake -B build-sanitize \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON \
+            -DENABLE_SANITIZERS=ON
+
+      - name: Build sanitizer targets
+        run: cmake --build build-sanitize --parallel
+
+      - name: Run sanitizer tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-sanitize --output-on-failure --parallel

@@ -5,7 +5,7 @@
 [![codecov](https://codecov.io/gh/libraz/coverwise/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/coverwise)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://github.com/libraz/coverwise/blob/main/LICENSE)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue?logo=c%2B%2B)](https://en.cppreference.com/w/cpp/17)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20WebAssembly-lightgrey)](https://github.com/libraz/coverwise)
 
 Combinatorial test coverage engine. Analyzes existing tests for coverage gaps, generates minimal test suites, and extends tests incrementally — in browsers, Node.js, and native C++.
@@ -113,6 +113,11 @@ const extended = cw.extendTests(existingTests, { parameters });
 
 ## CLI
 
+The npm package does not install a native executable. Linux x64 binaries are attached to each
+[GitHub Release](https://github.com/libraz/coverwise/releases); source builds produce
+`build/bin/coverwise`, and `cmake --install build` installs it to `bin/coverwise` under the chosen
+prefix.
+
 ```bash
 # Analyze existing test coverage
 coverwise analyze --params params.json --tests tests.json
@@ -142,11 +147,16 @@ Exit codes: `0` OK, `1` constraint error, `2` insufficient coverage, `3` invalid
 | **Boundary values** | Auto-expand numeric ranges into edge and near-edge values. |
 | **Equivalence classes** | Group values into classes and track class-level coverage. |
 | **Seed tests** | Build on mandatory tests instead of starting from scratch. |
-| **Deterministic** | Same input + seed = identical output, every time. |
+| **Deterministic** | Same valid input + seed = identical output across native C++, WASM, and Pure TS. |
 
 ## Performance
 
-All configurations achieve 100% t-wise coverage, verified by an independent coverage validator. Test counts fall within known theoretical bounds from covering array research.
+The benchmark configurations below achieve 100% t-wise coverage, verified by the
+[independent native validator](tests/integration/generate_and_validate_test.cpp). For valid,
+satisfiable models within the resource budget, generation without a restrictive `maxTests` limit
+targets full coverage; constrained tuples that cannot extend to a valid complete test are excluded
+from the required universe. Cross-engine deterministic output is checked by the
+[WASM/Pure TS parity suite](js/compat.test.ts).
 
 ### Pairwise (2-wise)
 
@@ -180,7 +190,7 @@ All configurations achieve 100% t-wise coverage, verified by an independent cove
 | 15 × 3 | 5-wise | 729,729 | 1,277 | 220 ms | 761 ms |
 | 20 × 3 | 5-wise | 3,767,472 | 1,581 | 1.4 s | 4.2 s |
 
-Measured on Apple M-series (seed=42). Theoretical Min is from orthogonal array (OA) theory or v² bounds. Greedy algorithms typically produce 1.5–2.5× the theoretical minimum. WASM and Pure TS use different RNG implementations, so test counts may differ slightly.
+Measured on Apple M-series (seed=42). Theoretical Min is from orthogonal array (OA) theory or v² bounds. Greedy algorithms typically produce 1.5–2.5× the theoretical minimum. Native C++, WASM, and Pure TS share xoshiro128** with SplitMix32 seeding and rejection sampling, so identical valid input and seed produce the same suite across engines.
 
 For pairwise testing (the most common use case), WASM and Pure TS perform equally. WASM shows a ~3× advantage only in high-strength configurations with > 60,000 tuples.
 
@@ -191,6 +201,7 @@ For pairwise testing (the most common use case), WASM and Pure TS perform equall
 make build            # Debug build
 make test             # Run tests
 make release          # Optimized build
+cmake --install build --prefix ./install  # Library, headers, CMake package, and CLI
 
 # WebAssembly
 make wasm             # Build WASM via Emscripten

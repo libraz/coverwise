@@ -1308,3 +1308,118 @@ TEST(ConstraintParserTest, QuotedParamNameWithSpaceRelational) {
   EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kTrue);
   EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kFalse);
 }
+
+TEST(ConstraintParserLimitsTest, StrictDecimalGrammarAndRange) {
+  std::vector<Parameter> params = {{"n", {"0", "0.5", "1000"}, {}}};
+
+  auto leading_dot = ParseConstraint("n >= .5", params);
+  ASSERT_TRUE(leading_dot.error.ok()) << leading_dot.error.message;
+  EXPECT_EQ(leading_dot.constraint->Evaluate({1}), ConstraintResult::kTrue);
+
+  auto exponent = ParseConstraint("n < 1e3", params);
+  ASSERT_TRUE(exponent.error.ok()) << exponent.error.message;
+  EXPECT_EQ(exponent.constraint->Evaluate({1}), ConstraintResult::kTrue);
+
+  for (const std::string& expression : {"n > 1..2", "n > 1e", "n > 1e309", "n > 1e-999"}) {
+    auto result = ParseConstraint(expression, params);
+    EXPECT_FALSE(result.error.ok()) << expression;
+  }
+}
+
+TEST(ConstraintParserLimitsTest, ExpressionByteLimitBoundary) {
+  const std::string name_at_limit(65534, 'a');
+  std::vector<Parameter> params = {{name_at_limit, {"x"}, {}}};
+  auto at_limit = ParseConstraint(name_at_limit + "=x", params);
+  EXPECT_TRUE(at_limit.error.ok()) << at_limit.error.message;
+
+  auto over_limit = ParseConstraint(name_at_limit + " =x", params);
+  EXPECT_FALSE(over_limit.error.ok());
+  EXPECT_NE(over_limit.error.message.find("byte limit"), std::string::npos);
+}
+
+TEST(ConstraintParserLimitsTest, TokenLimitIsEnforced) {
+  std::vector<Parameter> params = {{"p", {"x"}, {}}};
+  std::string expression = "p IN {";
+  for (size_t i = 0; i < 2050; ++i) {
+    if (i > 0) expression += ',';
+    expression += 'x';
+  }
+  expression += '}';
+  auto result = ParseConstraint(expression, params);
+  EXPECT_FALSE(result.error.ok());
+  EXPECT_NE(result.error.message.find("token limit"), std::string::npos);
+}
+
+TEST(ConstraintParserLimitsTest, NestingDepthBoundary) {
+  std::vector<Parameter> params = {{"p", {"x"}, {}}};
+  auto nested = [](size_t depth) {
+    return std::string(depth, '(') + "p=x" + std::string(depth, ')');
+  };
+  EXPECT_TRUE(ParseConstraint(nested(128), params).error.ok());
+  auto over_limit = ParseConstraint(nested(129), params);
+  EXPECT_FALSE(over_limit.error.ok());
+  EXPECT_NE(over_limit.error.message.find("depth limit"), std::string::npos);
+}
+
+TEST(ConstraintParserLimitsTest, LogicalAstDepthBoundary) {
+  std::vector<Parameter> params = {{"p", {"x"}, {}}};
+  auto expression = [](size_t depth) {
+    std::string value;
+    for (size_t i = 0; i < depth; ++i) value += "NOT ";
+    return value + "p=x";
+  };
+  EXPECT_TRUE(ParseConstraint(expression(127), params).error.ok());
+  auto over_limit = ParseConstraint(expression(128), params);
+  EXPECT_FALSE(over_limit.error.ok());
+  EXPECT_NE(over_limit.error.message.find("AST depth limit"), std::string::npos);
+}
+
+TEST(ConstraintParserLimitsTest, AstNodeLimitBoundaryUsesBalancedLogicalTree) {
+  std::vector<Parameter> params = {{"p", {"x"}, {}}};
+  auto conjunction = [](size_t clauses) {
+    std::string value;
+    for (size_t i = 0; i < clauses; ++i) {
+      if (i > 0) value += " AND ";
+      value += "p=x";
+    }
+    return value;
+  };
+  auto at_limit = ParseConstraint(conjunction(512), params);
+  ASSERT_TRUE(at_limit.error.ok()) << at_limit.error.message;
+  EXPECT_EQ(at_limit.constraint->Evaluate({0}), ConstraintResult::kTrue);
+
+  auto over_limit = ParseConstraint(conjunction(513), params);
+  EXPECT_FALSE(over_limit.error.ok());
+  EXPECT_NE(over_limit.error.message.find("node limit"), std::string::npos);
+}
+
+TEST(ConstraintParserLimitsTest, LikeQuestionMatchesUnicodeCodepoints) {
+  std::vector<Parameter> japanese = {{"text", {"界", "日本"}, {}}};
+  auto one = ParseConstraint("text LIKE ?", japanese);
+  ASSERT_TRUE(one.error.ok()) << one.error.message;
+  EXPECT_EQ(one.constraint->Evaluate({0}), ConstraintResult::kTrue);
+  EXPECT_EQ(one.constraint->Evaluate({1}), ConstraintResult::kFalse);
+
+  std::vector<Parameter> astral = {{"text", {"😀", "😀😀"}, {}}};
+  auto astral_one = ParseConstraint("text LIKE ?", astral);
+  ASSERT_TRUE(astral_one.error.ok()) << astral_one.error.message;
+  EXPECT_EQ(astral_one.constraint->Evaluate({0}), ConstraintResult::kTrue);
+  EXPECT_EQ(astral_one.constraint->Evaluate({1}), ConstraintResult::kFalse);
+}
+
+TEST(ConstraintParserLimitsTest, DeterministicFuzzCorpusNeverThrows) {
+  auto params = MakeParams();
+  const std::string alphabet = "abcXYZ019.=!<>(){},?*+-_'\" ";
+  uint32_t state = 0xC0FFEEu;
+  for (size_t sample = 0; sample < 2000; ++sample) {
+    state = state * 1664525u + 1013904223u;
+    const size_t length = state % 257;
+    std::string expression;
+    expression.reserve(length);
+    for (size_t i = 0; i < length; ++i) {
+      state = state * 1664525u + 1013904223u;
+      expression.push_back(alphabet[state % alphabet.size()]);
+    }
+    EXPECT_NO_THROW((void)ParseConstraint(expression, params)) << "sample=" << sample;
+  }
+}

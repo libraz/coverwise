@@ -220,6 +220,32 @@ export function validateParameters(params: Parameter[]): string {
       }
       seenValues.add(v);
     }
+    if (p.invalid.length > 0 && p.invalid.length !== p.values.length) {
+      return `Invalid metadata length for parameter '${p.name}': invalid`;
+    }
+    if (p.allAliases.length > 0 && p.allAliases.length !== p.values.length) {
+      return `Invalid metadata length for parameter '${p.name}': aliases`;
+    }
+    if (p.equivalenceClasses.length > 0 && p.equivalenceClasses.length !== p.values.length) {
+      return `Invalid metadata length for parameter '${p.name}': equivalence classes`;
+    }
+    const resolutionNames = new Set<string>();
+    for (const value of p.values) {
+      const canonical = value.replace(/[A-Z]/g, (char) => char.toLowerCase());
+      if (resolutionNames.has(canonical)) {
+        return `Ambiguous value or alias '${value}' in parameter '${p.name}'`;
+      }
+      resolutionNames.add(canonical);
+    }
+    for (const aliases of p.allAliases) {
+      for (const alias of aliases) {
+        const canonical = alias.replace(/[A-Z]/g, (char) => char.toLowerCase());
+        if (resolutionNames.has(canonical)) {
+          return `Ambiguous value or alias '${alias}' in parameter '${p.name}'`;
+        }
+        resolutionNames.add(canonical);
+      }
+    }
   }
   return '';
 }

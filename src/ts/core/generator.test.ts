@@ -1,3 +1,4 @@
+import { BoundaryType } from '../model/boundary.js';
 import { parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode } from '../model/error.js';
 import type { GenerateOptions } from '../model/generate-options.js';
@@ -221,6 +222,10 @@ describe('generate', () => {
     const result = generate(opts);
     expect(result.tests.length).toBeLessThanOrEqual(3);
     // Coverage may be less than 1.0 due to the limit.
+    expect(result.suggestions.length).toBeGreaterThan(0);
+    expect(result.suggestions.every((suggestion) => suggestion.testCase.values.length === 3)).toBe(
+      true,
+    );
   });
 
   // Cross-surface parity: these warning literals must stay byte-identical to
@@ -243,7 +248,7 @@ describe('generate', () => {
     );
   });
 
-  it('emits the canonical zero-score warning when constraints leave tuples unreachable', () => {
+  it('excludes tuples that cannot extend to a satisfying assignment', () => {
     const opts = createGenerateOptions({
       parameters: [
         { name: 'A', values: ['0', '1'] },
@@ -252,16 +257,14 @@ describe('generate', () => {
       ],
       strength: 2,
       seed: 1,
-      // Three-parameter constraints evaluate to unknown on a pairwise partial
-      // assignment, so they are not pre-excluded; together they make the pair
-      // (A=0, B=1) impossible to complete, leaving it permanently uncovered.
+      // The constraints interact to make (A=0, B=1) impossible to complete.
       constraintExpressions: ['IF A=0 AND B=1 THEN C!=0', 'IF A=0 AND B=1 THEN C!=1'],
     });
     const result = generate(opts);
-    expect(result.coverage).toBeLessThan(1.0);
-    expect(result.warnings).toContain(
-      'Generation stopped before reaching 100% coverage after 50 consecutive zero-score candidates',
-    );
+    expect(result.error.code).toBe(0);
+    expect(result.coverage).toBe(1.0);
+    expect(result.uncovered).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
   });
 
   it('includes seed tests and extends coverage from them', () => {
@@ -350,6 +353,25 @@ describe('generate', () => {
     expect(report.coverageRatio).toBe(1.0);
   });
 
+  it('threads parsed constraints into class coverage', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'A', values: ['a0', 'a1'], equivalenceClasses: ['c0', 'c1'] },
+          { name: 'B', values: ['b0', 'b1'], equivalenceClasses: ['d0', 'd1'] },
+        ],
+        constraintExpressions: ['IF A=a1 THEN B=b1'],
+        strength: 2,
+      }),
+    );
+
+    expect(result.classCoverage).toEqual({
+      totalClassTuples: 3,
+      coveredClassTuples: 3,
+      classCoverageRatio: 1,
+    });
+  });
+
   it('generates negative tests for parameters with invalid values', () => {
     const opts = createGenerateOptions({
       parameters: [
@@ -378,10 +400,56 @@ describe('generate', () => {
     expect(result.negativeTests).toHaveLength(0); // No invalid values set via plain options.
     expect(result.coverage).toBe(1.0);
   });
+
+  it('covers requested three-wise tuples containing a fixed invalid value', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'A', values: ['a0', 'bad'], invalid: [false, true] },
+          { name: 'B', values: ['b0', 'b1'] },
+          { name: 'C', values: ['c0', 'c1', 'c2'] },
+        ],
+        strength: 3,
+      }),
+    );
+
+    const covered = new Set(
+      result.negativeTests
+        .filter((test) => test.values[0] === 1)
+        .map((test) => `${test.values[1]}:${test.values[2]}`),
+    );
+    expect(covered.size).toBe(6);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('emits a single-fault negative example for one parameter', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters: [{ name: 'A', values: ['valid', 'bad'], invalid: [false, true] }],
+        strength: 1,
+      }),
+    );
+    expect(result.negativeTests).toEqual([{ values: [1] }]);
+  });
+
+  it('warns when an invalid value cannot satisfy constraints', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'A', values: ['valid', 'bad'], invalid: [false, true] },
+          { name: 'B', values: ['b0', 'b1'] },
+        ],
+        strength: 2,
+        constraintExpressions: ['A!=bad'],
+      }),
+    );
+    expect(result.negativeTests).toEqual([]);
+    expect(result.warnings).toContain('Negative coverage incomplete for A=bad');
+  });
 });
 
 describe('generate edge cases', () => {
-  it('strength=0 produces coverage 1.0 with 0 tests (vacuous coverage)', () => {
+  it('rejects strength=0', () => {
     const opts = createGenerateOptions({
       parameters: [
         { name: 'a', values: ['a1', 'a2', 'a3'] },
@@ -392,10 +460,109 @@ describe('generate edge cases', () => {
       seed: 42,
     });
     const result = generate(opts);
-    expect(result.coverage).toBe(1.0);
+    expect(result.error.code).toBe(3);
     expect(result.tests).toHaveLength(0);
     expect(result.stats.totalTuples).toBe(0);
     expect(result.uncovered).toHaveLength(0);
+  });
+});
+
+describe('semantic validation', () => {
+  const parameters = [
+    { name: 'A', values: ['0', '1'] },
+    { name: 'B', values: ['0', '1'] },
+  ];
+
+  it('rejects metadata length mismatch', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters: [{ name: 'A', values: ['0', '1'], invalid: [false] }, parameters[1]],
+      }),
+    );
+    expect(result.error.code).toBe(3);
+  });
+
+  it('rejects duplicate sub-model parameters', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters,
+        subModels: [{ parameterNames: ['A', 'A'], strength: 2 }],
+      }),
+    );
+    expect(result.error.code).toBe(3);
+  });
+
+  it('rejects non-finite weights and out-of-domain seeds', () => {
+    expect(
+      generate(
+        createGenerateOptions({
+          parameters,
+          weights: { entries: { A: { '0': Number.POSITIVE_INFINITY } } },
+        }),
+      ).error.code,
+    ).toBe(3);
+    expect(generate(createGenerateOptions({ parameters, seed: 0x1_0000_0000 })).error.code).toBe(3);
+  });
+
+  it('returns a structured estimate error', () => {
+    const stats = estimateModel(
+      createGenerateOptions({ parameters: [{ name: 'A', values: ['0', '1'] }], strength: 2 }),
+    );
+    expect(stats.error.code).toBe(3);
+  });
+});
+
+describe('boundary expansion', () => {
+  it('returns the effective parameters and remaps seed indices by value identity', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'score', values: ['50', '0'] },
+          { name: 'status', values: ['pass', 'fail'] },
+        ],
+        boundaryConfigs: {
+          score: { type: BoundaryType.Integer, minValue: 0, maxValue: 100, step: 1 },
+        },
+        seeds: [{ values: [0, 0] }],
+      }),
+    );
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    const remapped = result.parameters[0].findValueIndex('50');
+    expect(result.tests[0].values[0]).toBe(remapped);
+    expect(result.parameters[0].values[result.tests[0].values[0]]).toBe('50');
+  });
+
+  it('rejects non-finite expansion and duplicate numeric identities', () => {
+    const base = {
+      parameters: [
+        { name: 'score', values: ['1', '1.0'] },
+        { name: 'status', values: ['pass', 'fail'] },
+      ],
+      boundaryConfigs: {
+        score: { type: BoundaryType.Float, minValue: 0, maxValue: 1, step: 0.5 },
+      },
+    };
+    expect(generate(createGenerateOptions(base)).error.code).toBe(ErrorCode.InvalidInput);
+    expect(
+      generate(
+        createGenerateOptions({
+          ...base,
+          parameters: [
+            { name: 'score', values: ['1'] },
+            { name: 'status', values: ['pass', 'fail'] },
+          ],
+          boundaryConfigs: {
+            score: {
+              type: BoundaryType.Float,
+              minValue: Number.MAX_VALUE,
+              maxValue: Number.MAX_VALUE,
+              step: Number.MAX_VALUE,
+            },
+          },
+        }),
+      ).error.code,
+    ).toBe(ErrorCode.InvalidInput);
   });
 });
 
@@ -418,6 +585,56 @@ describe('extend', () => {
     // Existing test should be first.
     expect(result.tests[0].values).toEqual([0, 0]);
     expect(result.tests.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('preserves invalid existing rows as a prefix without counting them toward coverage', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['0', '1'] },
+        { name: 'B', values: ['0', '1'] },
+      ],
+      constraintExpressions: ['IF A=1 THEN B=1'],
+      strength: 2,
+    });
+    const existing = [{ values: [1, 0] }, { values: [0] }, { values: [0, 99] }];
+
+    const result = extend(existing, opts);
+
+    expect(result.error.code).toBe(0);
+    expect(result.tests.slice(0, existing.length)).toEqual(existing);
+    expect(result.coverage).toBe(1);
+    expect(result.stats.coveredTuples).toBe(result.stats.totalTuples);
+    expect(result.warnings.filter((w) => w.includes('preserved but excluded'))).toHaveLength(3);
+  });
+
+  it('keeps option seeds after the existing prefix', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['0', '1'] },
+        { name: 'B', values: ['0', '1'] },
+      ],
+      seeds: [{ values: [1, 1] }],
+    });
+
+    const result = extend([{ values: [0, 0] }], opts);
+
+    expect(result.tests.slice(0, 2)).toEqual([{ values: [0, 0] }, { values: [1, 1] }]);
+  });
+
+  it('rejects maxTests below the existing row count', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['0', '1'] },
+        { name: 'B', values: ['0', '1'] },
+      ],
+      maxTests: 1,
+    });
+
+    const result = extend([{ values: [0, 0] }, { values: [1, 1] }], opts);
+
+    expect(result.error.code).toBe(ErrorCode.InvalidInput);
+    expect(result.error.message).toContain('existing test count');
+    expect(result.tests).toEqual([]);
   });
 });
 
@@ -463,10 +680,44 @@ describe('estimateModel', () => {
     expect(stats.totalTuples).toBe(12);
   });
 
+  it('includes sub-model tuples using the same definition as generation', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['0', '1'] },
+        { name: 'B', values: ['0', '1'] },
+        { name: 'C', values: ['0', '1'] },
+      ],
+      strength: 2,
+      subModels: [{ parameterNames: ['A', 'B', 'C'], strength: 3 }],
+    });
+
+    const stats = estimateModel(opts);
+    const generated = generate(opts);
+
+    expect(stats.error.code).toBe(ErrorCode.Ok);
+    expect(stats.totalTuples).toBe(20);
+    expect(generated.stats.totalTuples).toBe(stats.totalTuples);
+  });
+
+  it('returns tuple explosion when combined sub-model work exceeds the budget', () => {
+    const values = Array.from({ length: 3000 }, (_, index) => `${index}`);
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values },
+        { name: 'B', values },
+      ],
+      strength: 2,
+      subModels: [{ parameterNames: ['A', 'B'], strength: 2 }],
+    });
+
+    expect(estimateModel(opts).error.code).toBe(ErrorCode.TupleExplosion);
+    expect(generate(opts).error.code).toBe(ErrorCode.TupleExplosion);
+  });
+
   // Cross-surface parity: these clamped estimates must match the pinned values
   // in tests/core/generator_test.cpp.
-  it('clamps the degenerate estimate at UINT32_MAX', () => {
-    const thousand = Array.from({ length: 1000 }, () => 'x');
+  it('rejects a degenerate estimate above the tuple budget', () => {
+    const thousand = Array.from({ length: 1000 }, (_, index) => `${index}`);
     const opts = createGenerateOptions({
       parameters: [
         { name: 'A', values: thousand },
@@ -477,12 +728,12 @@ describe('estimateModel', () => {
       strength: 4, // parameterCount === strength -> product path.
     });
     const stats = estimateModel(opts);
-    // 1000^4 overflows 32 bits, so the estimate clamps to UINT32_MAX.
-    expect(stats.estimatedTests).toBe(4294967295);
+    expect(stats.error.code).toBe(ErrorCode.TupleExplosion);
+    expect(stats.estimatedTests).toBe(0);
   });
 
-  it('estimates a large non-degenerate model identically to the native surface', () => {
-    const thousand = Array.from({ length: 1000 }, () => 'x');
+  it('rejects a large non-degenerate model identically to the native surface', () => {
+    const thousand = Array.from({ length: 1000 }, (_, index) => `${index}`);
     const opts = createGenerateOptions({
       parameters: [
         { name: 'p0', values: thousand },
@@ -494,7 +745,7 @@ describe('estimateModel', () => {
       strength: 3, // parameterCount(5) > strength(3) -> estimate path.
     });
     const stats = estimateModel(opts);
-    // 1000^3 * ceil(log2(5)) = 1e9 * 3 = 3e9, below the C(5,3)*1000^3 tuple cap.
-    expect(stats.estimatedTests).toBe(3000000000);
+    expect(stats.error.code).toBe(ErrorCode.TupleExplosion);
+    expect(stats.estimatedTests).toBe(0);
   });
 });

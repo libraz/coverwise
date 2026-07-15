@@ -14,9 +14,27 @@ export default defineConfig({
 
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'json', 'html'],
-      include: ['js/**/*.ts'],
-      exclude: ['js/**/*.test.ts', 'js/**/*.d.ts'],
+      reporter: ['text', 'json', 'json-summary', 'html'],
+      include: ['js/**/*.ts', 'src/ts/**/*.ts'],
+      exclude: ['**/*.test.ts', '**/*.d.ts'],
+      thresholds: {
+        statements: 85,
+        branches: 80,
+        functions: 90,
+        lines: 85,
+        'js/**': {
+          statements: 80,
+          branches: 75,
+          functions: 65,
+          lines: 80,
+        },
+        'src/ts/**': {
+          statements: 85,
+          branches: 80,
+          functions: 90,
+          lines: 85,
+        },
+      },
     },
   },
 });

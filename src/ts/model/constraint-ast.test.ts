@@ -392,6 +392,9 @@ describe('globMatch', () => {
     expect(globMatch('h?llo', 'hello')).toBe(true);
     expect(globMatch('h?llo', 'hallo')).toBe(true);
     expect(globMatch('h?llo', 'hlo')).toBe(false);
+    expect(globMatch('?', '界')).toBe(true);
+    expect(globMatch('?', '😀')).toBe(true);
+    expect(globMatch('?', '😀😀')).toBe(false);
   });
 
   it('handles combined wildcards', () => {

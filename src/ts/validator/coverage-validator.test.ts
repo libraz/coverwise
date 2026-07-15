@@ -151,7 +151,9 @@ describe('validateCoverage', () => {
     ];
     const parse = parseConstraint('IF os=mac THEN browser!=ie', params);
     expect(parse.error.code).toBe(0);
-    expect(parse.constraint).toBeDefined();
+    if (parse.constraint === null) {
+      throw new Error(`constraint parsing failed: ${parse.error.message}`);
+    }
 
     // Cover 2 of the 3 valid tuples; (win, ie) is missing.
     const tests: TestCase[] = [
@@ -159,7 +161,7 @@ describe('validateCoverage', () => {
       { values: [1, 0] }, // mac, chrome
     ];
 
-    const report = validateCoverage(params, tests, 2, [parse.constraint!]);
+    const report = validateCoverage(params, tests, 2, [parse.constraint]);
     expect(report.totalTuples).toBe(3);
     expect(report.coveredTuples).toBe(2);
     expect(report.uncovered).toHaveLength(1);
@@ -386,5 +388,91 @@ describe('annotateClassCoverage', () => {
     annotateClassCoverage(result, params, 2);
 
     expect(result.classCoverage).toBeUndefined();
+  });
+});
+
+describe('constraint feasibility and invalid test filtering', () => {
+  it('excludes a tuple that has no complete constraint witness', () => {
+    const params = [
+      new Parameter('A', ['0', '1']),
+      new Parameter('B', ['0', '1']),
+      new Parameter('C', ['0', '1']),
+    ];
+    const constraints = ['IF A=0 THEN C=0', 'IF B=0 THEN C=1'].map((expression) => {
+      const parsed = parseConstraint(expression, params);
+      expect(parsed.constraint).toBeDefined();
+      return parsed.constraint;
+    });
+    const report = validateCoverage(
+      params,
+      [{ values: [0, 1, 0] }, { values: [1, 0, 1] }, { values: [1, 1, 0] }],
+      2,
+      constraints.filter((constraint) => constraint !== undefined),
+    );
+    expect(report.totalTuples).toBe(9);
+    expect(
+      report.uncovered.some((tuple) => tuple.tuple.includes('A=0') && tuple.tuple.includes('B=0')),
+    ).toBe(false);
+  });
+
+  it('does not count missing-column or constraint-violating rows', () => {
+    const params = [
+      new Parameter('A', ['0', '1']),
+      new Parameter('B', ['0', '1']),
+      new Parameter('C', ['0', '1']),
+    ];
+    const parsed = parseConstraint('IF A=0 THEN C=0', params);
+    expect(parsed.constraint).toBeDefined();
+    const report = validateCoverage(
+      params,
+      [{ values: [0, 0] }, { values: [0, 0, 1] }],
+      2,
+      parsed.constraint ? [parsed.constraint] : [],
+    );
+    expect(
+      report.uncovered.some((tuple) => tuple.tuple.includes('A=0') && tuple.tuple.includes('B=0')),
+    ).toBe(true);
+  });
+});
+
+describe('resource budgets', () => {
+  it('rejects a 2^64 tuple product instead of wrapping to zero', () => {
+    const params = Array.from(
+      { length: 8 },
+      (_, pi) =>
+        new Parameter(
+          `P${pi}`,
+          Array.from({ length: 256 }, (_, vi) => `${vi}`),
+        ),
+    );
+    const report = validateCoverage(params, [], 8);
+    expect(report.error.code).toBe(4);
+    expect(report.totalTuples).toBe(0);
+    expect(report.coverageRatio).not.toBe(1);
+  });
+
+  it('caps uncovered diagnostics while retaining exact counts', () => {
+    const report = validateCoverage(
+      [
+        new Parameter(
+          'A',
+          Array.from({ length: 40 }, (_, i) => `${i}`),
+        ),
+        new Parameter(
+          'B',
+          Array.from({ length: 40 }, (_, i) => `${i}`),
+        ),
+      ],
+      [],
+      2,
+    );
+    expect(report.uncoveredCount).toBe(1600);
+    expect(report.uncovered).toHaveLength(1000);
+    expect(report.omittedUncovered).toBe(600);
+  });
+
+  it('rejects combination metadata before materialization', () => {
+    const params = Array.from({ length: 200 }, (_, i) => new Parameter(`P${i}`, ['only']));
+    expect(validateCoverage(params, [], 3).error.code).toBe(4);
   });
 });

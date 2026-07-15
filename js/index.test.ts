@@ -273,19 +273,17 @@ describe('estimateModel()', () => {
 });
 
 describe('edge cases', () => {
-  it('empty parameters → coverage 1.0, no tests', () => {
-    const result = generate({ parameters: [] });
-    expect(result.coverage).toBe(1.0);
-    expect(result.tests).toHaveLength(0);
-    expect(result.stats.totalTuples).toBe(0);
+  it('rejects empty parameters', () => {
+    expect(() => generate({ parameters: [] })).toThrow(/At least one parameter/);
   });
 
-  it('single parameter → coverage 1.0 (no pairs)', () => {
+  it('single parameter with strength 1 → coverage 1.0', () => {
     const result = generate({
       parameters: [{ name: 'os', values: ['win', 'mac', 'linux'] }],
+      strength: 1,
     });
     expect(result.coverage).toBe(1.0);
-    expect(result.stats.totalTuples).toBe(0);
+    expect(result.stats.totalTuples).toBe(3);
   });
 
   it('parameter with single value', () => {
@@ -313,16 +311,16 @@ describe('edge cases', () => {
     expect(result.stats.totalTuples).toBe(5); // 3 + 2
   });
 
-  it('strength > param count → coverage 1.0, no tests', () => {
-    const result = generate({
-      parameters: [
-        { name: 'a', values: ['1', '2'] },
-        { name: 'b', values: ['1', '2'] },
-      ],
-      strength: 5,
-    });
-    expect(result.coverage).toBe(1.0);
-    expect(result.tests).toHaveLength(0);
+  it('rejects strength greater than parameter count', () => {
+    expect(() =>
+      generate({
+        parameters: [
+          { name: 'a', values: ['1', '2'] },
+          { name: 'b', values: ['1', '2'] },
+        ],
+        strength: 5,
+      }),
+    ).toThrow(/Strength must be between/);
   });
 
   it('maxTests = 1 → incomplete coverage', () => {
@@ -403,22 +401,79 @@ describe('extendTests() edge cases', () => {
     expect(result.coverage).toBe(1.0);
     expect(result.tests).toEqual(genResult.tests);
   });
+
+  it('strictly preserves existing object identity and value representation', () => {
+    const existing = [{ a: 1, b: true }];
+    const result = extendTests(existing, {
+      parameters: [
+        { name: 'a', values: [1, 2] },
+        { name: 'b', values: [true, false] },
+      ],
+    });
+
+    expect(result.tests[0]).toBe(existing[0]);
+    expect(result.tests[0]).toEqual({ a: 1, b: true });
+  });
+
+  it('preserves an existing row invalidated by a changed model', () => {
+    const existing = [{ a: 'removed', b: '0' }];
+    const result = extendTests(existing, {
+      parameters: [
+        { name: 'a', values: ['current', 'other'] },
+        { name: 'b', values: ['0', '1'] },
+      ],
+    });
+
+    expect(result.tests[0]).toBe(existing[0]);
+    expect(result.warnings.some((warning) => warning.includes('preserved but excluded'))).toBe(
+      true,
+    );
+    expect(result.coverage).toBe(1);
+  });
+
+  it('rejects maxTests below existing length', () => {
+    expect(() =>
+      extendTests(
+        [
+          { a: '0', b: '0' },
+          { a: '1', b: '1' },
+        ],
+        {
+          parameters: [
+            { name: 'a', values: ['0', '1'] },
+            { name: 'b', values: ['0', '1'] },
+          ],
+          maxTests: 1,
+        },
+      ),
+    ).toThrow(/existing test count/);
+  });
+
+  it('rejects unsupported mode on the pure surface too', () => {
+    expect(() =>
+      extendTests([], {
+        parameters: [
+          { name: 'a', values: ['0', '1'] },
+          { name: 'b', values: ['0', '1'] },
+        ],
+        mode: 'relaxed' as never,
+      }),
+    ).toThrow(/Invalid extend mode/);
+  });
 });
 
 describe('estimateModel() edge cases', () => {
-  it('0 parameters', () => {
-    const stats = estimateModel({ parameters: [] });
-    expect(stats.parameterCount).toBe(0);
-    expect(stats.totalValues).toBe(0);
-    expect(stats.totalTuples).toBe(0);
+  it('rejects 0 parameters', () => {
+    expect(() => estimateModel({ parameters: [] })).toThrow(/At least one parameter/);
   });
 
-  it('1 parameter → 0 tuples for pairwise', () => {
+  it('1 parameter with strength 1 reports value tuples', () => {
     const stats = estimateModel({
       parameters: [{ name: 'a', values: ['1', '2', '3'] }],
+      strength: 1,
     });
     expect(stats.parameterCount).toBe(1);
-    expect(stats.totalTuples).toBe(0);
+    expect(stats.totalTuples).toBe(3);
   });
 });
 
@@ -620,9 +675,9 @@ describe('mixed type parameter values', () => {
       ],
     });
     expect(result.coverage).toBe(1.0);
-    expect(result.negativeTests).toBeDefined();
-    expect(result.negativeTests?.length).toBeGreaterThan(0);
-    for (const nt of result.negativeTests!) {
+    const negativeTests = result.negativeTests ?? [];
+    expect(negativeTests.length).toBeGreaterThan(0);
+    for (const nt of negativeTests) {
       expect(nt.port).toBe('0');
     }
   });
@@ -638,8 +693,9 @@ describe('mixed type parameter values', () => {
       ],
     });
     expect(result.coverage).toBe(1.0);
-    expect(result.negativeTests).toBeDefined();
-    for (const nt of result.negativeTests!) {
+    const negativeTests = result.negativeTests ?? [];
+    expect(negativeTests.length).toBeGreaterThan(0);
+    for (const nt of negativeTests) {
       expect(nt.flag).toBe('false');
     }
   });

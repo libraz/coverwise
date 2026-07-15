@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -21,7 +23,7 @@ using util::ToDouble;
 namespace {
 
 /// @brief Format an integer value as a string (matches JS String(value)).
-std::string FormatInteger(int64_t value) { return JsNumberToString(static_cast<double>(value)); }
+std::string FormatInteger(double value) { return JsNumberToString(std::round(value)); }
 
 /// @brief Format a float value as the shortest round-trip string.
 ///
@@ -47,45 +49,71 @@ Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& con
     };
   }
 
-  // Collect existing values as doubles (for dedup), and track non-numeric values.
-  std::set<double> seen_nums;
-  std::vector<std::string> non_numeric_values;
-  for (const auto& v : param.values) {
-    if (IsNumeric(v)) {
-      seen_nums.insert(ToDouble(v));
+  // Map numeric identity to the original value index. Keeping the original
+  // spelling (e.g. "1.0") avoids changing seed/constraint identity when the
+  // numeric value is deduplicated with a generated boundary.
+  std::map<double, std::optional<size_t>> numeric_values;
+  std::vector<size_t> non_numeric_indices;
+  for (size_t i = 0; i < param.values.size(); ++i) {
+    const auto& v = param.values[i];
+    const double numeric = IsNumeric(v) ? ToDouble(v) : 0.0;
+    if (IsNumeric(v) && std::isfinite(numeric)) {
+      numeric_values.emplace(numeric, i);
     } else {
-      non_numeric_values.push_back(v);
+      non_numeric_indices.push_back(i);
     }
   }
 
   // Add boundary values (dedup).
   for (double bv : boundary_nums) {
-    seen_nums.insert(bv);
+    if (std::isfinite(bv)) numeric_values.emplace(bv, std::nullopt);
   }
 
-  // Sort numerically and format.
-  std::vector<double> sorted_nums(seen_nums.begin(), seen_nums.end());
-  std::sort(sorted_nums.begin(), sorted_nums.end());
-
   std::vector<std::string> expanded_values;
-  expanded_values.reserve(sorted_nums.size() + non_numeric_values.size());
+  expanded_values.reserve(numeric_values.size() + non_numeric_indices.size());
+  std::vector<bool> expanded_invalid;
+  std::vector<std::vector<std::string>> expanded_aliases;
+  std::vector<std::string> expanded_classes;
+  const bool preserve_invalid = !param.invalid().empty();
+  const bool preserve_aliases = !param.all_aliases().empty();
+  const bool preserve_classes = !param.equivalence_classes().empty();
 
-  for (double d : sorted_nums) {
-    if (config.type == BoundaryConfig::Type::kInteger) {
-      expanded_values.push_back(FormatInteger(static_cast<int64_t>(std::round(d))));
-    } else {
-      expanded_values.push_back(FormatFloat(d));
+  auto append_metadata = [&](std::optional<size_t> original) {
+    if (preserve_invalid) {
+      expanded_invalid.push_back(original ? param.invalid()[*original] : false);
     }
+    if (preserve_aliases) {
+      expanded_aliases.push_back(original ? param.all_aliases()[*original]
+                                          : std::vector<std::string>{});
+    }
+    if (preserve_classes) {
+      expanded_classes.push_back(original ? param.equivalence_classes()[*original] : "");
+    }
+  };
+
+  for (const auto& [number, original] : numeric_values) {
+    if (original) {
+      expanded_values.push_back(param.values[*original]);
+    } else if (config.type == BoundaryConfig::Type::kInteger) {
+      expanded_values.push_back(FormatInteger(number));
+    } else {
+      expanded_values.push_back(FormatFloat(number));
+    }
+    append_metadata(original);
   }
 
   // Append non-numeric values at the end.
-  for (auto& v : non_numeric_values) {
-    expanded_values.push_back(v);
+  for (size_t original : non_numeric_indices) {
+    expanded_values.push_back(param.values[original]);
+    append_metadata(original);
   }
 
-  // Build the result parameter. Preserve name, drop invalid/aliases since
-  // boundary expansion changes the value set.
+  // Preserve per-value metadata by the original value's numeric/string identity.
+  // Newly generated boundary values receive the neutral metadata defaults.
   Parameter result(param.name, std::move(expanded_values));
+  if (preserve_invalid) result.set_invalid(std::move(expanded_invalid));
+  if (preserve_aliases) result.set_aliases(std::move(expanded_aliases));
+  if (preserve_classes) result.set_equivalence_classes(std::move(expanded_classes));
   return result;
 }
 

@@ -2,7 +2,7 @@
 
 ## What Is coverwise?
 
-coverwise is a combinatorial test generation engine. Given a set of parameters and their values, it produces a minimal set of test cases that covers every t-wise combination — guaranteeing that every pair (or triple, or higher-order group) of parameter values appears in at least one test.
+coverwise is a combinatorial test generation engine. Given a valid, satisfiable model within the resource budget, it produces a compact set of test cases that covers every required t-wise combination when no restrictive `maxTests` limit is set. Constraint-unreachable tuples are excluded from the required coverage universe.
 
 It runs in **browsers**, **Node.js**, and as **native C++**, with zero platform-specific dependencies in the JavaScript build thanks to WebAssembly.
 
@@ -22,7 +22,7 @@ Research shows that most software bugs are triggered by the interaction of **two
 | Pairwise (2-wise) | ~9 tests |
 | 3-wise | ~27 tests |
 
-coverwise generates these minimal covering arrays automatically, with mathematical proof that every required combination is present.
+coverwise generates compact covering arrays automatically and checks the result with an independent coverage validator.
 
 ## Key Concepts
 
@@ -69,7 +69,7 @@ coverwise is built as a **test design API**, not just a generation tool:
 - **Stateless** — `generate(input) → output`, no session management
 - **Decomposable** — Separate functions for generate, analyze, extend
 - **Explainable** — Every result includes coverage proof and uncovered tuples in human-readable format
-- **Deterministic** — Same input + seed = same output, every time (within the same engine; WASM and Pure TS use different RNG algorithms, so the same seed may produce different test orderings across engines while maintaining identical coverage)
+- **Deterministic** — Native C++, WASM, and Pure TS share xoshiro128** with SplitMix32 seeding and rejection sampling; the same valid input and seed produce the same suite across engines
 
 ## Platform Support
 
@@ -82,7 +82,10 @@ coverwise is built as a **test design API**, not just a generation tool:
 
 ## Performance
 
-All configurations achieve **100% t-wise coverage**, verified by an independent coverage validator. Test counts fall within known theoretical bounds from covering array research.
+The benchmark configurations below achieve **100% t-wise coverage**, verified by the
+[independent native validator](../../tests/integration/generate_and_validate_test.cpp). Full
+coverage for constrained valid models and deterministic engine parity are regression-tested in the
+[WASM/Pure TS compatibility suite](../../js/compat.test.ts).
 
 ### Pairwise (2-wise)
 
@@ -116,7 +119,7 @@ All configurations achieve **100% t-wise coverage**, verified by an independent 
 | 15 × 3 | 5-wise | 729,729 | 1,277 | 220 ms | 761 ms |
 | 20 × 3 | 5-wise | 3,767,472 | 1,581 | 1.4 s | 4.2 s |
 
-Measured on Apple M-series (seed=42). Theoretical Min is from orthogonal array (OA) theory or v² bounds. Greedy algorithms typically produce 1.5–2.5× the theoretical minimum. WASM and Pure TS use different RNG implementations, so test counts may differ slightly.
+Measured on Apple M-series (seed=42). Theoretical Min is from orthogonal array (OA) theory or v² bounds. Greedy algorithms typically produce 1.5–2.5× the theoretical minimum. All engines use the same RNG algorithm and produce the same suite for identical valid input and seed.
 
 For pairwise testing (the most common use case), WASM and Pure TS perform equally. WASM shows a ~3× advantage only in high-strength configurations with > 60,000 tuples.
 

@@ -13,6 +13,7 @@
 ///   3 = Invalid input
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -21,6 +22,7 @@
 #include <iostream>
 #include <map>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -28,6 +30,7 @@
 #include "model/boundary.h"
 #include "model/constraint_ast.h"
 #include "model/constraint_parser.h"
+#include "model/options_validation.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
 #include "util/string_util.h"
@@ -74,19 +77,6 @@ bool ValidateStrength(uint32_t strength) {
   return true;
 }
 
-/// @brief Validate that a seed value is an integer in the canonical domain.
-///
-/// The canonical seed domain is [0, 2^32 - 1], shared across all surfaces.
-/// @param seed Raw numeric value from the parsed JSON input.
-/// @return true if valid; otherwise prints a message to stderr and returns false.
-bool ValidateSeed(double seed) {
-  if (seed != std::floor(seed) || seed < 0.0 || seed > 4294967295.0) {
-    std::cerr << "error: seed must be an integer in [0, 4294967295]\n";
-    return false;
-  }
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // Minimal JSON value representation — just enough for coverwise I/O.
 // ---------------------------------------------------------------------------
@@ -117,6 +107,9 @@ struct JsonValue {
 
   bool IsNull() const { return type == JsonType::kNull; }
   size_t Size() const { return type == JsonType::kArray ? array_val.size() : 0; }
+  bool HasKey(const std::string& key) const {
+    return std::find(object_keys.begin(), object_keys.end(), key) != object_keys.end();
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -133,6 +126,10 @@ class JsonParser {
     auto val = ParseValue();
     if (!error_.empty()) return {};
     SkipWhitespace();
+    if (pos_ != input_.size()) {
+      error_ = "trailing characters after JSON value at position " + std::to_string(pos_);
+      return {};
+    }
     return val;
   }
 
@@ -160,12 +157,16 @@ class JsonParser {
     return false;
   }
 
-  JsonValue ParseValue() {
+  JsonValue ParseValue(size_t depth = 0) {
+    if (depth > 256) {
+      error_ = "JSON nesting depth exceeds 256";
+      return {};
+    }
     SkipWhitespace();
     char c = Peek();
     if (c == '"') return ParseString();
-    if (c == '{') return ParseObject();
-    if (c == '[') return ParseArray();
+    if (c == '{') return ParseObject(depth + 1);
+    if (c == '[') return ParseArray(depth + 1);
     if (c == 't' || c == 'f') return ParseBool();
     if (c == 'n') return ParseNull();
     if (c == '-' || (c >= '0' && c <= '9')) return ParseNumber();
@@ -252,6 +253,9 @@ class JsonParser {
                 return {};
               }
               codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00);
+            } else if (codepoint >= 0xDC00 && codepoint <= 0xDFFF) {
+              error_ = "unexpected low surrogate at position " + std::to_string(pos_ - 4);
+              return {};
             }
             // Encode as UTF-8.
             if (codepoint <= 0x7F) {
@@ -272,10 +276,16 @@ class JsonParser {
             break;
           }
           default:
-            val.string_val += esc;
-            break;
+            error_ = std::string("invalid string escape \\") + esc + " at position " +
+                     std::to_string(pos_ - 1);
+            return {};
         }
       } else {
+        unsigned char raw = static_cast<unsigned char>(input_[pos_]);
+        if (raw <= 0x1F) {
+          error_ = "unescaped control character in string at position " + std::to_string(pos_);
+          return {};
+        }
         val.string_val += input_[pos_++];
       }
     }
@@ -290,19 +300,48 @@ class JsonParser {
   JsonValue ParseNumber() {
     size_t start = pos_;
     if (Peek() == '-') ++pos_;
-    while (pos_ < input_.size() && input_[pos_] >= '0' && input_[pos_] <= '9') ++pos_;
+    if (pos_ >= input_.size() || input_[pos_] < '0' || input_[pos_] > '9') {
+      error_ = "invalid number at position " + std::to_string(start);
+      return {};
+    }
+    if (input_[pos_] == '0') {
+      ++pos_;
+      if (pos_ < input_.size() && input_[pos_] >= '0' && input_[pos_] <= '9') {
+        error_ = "leading zero in number at position " + std::to_string(start);
+        return {};
+      }
+    } else {
+      while (pos_ < input_.size() && input_[pos_] >= '0' && input_[pos_] <= '9') ++pos_;
+    }
     if (pos_ < input_.size() && input_[pos_] == '.') {
       ++pos_;
+      size_t fraction_start = pos_;
       while (pos_ < input_.size() && input_[pos_] >= '0' && input_[pos_] <= '9') ++pos_;
+      if (pos_ == fraction_start) {
+        error_ = "fraction requires digits at position " + std::to_string(pos_);
+        return {};
+      }
     }
     if (pos_ < input_.size() && (input_[pos_] == 'e' || input_[pos_] == 'E')) {
       ++pos_;
       if (pos_ < input_.size() && (input_[pos_] == '+' || input_[pos_] == '-')) ++pos_;
+      size_t exponent_start = pos_;
       while (pos_ < input_.size() && input_[pos_] >= '0' && input_[pos_] <= '9') ++pos_;
+      if (pos_ == exponent_start) {
+        error_ = "exponent requires digits at position " + std::to_string(pos_);
+        return {};
+      }
     }
     JsonValue val;
     val.type = JsonType::kNumber;
-    val.number_val = std::stod(input_.substr(start, pos_ - start));
+    const std::string token = input_.substr(start, pos_ - start);
+    char* end = nullptr;
+    errno = 0;
+    val.number_val = std::strtod(token.c_str(), &end);
+    if (errno == ERANGE || end != token.c_str() + token.size() || !std::isfinite(val.number_val)) {
+      error_ = "number is out of finite range at position " + std::to_string(start);
+      return {};
+    }
     return val;
   }
 
@@ -330,7 +369,7 @@ class JsonParser {
     return {};
   }
 
-  JsonValue ParseArray() {
+  JsonValue ParseArray(size_t depth) {
     if (!Expect('[')) return {};
     JsonValue val;
     val.type = JsonType::kArray;
@@ -340,7 +379,7 @@ class JsonParser {
       return val;
     }
     while (true) {
-      val.array_val.push_back(ParseValue());
+      val.array_val.push_back(ParseValue(depth));
       if (!error_.empty()) return {};
       SkipWhitespace();
       if (Peek() == ',') {
@@ -353,7 +392,7 @@ class JsonParser {
     return val;
   }
 
-  JsonValue ParseObject() {
+  JsonValue ParseObject(size_t depth) {
     if (!Expect('{')) return {};
     JsonValue val;
     val.type = JsonType::kObject;
@@ -367,7 +406,11 @@ class JsonParser {
       auto key = ParseString();
       if (!error_.empty()) return {};
       if (!Expect(':')) return {};
-      auto value = ParseValue();
+      if (val.HasKey(key.string_val)) {
+        error_ = "duplicate object key '" + key.string_val + "'";
+        return {};
+      }
+      auto value = ParseValue(depth);
       if (!error_.empty()) return {};
       val.object_keys.push_back(key.string_val);
       val.object_vals.push_back(std::move(value));
@@ -387,6 +430,20 @@ class JsonParser {
   std::string error_;
 };
 
+/// @brief Parse an optional JSON object field as an exact uint32.
+bool ParseOptionalUint32(const JsonValue& object, const std::string& field, uint32_t minimum,
+                         uint32_t& output, std::string& error) {
+  if (!object.HasKey(field)) return true;
+  const auto& value = object[field];
+  if (value.type != JsonType::kNumber || value.number_val != std::floor(value.number_val) ||
+      value.number_val < static_cast<double>(minimum) || value.number_val > 4294967295.0) {
+    error = field + " must be an integer in [" + std::to_string(minimum) + ", 4294967295]";
+    return false;
+  }
+  output = static_cast<uint32_t>(value.number_val);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // JSON writer — produces compact JSON on stdout.
 // ---------------------------------------------------------------------------
@@ -400,16 +457,22 @@ class JsonWriter {
   void WriteBool(bool v) { out_ << (v ? "true" : "false"); }
 
   void WriteNumber(double v) {
+    if (!std::isfinite(v)) {
+      throw std::runtime_error("cannot serialize a non-finite JSON number");
+    }
     // Integer values print without decimal point.
-    if (v == static_cast<int64_t>(v) && v >= -1e15 && v <= 1e15) {
+    if (v >= -1e15 && v <= 1e15 && v == std::floor(v)) {
       out_ << static_cast<int64_t>(v);
     } else {
-      out_ << std::setprecision(6) << v;
+      out_ << std::setprecision(17) << v;
     }
   }
 
   /// @brief Write a number with fixed decimal precision.
   void WriteNumberFixed(double v, int precision) {
+    if (!std::isfinite(v)) {
+      throw std::runtime_error("cannot serialize a non-finite JSON number");
+    }
     out_ << std::fixed << std::setprecision(precision) << v;
     out_ << std::defaultfloat;
   }
@@ -433,8 +496,23 @@ class JsonWriter {
         case '\t':
           out_ << "\\t";
           break;
+        case '\b':
+          out_ << "\\b";
+          break;
+        case '\f':
+          out_ << "\\f";
+          break;
         default:
-          out_ << c;
+          if (static_cast<unsigned char>(c) <= 0x1F) {
+            const auto flags = out_.flags();
+            const auto fill = out_.fill();
+            out_ << "\\u" << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
+                 << static_cast<unsigned int>(static_cast<unsigned char>(c));
+            out_.flags(flags);
+            out_.fill(fill);
+          } else {
+            out_ << c;
+          }
           break;
       }
     }
@@ -581,6 +659,11 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
         }
         param.values.push_back(val_str);
         const auto& inv_field = v["invalid"];
+        if (v.HasKey("invalid") && inv_field.type != JsonType::kBool) {
+          error = "parameter '" + param.name + "' value " + std::to_string(j) +
+                  " invalid flag must be a boolean";
+          return false;
+        }
         bool is_invalid = (inv_field.type == JsonType::kBool && inv_field.bool_val);
         invalid_flags.push_back(is_invalid);
         if (is_invalid) has_any_invalid = true;
@@ -588,14 +671,19 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
         // Parse aliases.
         std::vector<std::string> val_aliases;
         const auto& aliases_field = v["aliases"];
-        if (!aliases_field.IsNull() && aliases_field.type == JsonType::kArray) {
+        if (v.HasKey("aliases")) {
+          if (aliases_field.type != JsonType::kArray) {
+            error = "parameter '" + param.name + "' value " + std::to_string(j) +
+                    " aliases must be an array";
+            return false;
+          }
           for (size_t k = 0; k < aliases_field.array_val.size(); ++k) {
             const auto& a = aliases_field.array_val[k];
-            if (a.type == JsonType::kString) {
+            if (a.type == JsonType::kString && !a.string_val.empty()) {
               val_aliases.push_back(a.string_val);
             } else {
               error = "parameter '" + param.name + "' value " + std::to_string(j) + " alias " +
-                      std::to_string(k) + " must be a string";
+                      std::to_string(k) + " must be a non-empty string";
               return false;
             }
           }
@@ -605,6 +693,11 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
 
         // Parse equivalence class.
         const auto& class_field = v["class"];
+        if (v.HasKey("class") && class_field.type != JsonType::kString) {
+          error = "parameter '" + param.name + "' value " + std::to_string(j) +
+                  " class must be a string";
+          return false;
+        }
         if (class_field.type == JsonType::kString && !class_field.string_val.empty()) {
           eq_classes.push_back(class_field.string_val);
           has_any_classes = true;
@@ -629,7 +722,8 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
     if (has_any_classes) {
       param.set_equivalence_classes(std::move(eq_classes));
     }
-    if (param.values.empty()) {
+    const bool has_boundary = p.HasKey("type") || p.HasKey("range") || p.HasKey("step");
+    if (param.values.empty() && !has_boundary) {
       error = "parameter '" + param.name + "' has no values";
       return false;
     }
@@ -654,7 +748,19 @@ bool ParseAndValidateParameters(const JsonValue& json,
   if (!ParseParameters(json, params, error)) {
     return false;
   }
-  auto validation = coverwise::model::ValidateParameters(params);
+  // Boundary-configured parameters may start with no explicit values because
+  // their range supplies the value set. Use a temporary identity solely for
+  // structural validation; the actual range is validated and expanded later.
+  auto validation_params = params;
+  for (size_t i = 0; i < validation_params.size(); ++i) {
+    const auto& parameter_json = json.array_val[i];
+    if (validation_params[i].values.empty() &&
+        (parameter_json.HasKey("type") || parameter_json.HasKey("range") ||
+         parameter_json.HasKey("step"))) {
+      validation_params[i].values.push_back("__coverwise_boundary_placeholder__");
+    }
+  }
+  auto validation = coverwise::model::ValidateParameters(validation_params);
   if (!validation.ok()) {
     error = validation.message;
     return false;
@@ -666,9 +772,13 @@ bool ParseAndValidateParameters(const JsonValue& json,
 ///
 /// For each parameter with "type" ("integer" or "float") and "range" ([min, max]),
 /// creates a BoundaryConfig. Optional "step" for float type.
-void ParseBoundaryConfigs(const JsonValue& json,
-                          std::map<std::string, coverwise::model::BoundaryConfig>& configs) {
-  if (json.type != JsonType::kArray) return;
+bool ParseBoundaryConfigs(const JsonValue& json,
+                          std::map<std::string, coverwise::model::BoundaryConfig>& configs,
+                          std::string& error) {
+  if (json.type != JsonType::kArray) {
+    error = "parameters must be a JSON array";
+    return false;
+  }
   for (size_t i = 0; i < json.array_val.size(); ++i) {
     const auto& p = json.array_val[i];
     if (p.type != JsonType::kObject) continue;
@@ -678,11 +788,18 @@ void ParseBoundaryConfigs(const JsonValue& json,
 
     const auto& type_val = p["type"];
     const auto& range_val = p["range"];
-    if (type_val.type != JsonType::kString) continue;
-    if (range_val.type != JsonType::kArray || range_val.array_val.size() != 2) continue;
+    const bool has_boundary = p.HasKey("type") || p.HasKey("range") || p.HasKey("step");
+    if (!has_boundary) continue;
+    if (type_val.type != JsonType::kString || range_val.type != JsonType::kArray ||
+        range_val.array_val.size() != 2) {
+      error =
+          "parameter '" + name_val.string_val + "' boundary requires type and a two-number range";
+      return false;
+    }
     if (range_val.array_val[0].type != JsonType::kNumber ||
         range_val.array_val[1].type != JsonType::kNumber) {
-      continue;
+      error = "parameter '" + name_val.string_val + "' boundary range must contain numbers";
+      return false;
     }
 
     coverwise::model::BoundaryConfig config;
@@ -695,17 +812,23 @@ void ParseBoundaryConfigs(const JsonValue& json,
     } else if (type_val.string_val == "float") {
       config.type = coverwise::model::BoundaryConfig::Type::kFloat;
       const auto& step_val = p["step"];
+      if (p.HasKey("step") && step_val.type != JsonType::kNumber) {
+        error = "parameter '" + name_val.string_val + "' boundary step must be a number";
+        return false;
+      }
       if (step_val.type == JsonType::kNumber) {
         config.step = step_val.number_val;
       } else {
         config.step = 1.0;
       }
     } else {
-      continue;
+      error = "parameter '" + name_val.string_val + "' has unknown boundary type";
+      return false;
     }
 
     configs[name_val.string_val] = config;
   }
+  return true;
 }
 
 /// @brief Expand numeric boundary parameters up front and clear the configs.
@@ -715,8 +838,13 @@ void ParseBoundaryConfigs(const JsonValue& json,
 /// rendering. Otherwise test cases — which carry value indices — render against
 /// the unexpanded parameters and produce empty/garbage values. After expanding,
 /// the configs are cleared so core::Generate does not expand a second time.
-void ApplyBoundaryExpansion(coverwise::model::GenerateOptions& options) {
-  if (options.boundary_configs.empty()) return;
+bool ApplyBoundaryExpansion(coverwise::model::GenerateOptions& options, std::string& error) {
+  if (options.boundary_configs.empty()) return true;
+  auto validation = coverwise::model::ValidateGenerateOptions(options);
+  if (!validation.ok()) {
+    error = validation.message + (validation.detail.empty() ? "" : ": " + validation.detail);
+    return false;
+  }
   for (auto& param : options.parameters) {
     auto it = options.boundary_configs.find(param.name);
     if (it != options.boundary_configs.end()) {
@@ -724,6 +852,7 @@ void ApplyBoundaryExpansion(coverwise::model::GenerateOptions& options) {
     }
   }
   options.boundary_configs.clear();
+  return true;
 }
 
 /// @brief Parse test cases from a JSON array of objects with string values.
@@ -799,26 +928,43 @@ bool ParseConstraintExpressions(const JsonValue& json, std::vector<std::string>&
 }
 
 /// @brief Parse sub-models from a JSON array of {parameters, strength} objects.
-void ParseSubModels(const JsonValue& json, std::vector<coverwise::model::SubModel>& sub_models) {
-  if (json.IsNull() || json.type != JsonType::kArray) return;
+bool ParseSubModels(const JsonValue& json, std::vector<coverwise::model::SubModel>& sub_models,
+                    std::string& error) {
+  if (json.IsNull()) return true;
+  if (json.type != JsonType::kArray) {
+    error = "subModels must be a JSON array";
+    return false;
+  }
   for (size_t i = 0; i < json.array_val.size(); ++i) {
     const auto& sm = json.array_val[i];
-    if (sm.type != JsonType::kObject) continue;
+    if (sm.type != JsonType::kObject) {
+      error = "subModel " + std::to_string(i) + " must be an object";
+      return false;
+    }
     coverwise::model::SubModel sub_model;
     const auto& sm_strength = sm["strength"];
-    if (!sm_strength.IsNull() && sm_strength.type == JsonType::kNumber) {
-      sub_model.strength = static_cast<uint32_t>(sm_strength.number_val);
+    if (sm_strength.type != JsonType::kNumber ||
+        sm_strength.number_val != std::floor(sm_strength.number_val) ||
+        sm_strength.number_val < 1 || sm_strength.number_val > 4294967295.0) {
+      error = "subModel " + std::to_string(i) + " strength must be a positive integer";
+      return false;
     }
+    sub_model.strength = static_cast<uint32_t>(sm_strength.number_val);
     const auto& sm_params = sm["parameters"];
-    if (!sm_params.IsNull() && sm_params.type == JsonType::kArray) {
-      for (const auto& p : sm_params.array_val) {
-        if (p.type == JsonType::kString) {
-          sub_model.parameter_names.push_back(p.string_val);
-        }
+    if (sm_params.type != JsonType::kArray || sm_params.array_val.empty()) {
+      error = "subModel " + std::to_string(i) + " parameters must be a non-empty array";
+      return false;
+    }
+    for (const auto& p : sm_params.array_val) {
+      if (p.type != JsonType::kString) {
+        error = "subModel " + std::to_string(i) + " parameter names must be strings";
+        return false;
       }
+      sub_model.parameter_names.push_back(p.string_val);
     }
     sub_models.push_back(std::move(sub_model));
   }
+  return true;
 }
 
 /// @brief Parse value weights from JSON: {"param": {"value": weight, ...}, ...}.
@@ -859,6 +1005,8 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
                          uint32_t strength) {
   JsonWriter w(std::cout);
   w.BeginObject();
+  w.Key("schemaVersion");
+  w.WriteNumber(1);
 
   // tests
   w.Key("tests");
@@ -868,29 +1016,33 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
     w.Sep();
     w.BeginObject();
     for (size_t i = 0; i < params.size() && i < tc.values.size(); ++i) {
+      if (tc.values[i] >= params[i].size()) continue;
       w.Key(params[i].name);
       w.WriteString(params[i].display_name(tc.values[i], static_cast<uint32_t>(ti)));
     }
     w.EndObject();
   }
   w.EndArray();
+  w.Key("uncoveredCount");
+  w.WriteNumber(static_cast<double>(result.uncovered_count));
+  w.Key("omittedUncovered");
+  w.WriteNumber(static_cast<double>(result.omitted_uncovered));
 
-  // negativeTests
-  if (!result.negative_tests.empty()) {
-    w.Key("negativeTests");
-    w.BeginArray();
-    for (size_t ti = 0; ti < result.negative_tests.size(); ++ti) {
-      const auto& tc = result.negative_tests[ti];
-      w.Sep();
-      w.BeginObject();
-      for (size_t i = 0; i < params.size() && i < tc.values.size(); ++i) {
-        w.Key(params[i].name);
-        w.WriteString(params[i].display_name(tc.values[i], static_cast<uint32_t>(ti)));
-      }
-      w.EndObject();
+  // negativeTests is required even when no invalid values are configured.
+  w.Key("negativeTests");
+  w.BeginArray();
+  for (size_t ti = 0; ti < result.negative_tests.size(); ++ti) {
+    const auto& tc = result.negative_tests[ti];
+    w.Sep();
+    w.BeginObject();
+    for (size_t i = 0; i < params.size() && i < tc.values.size(); ++i) {
+      if (tc.values[i] >= params[i].size()) continue;
+      w.Key(params[i].name);
+      w.WriteString(params[i].display_name(tc.values[i], static_cast<uint32_t>(ti)));
     }
-    w.EndArray();
+    w.EndObject();
   }
+  w.EndArray();
 
   // coverage
   w.Key("coverage");
@@ -918,6 +1070,8 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
     w.EndArray();
     w.Key("reason");
     w.WriteString(u.reason);
+    w.Key("display");
+    w.WriteString(u.ToString());
     w.EndObject();
   }
   w.EndArray();
@@ -951,7 +1105,18 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
   w.BeginArray();
   for (const auto& s : result.suggestions) {
     w.Sep();
+    w.BeginObject();
+    w.Key("description");
     w.WriteString(s.description);
+    w.Key("testCase");
+    w.BeginObject();
+    for (size_t i = 0; i < params.size() && i < s.test_case.values.size(); ++i) {
+      if (s.test_case.values[i] >= params[i].size()) continue;
+      w.Key(params[i].name);
+      w.WriteString(params[i].values[s.test_case.values[i]]);
+    }
+    w.EndObject();
+    w.EndObject();
   }
   w.EndArray();
 
@@ -975,6 +1140,8 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
 void WriteCoverageReport(const coverwise::validator::CoverageReport& report) {
   JsonWriter w(std::cout);
   w.BeginObject();
+  w.Key("schemaVersion");
+  w.WriteNumber(1);
 
   w.Key("totalTuples");
   w.WriteNumber(static_cast<double>(report.total_tuples));
@@ -1006,6 +1173,25 @@ void WriteCoverageReport(const coverwise::validator::CoverageReport& report) {
     w.EndArray();
     w.Key("reason");
     w.WriteString(u.reason);
+    w.Key("display");
+    w.WriteString(u.ToString());
+    w.EndObject();
+  }
+  w.EndArray();
+
+  w.Key("uncoveredCount");
+  w.WriteNumber(static_cast<double>(report.uncovered_count));
+  w.Key("omittedUncovered");
+  w.WriteNumber(static_cast<double>(report.omitted_uncovered));
+  w.Key("invalidTests");
+  w.BeginArray();
+  for (const auto& invalid : report.invalid_tests) {
+    w.Sep();
+    w.BeginObject();
+    w.Key("testIndex");
+    w.WriteNumber(static_cast<double>(invalid.test_index));
+    w.Key("reason");
+    w.WriteString(invalid.reason);
     w.EndObject();
   }
   w.EndArray();
@@ -1019,7 +1205,7 @@ void WriteCoverageReport(const coverwise::validator::CoverageReport& report) {
 // ---------------------------------------------------------------------------
 
 int RunGenerate(int argc, char* argv[]) {
-  if (argc < 3) {
+  if (argc != 3) {
     std::cerr << "Usage: coverwise generate <input.json>\n";
     return kExitInvalidInput;
   }
@@ -1054,31 +1240,25 @@ int RunGenerate(int argc, char* argv[]) {
   }
 
   // Parse boundary value configs from parameters.
-  ParseBoundaryConfigs(json["parameters"], options.boundary_configs);
-
-  // Parse optional fields.
-  const auto& strength_val = json["strength"];
-  if (!strength_val.IsNull() && strength_val.type == JsonType::kNumber) {
-    double s = strength_val.number_val;
-    if (s < 1.0 || s != std::floor(s)) {
-      std::cerr << "error: strength must be a positive integer (>= 1)\n";
-      return kExitInvalidInput;
-    }
-    options.strength = static_cast<uint32_t>(s);
-  }
-  if (!ValidateStrength(options.strength)) {
+  if (!ParseBoundaryConfigs(json["parameters"], options.boundary_configs, error)) {
+    std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
   }
-  const auto& seed_val = json["seed"];
-  if (!seed_val.IsNull() && seed_val.type == JsonType::kNumber) {
-    if (!ValidateSeed(seed_val.number_val)) {
-      return kExitInvalidInput;
-    }
-    options.seed = static_cast<uint64_t>(seed_val.number_val);
+
+  // Parse optional fields.
+  if (!ParseOptionalUint32(json, "strength", 1, options.strength, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
   }
-  const auto& max_tests_val = json["maxTests"];
-  if (!max_tests_val.IsNull() && max_tests_val.type == JsonType::kNumber) {
-    options.max_tests = static_cast<uint32_t>(max_tests_val.number_val);
+  uint32_t seed = 0;
+  if (!ParseOptionalUint32(json, "seed", 0, seed, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
+  options.seed = seed;
+  if (!ParseOptionalUint32(json, "maxTests", 0, options.max_tests, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
   }
 
   // Parse constraints (array of strings).
@@ -1094,12 +1274,18 @@ int RunGenerate(int argc, char* argv[]) {
   }
 
   // Parse sub-models (mixed-strength parameter groups).
-  ParseSubModels(json["subModels"], options.sub_models);
+  if (!ParseSubModels(json["subModels"], options.sub_models, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
 
   // Expand numeric boundary parameters up front so the same Parameter objects
   // drive both generation and rendering. Seed tests are parsed afterward so
   // their value indices match the expanded value lists.
-  ApplyBoundaryExpansion(options);
+  if (!ApplyBoundaryExpansion(options, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
 
   // Parse seed tests (existing tests to build upon).
   const auto& seeds_val = json["seeds"];
@@ -1113,13 +1299,12 @@ int RunGenerate(int argc, char* argv[]) {
   // Generate.
   auto result = coverwise::core::Generate(options);
 
-  // Annotate equivalence class coverage if any parameter has classes defined.
-  coverwise::validator::AnnotateClassCoverage(result, options.parameters, options.strength);
+  const auto& effective_params = result.parameters.empty() ? options.parameters : result.parameters;
 
   // Determine exit code: constraint error (1) > insufficient coverage (2) > OK.
   int exit_code = ResultExitCode(result);
 
-  WriteGenerateResult(result, options.parameters, options.strength);
+  WriteGenerateResult(result, effective_params, options.strength);
   return exit_code;
 }
 
@@ -1198,6 +1383,17 @@ int RunAnalyze(int argc, char* argv[]) {
     return kExitInvalidInput;
   }
 
+  // Analyze uses the same effective boundary-expanded value space as generate.
+  coverwise::model::GenerateOptions boundary_options;
+  boundary_options.parameters = std::move(params);
+  boundary_options.strength = strength;
+  if (!ParseBoundaryConfigs(*params_array, boundary_options.boundary_configs, error) ||
+      !ApplyBoundaryExpansion(boundary_options, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
+  params = std::move(boundary_options.parameters);
+
   // Read constraints from a dedicated file if provided. A constraints file is a
   // JSON object with a "constraints" array (or a bare array of strings).
   if (!constraints_path.empty()) {
@@ -1264,6 +1460,10 @@ int RunAnalyze(int argc, char* argv[]) {
   }
 
   auto report = coverwise::validator::ValidateCoverage(params, tests, strength, constraints);
+  if (!report.error.ok()) {
+    std::cerr << "error: " << report.error.message << ": " << report.error.detail << "\n";
+    return static_cast<int>(report.error.code);
+  }
 
   WriteCoverageReport(report);
 
@@ -1326,31 +1526,24 @@ int RunExtend(int argc, char* argv[]) {
   // Parse boundary value configs and expand up front so generation and
   // rendering share the same expanded Parameter objects. Seeds and existing
   // tests are parsed afterward so their value indices match.
-  ParseBoundaryConfigs(input_json["parameters"], options.boundary_configs);
-  ApplyBoundaryExpansion(options);
-
-  const auto& strength_val = input_json["strength"];
-  if (!strength_val.IsNull() && strength_val.type == JsonType::kNumber) {
-    double s = strength_val.number_val;
-    if (s < 1.0 || s != std::floor(s)) {
-      std::cerr << "error: strength must be a positive integer (>= 1)\n";
-      return kExitInvalidInput;
-    }
-    options.strength = static_cast<uint32_t>(s);
-  }
-  if (!ValidateStrength(options.strength)) {
+  if (!ParseBoundaryConfigs(input_json["parameters"], options.boundary_configs, error)) {
+    std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
   }
-  const auto& seed_val = input_json["seed"];
-  if (!seed_val.IsNull() && seed_val.type == JsonType::kNumber) {
-    if (!ValidateSeed(seed_val.number_val)) {
-      return kExitInvalidInput;
-    }
-    options.seed = static_cast<uint64_t>(seed_val.number_val);
+
+  if (!ParseOptionalUint32(input_json, "strength", 1, options.strength, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
   }
-  const auto& max_tests_val = input_json["maxTests"];
-  if (!max_tests_val.IsNull() && max_tests_val.type == JsonType::kNumber) {
-    options.max_tests = static_cast<uint32_t>(max_tests_val.number_val);
+  uint32_t seed = 0;
+  if (!ParseOptionalUint32(input_json, "seed", 0, seed, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
+  options.seed = seed;
+  if (!ParseOptionalUint32(input_json, "maxTests", 0, options.max_tests, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
   }
 
   // Parse constraints (array of strings).
@@ -1367,7 +1560,15 @@ int RunExtend(int argc, char* argv[]) {
   }
 
   // Parse sub-models (mixed-strength parameter groups).
-  ParseSubModels(input_json["subModels"], options.sub_models);
+  if (!ParseSubModels(input_json["subModels"], options.sub_models, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
+
+  if (!ApplyBoundaryExpansion(options, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
 
   // Parse seed tests from the input JSON (in addition to --existing tests).
   const auto& seeds_val = input_json["seeds"];
@@ -1403,18 +1604,17 @@ int RunExtend(int argc, char* argv[]) {
 
   auto result = coverwise::core::Extend(existing, options);
 
-  // Annotate equivalence class coverage if any parameter has classes defined.
-  coverwise::validator::AnnotateClassCoverage(result, options.parameters, options.strength);
+  const auto& effective_params = result.parameters.empty() ? options.parameters : result.parameters;
 
   // Determine exit code: constraint error (1) > insufficient coverage (2) > OK.
   int exit_code = ResultExitCode(result);
 
-  WriteGenerateResult(result, options.parameters, options.strength);
+  WriteGenerateResult(result, effective_params, options.strength);
   return exit_code;
 }
 
 int RunStats(int argc, char* argv[]) {
-  if (argc < 3) {
+  if (argc != 3) {
     std::cerr << "Usage: coverwise stats <input.json>\n";
     return kExitInvalidInput;
   }
@@ -1448,51 +1648,47 @@ int RunStats(int argc, char* argv[]) {
   }
 
   // Parse boundary value configs from parameters.
-  ParseBoundaryConfigs(json["parameters"], options.boundary_configs);
-
-  const auto& strength_val = json["strength"];
-  if (!strength_val.IsNull() && strength_val.type == JsonType::kNumber) {
-    options.strength = static_cast<uint32_t>(strength_val.number_val);
+  if (!ParseBoundaryConfigs(json["parameters"], options.boundary_configs, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
   }
 
-  const auto& constraints_val = json["constraints"];
-  if (!constraints_val.IsNull() && constraints_val.type == JsonType::kArray) {
-    for (size_t i = 0; i < constraints_val.array_val.size(); ++i) {
-      const auto& c = constraints_val.array_val[i];
-      if (c.type == JsonType::kString) {
-        options.constraint_expressions.push_back(c.string_val);
-      }
-    }
+  if (!ParseOptionalUint32(json, "strength", 1, options.strength, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
+  uint32_t seed = 0;
+  if (!ParseOptionalUint32(json, "seed", 0, seed, error) ||
+      !ParseOptionalUint32(json, "maxTests", 0, options.max_tests, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
+  }
+  options.seed = seed;
+
+  if (!ParseConstraintExpressions(json["constraints"], options.constraint_expressions, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
   }
 
-  // Parse sub-models.
-  const auto& sub_models_val = json["subModels"];
-  if (!sub_models_val.IsNull() && sub_models_val.type == JsonType::kArray) {
-    for (size_t i = 0; i < sub_models_val.array_val.size(); ++i) {
-      const auto& sm = sub_models_val.array_val[i];
-      if (sm.type == JsonType::kObject) {
-        coverwise::model::SubModel sub_model;
-        const auto& sm_strength = sm["strength"];
-        if (!sm_strength.IsNull() && sm_strength.type == JsonType::kNumber) {
-          sub_model.strength = static_cast<uint32_t>(sm_strength.number_val);
-        }
-        const auto& sm_params = sm["parameters"];
-        if (!sm_params.IsNull() && sm_params.type == JsonType::kArray) {
-          for (const auto& p : sm_params.array_val) {
-            if (p.type == JsonType::kString) {
-              sub_model.parameter_names.push_back(p.string_val);
-            }
-          }
-        }
-        options.sub_models.push_back(std::move(sub_model));
-      }
-    }
+  if (!ParseSubModels(json["subModels"], options.sub_models, error) ||
+      !ParseWeights(json["weights"], options.weights, error)) {
+    std::cerr << "error: " << error << "\n";
+    return kExitInvalidInput;
   }
 
   auto stats = coverwise::core::EstimateModel(options);
+  if (!stats.error.ok()) {
+    std::cerr << "error: " << stats.error.message;
+    if (!stats.error.detail.empty()) std::cerr << ": " << stats.error.detail;
+    std::cerr << "\n";
+    return kExitInvalidInput;
+  }
 
   JsonWriter w(std::cout);
   w.BeginObject();
+
+  w.Key("schemaVersion");
+  w.WriteNumber(1);
 
   w.Key("parameterCount");
   w.WriteNumber(static_cast<double>(stats.parameter_count));
@@ -1509,13 +1705,13 @@ int RunStats(int argc, char* argv[]) {
   w.Key("estimatedTests");
   w.WriteNumber(static_cast<double>(stats.estimated_tests));
 
-  w.Key("subModels");
+  w.Key("subModelCount");
   w.WriteNumber(static_cast<double>(stats.sub_model_count));
 
-  w.Key("constraints");
+  w.Key("constraintCount");
   w.WriteNumber(static_cast<double>(stats.constraint_count));
 
-  w.Key("parametersDetail");
+  w.Key("parameters");
   w.BeginArray();
   for (const auto& pd : stats.parameters) {
     w.Sep();
@@ -1554,35 +1750,43 @@ void PrintUsage() {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  if (argc < 2) {
+  try {
+    if (argc < 2) {
+      PrintUsage();
+      return kExitInvalidInput;
+    }
+
+    std::string command = argv[1];
+
+    if (command == "--help" || command == "-h") {
+      PrintUsage();
+      return kExitOk;
+    }
+
+    if (command == "generate") {
+      return RunGenerate(argc, argv);
+    }
+
+    if (command == "analyze") {
+      return RunAnalyze(argc, argv);
+    }
+
+    if (command == "extend") {
+      return RunExtend(argc, argv);
+    }
+
+    if (command == "stats") {
+      return RunStats(argc, argv);
+    }
+
+    std::cerr << "Unknown command: " << command << "\n";
     PrintUsage();
     return kExitInvalidInput;
+  } catch (const std::exception& error) {
+    std::cerr << "error: " << error.what() << "\n";
+    return kExitInvalidInput;
+  } catch (...) {
+    std::cerr << "error: unexpected failure\n";
+    return kExitInvalidInput;
   }
-
-  std::string command = argv[1];
-
-  if (command == "--help" || command == "-h") {
-    PrintUsage();
-    return kExitOk;
-  }
-
-  if (command == "generate") {
-    return RunGenerate(argc, argv);
-  }
-
-  if (command == "analyze") {
-    return RunAnalyze(argc, argv);
-  }
-
-  if (command == "extend") {
-    return RunExtend(argc, argv);
-  }
-
-  if (command == "stats") {
-    return RunStats(argc, argv);
-  }
-
-  std::cerr << "Unknown command: " << command << "\n";
-  PrintUsage();
-  return kExitInvalidInput;
 }

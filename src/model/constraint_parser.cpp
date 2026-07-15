@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cmath>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,6 +14,11 @@
 namespace coverwise {
 namespace model {
 namespace {
+
+constexpr size_t kMaxExpressionBytes = 64 * 1024;
+constexpr size_t kMaxTokens = 4096;
+constexpr size_t kMaxAstDepth = 128;
+constexpr size_t kMaxAstNodes = 1024;
 
 // --- Token types ---
 
@@ -66,20 +74,67 @@ bool IsIdentChar(char c) {
 
 bool IsGlobPatternChar(char c) { return IsIdentChar(c) || c == '*' || c == '?' || c == '.'; }
 
-/// @brief Convert a byte offset into a UTF-8 string to a Unicode codepoint offset.
-///
-/// Error positions are reported as codepoint offsets so that the unit matches the
-/// TypeScript surface (which counts codepoints, not UTF-16 code units). For a pure
-/// ASCII expression this is identical to the byte offset.
-size_t ByteOffsetToCodepoint(const std::string& s, size_t byte_offset) {
+std::vector<size_t> BuildCodepointPositions(const std::string& value) {
+  std::vector<size_t> positions(value.size() + 1);
   size_t codepoints = 0;
-  for (size_t b = 0; b < byte_offset && b < s.size(); ++b) {
-    // Count every byte that is not a UTF-8 continuation byte (0b10xxxxxx).
-    if ((static_cast<unsigned char>(s[b]) & 0xC0) != 0x80) {
+  for (size_t i = 0; i < value.size(); ++i) {
+    positions[i] = codepoints;
+    if ((static_cast<unsigned char>(value[i]) & 0xC0) != 0x80) {
       ++codepoints;
     }
   }
-  return codepoints;
+  positions[value.size()] = codepoints;
+  return positions;
+}
+
+bool IsComparisonToken(TokenType type) {
+  return type == TokenType::kEquals || type == TokenType::kNotEquals || type == TokenType::kLess ||
+         type == TokenType::kLessEqual || type == TokenType::kGreater ||
+         type == TokenType::kGreaterEqual;
+}
+
+/// Scan the longest prefix accepted by the shared strict decimal grammar.
+size_t ScanDecimal(const std::string& value, size_t start, bool allow_sign_or_leading_dot) {
+  size_t i = start;
+  if (allow_sign_or_leading_dot && i < value.size() && (value[i] == '+' || value[i] == '-')) {
+    ++i;
+  }
+
+  size_t digits = 0;
+  while (i < value.size() && std::isdigit(static_cast<unsigned char>(value[i]))) {
+    ++digits;
+    ++i;
+  }
+  if (i < value.size() && value[i] == '.') {
+    ++i;
+    while (i < value.size() && std::isdigit(static_cast<unsigned char>(value[i]))) {
+      ++digits;
+      ++i;
+    }
+  }
+  if (digits == 0) return start;
+
+  if (i < value.size() && (value[i] == 'e' || value[i] == 'E')) {
+    const size_t exponent_start = i;
+    ++i;
+    if (i < value.size() && (value[i] == '+' || value[i] == '-')) ++i;
+    const size_t exponent_digits_start = i;
+    while (i < value.size() && std::isdigit(static_cast<unsigned char>(value[i]))) ++i;
+    if (i == exponent_digits_start) return exponent_start;
+  }
+  return i;
+}
+
+bool ParseFiniteDecimal(const std::string& value, double* result) {
+  if (!util::IsNumeric(value)) return false;
+  errno = 0;
+  char* end = nullptr;
+  const double parsed = std::strtod(value.c_str(), &end);
+  if (errno == ERANGE || end != value.c_str() + value.size() || !std::isfinite(parsed)) {
+    return false;
+  }
+  *result = parsed;
+  return true;
 }
 
 struct TokenizeResult {
@@ -105,6 +160,7 @@ TokenizeResult Tokenize(const std::string& expr) {
   size_t i = 0;
   size_t len = expr.size();
   bool expect_pattern = false;
+  const auto codepoint_positions = BuildCodepointPositions(expr);
 
   while (i < len) {
     if (std::isspace(static_cast<unsigned char>(expr[i]))) {
@@ -112,9 +168,15 @@ TokenizeResult Tokenize(const std::string& expr) {
       continue;
     }
 
-    // Token positions are reported as codepoint offsets (matching the TS surface);
-    // i remains the byte cursor used to scan the UTF-8 string.
-    size_t start = ByteOffsetToCodepoint(expr, i);
+    if (tokens.size() >= kMaxTokens) {
+      return {{},
+              {Error::Code::kConstraintError,
+               "Constraint token limit exceeded (maximum " + std::to_string(kMaxTokens) + ")",
+               "Simplify or split the constraint expression"}};
+    }
+
+    // Positions were computed once while scanning, avoiding a prefix rescan per token.
+    const size_t start = codepoint_positions[i];
 
     if (expr[i] == '(') {
       tokens.push_back({TokenType::kLParen, "(", start});
@@ -183,51 +245,32 @@ TokenizeResult Tokenize(const std::string& expr) {
       continue;
     }
 
-    // Negative number: '-' followed by digit, only at the start of the expression
-    // or immediately after a comparison operator. Note the deliberate asymmetry: a
-    // value like "-1" inside an IN set ("p IN {-1}") is preceded by '{' or ',', so
-    // it is NOT tokenized here as a kNumber; it falls through to the identifier
-    // scanner ('-' is an ident char) and is matched as the literal text "-1".
-    // This is harmless because value resolution is string-based, so both paths
-    // yield the same value name. Keep this rule identical in the TS tokenizer.
-    if (expr[i] == '-' && i + 1 < len && std::isdigit(static_cast<unsigned char>(expr[i + 1]))) {
-      // Check if this looks like a negative number (after an operator token)
-      bool is_negative_num = tokens.empty();
-      if (!tokens.empty()) {
-        TokenType prev = tokens.back().type;
-        is_negative_num = (prev == TokenType::kEquals || prev == TokenType::kNotEquals ||
-                           prev == TokenType::kLess || prev == TokenType::kLessEqual ||
-                           prev == TokenType::kGreater || prev == TokenType::kGreaterEqual);
-      }
-      if (is_negative_num) {
-        size_t j = i + 1;
-        while (j < len && (std::isdigit(static_cast<unsigned char>(expr[j])) || expr[j] == '.')) {
-          ++j;
-        }
-        std::string num = expr.substr(i, j - i);
-        tokens.push_back({TokenType::kNumber, num, start});
-        i = j;
-        expect_pattern = false;
-        continue;
-      }
-    }
-
-    // Number literal
-    if (std::isdigit(static_cast<unsigned char>(expr[i]))) {
-      size_t j = i;
-      while (j < len && (std::isdigit(static_cast<unsigned char>(expr[j])) || expr[j] == '.')) {
-        ++j;
-      }
+    // Number literal. Signs and a leading dot are accepted only after an operator,
+    // preserving string values such as "-1" inside IN sets as identifiers.
+    const bool after_comparison = !tokens.empty() && IsComparisonToken(tokens.back().type);
+    const bool numeric_start =
+        std::isdigit(static_cast<unsigned char>(expr[i])) ||
+        (after_comparison && ((expr[i] == '+' || expr[i] == '-') ||
+                              (expr[i] == '.' && i + 1 < len &&
+                               std::isdigit(static_cast<unsigned char>(expr[i + 1])))));
+    if (numeric_start) {
+      size_t j = ScanDecimal(expr, i, after_comparison);
       // If followed by identifier chars, it's actually an identifier (e.g., "3d")
-      if (j < len && IsIdentChar(expr[j]) && expr[j] != '-') {
+      if (j > i && j < len && IsIdentChar(expr[j]) && expr[i] != '+') {
+        j = i;
         while (j < len && IsIdentChar(expr[j])) {
           ++j;
         }
         std::string word = expr.substr(i, j - i);
         tokens.push_back({TokenType::kIdentifier, word, start});
-      } else {
+      } else if (j > i) {
         std::string num = expr.substr(i, j - i);
         tokens.push_back({TokenType::kNumber, num, start});
+      } else {
+        return {{},
+                {Error::Code::kConstraintError,
+                 "Invalid decimal literal at position " + std::to_string(start),
+                 "Expected a finite decimal number"}};
       }
       i = j;
       expect_pattern = false;
@@ -316,7 +359,36 @@ TokenizeResult Tokenize(const std::string& expr) {
              ""}};
   }
 
-  tokens.push_back({TokenType::kEnd, "", ByteOffsetToCodepoint(expr, len)});
+  size_t paren_depth = 0;
+  size_t recursive_syntax = 0;
+  for (const auto& token : tokens) {
+    if (token.type == TokenType::kLParen) {
+      ++paren_depth;
+      if (paren_depth > kMaxAstDepth) {
+        return {{},
+                {Error::Code::kConstraintError,
+                 "Constraint nesting depth limit exceeded (maximum " +
+                     std::to_string(kMaxAstDepth) + ")",
+                 "Simplify or split the constraint expression"}};
+      }
+    } else if (token.type == TokenType::kRParen && paren_depth > 0) {
+      --paren_depth;
+    }
+    if (token.type == TokenType::kNot || token.type == TokenType::kImplies ||
+        token.type == TokenType::kIf || token.type == TokenType::kLParen) {
+      ++recursive_syntax;
+      const bool adds_ast_node = token.type != TokenType::kLParen;
+      if (recursive_syntax > kMaxAstDepth || (adds_ast_node && recursive_syntax >= kMaxAstDepth)) {
+        return {
+            {},
+            {Error::Code::kConstraintError,
+             "Constraint AST depth limit exceeded (maximum " + std::to_string(kMaxAstDepth) + ")",
+             "Simplify or split the constraint expression"}};
+      }
+    }
+  }
+
+  tokens.push_back({TokenType::kEnd, "", codepoint_positions[len]});
   return {std::move(tokens), {}};
 }
 
@@ -467,6 +539,32 @@ class Parser {
     return false;
   }
 
+  ParseResult MakeNode(Constraint constraint) {
+    ++node_count_;
+    if (node_count_ > kMaxAstNodes) {
+      return {nullptr,
+              {Error::Code::kConstraintError,
+               "Constraint AST node limit exceeded (maximum " + std::to_string(kMaxAstNodes) + ")",
+               "Simplify or split the constraint expression"}};
+    }
+    return {std::move(constraint), {}};
+  }
+
+  ParseResult BuildBalanced(std::vector<Constraint>* terms, size_t begin, size_t end, bool is_and) {
+    if (end - begin == 1) return {std::move((*terms)[begin]), {}};
+    const size_t middle = begin + (end - begin) / 2;
+    auto left = BuildBalanced(terms, begin, middle, is_and);
+    if (!left.error.ok()) return left;
+    auto right = BuildBalanced(terms, middle, end, is_and);
+    if (!right.error.ok()) return right;
+    if (is_and) {
+      return MakeNode(
+          std::make_unique<AndNode>(std::move(left.constraint), std::move(right.constraint)));
+    }
+    return MakeNode(
+        std::make_unique<OrNode>(std::move(left.constraint), std::move(right.constraint)));
+  }
+
   ParseResult ParseExpression() { return ParseImpliesExpr(); }
 
   ParseResult ParseImpliesExpr() {
@@ -496,15 +594,13 @@ class Parser {
         if (!else_branch.error.ok()) {
           return else_branch;
         }
-        return {std::make_unique<IfThenElseNode>(std::move(antecedent.constraint),
-                                                 std::move(consequent.constraint),
-                                                 std::move(else_branch.constraint)),
-                {}};
+        return MakeNode(std::make_unique<IfThenElseNode>(std::move(antecedent.constraint),
+                                                         std::move(consequent.constraint),
+                                                         std::move(else_branch.constraint)));
       }
 
-      return {std::make_unique<ImpliesNode>(std::move(antecedent.constraint),
-                                            std::move(consequent.constraint)),
-              {}};
+      return MakeNode(std::make_unique<ImpliesNode>(std::move(antecedent.constraint),
+                                                    std::move(consequent.constraint)));
     }
 
     auto left = ParseOrExpr();
@@ -517,48 +613,49 @@ class Parser {
       if (!right.error.ok()) {
         return right;
       }
-      return {
-          std::make_unique<ImpliesNode>(std::move(left.constraint), std::move(right.constraint)),
-          {}};
+      return MakeNode(
+          std::make_unique<ImpliesNode>(std::move(left.constraint), std::move(right.constraint)));
     }
 
     return left;
   }
 
   ParseResult ParseOrExpr() {
-    auto left = ParseAndExpr();
-    if (!left.error.ok()) {
-      return left;
+    auto first = ParseAndExpr();
+    if (!first.error.ok()) {
+      return first;
     }
+    std::vector<Constraint> terms;
+    terms.push_back(std::move(first.constraint));
 
     while (Match(TokenType::kOr)) {
       auto right = ParseAndExpr();
       if (!right.error.ok()) {
         return right;
       }
-      left.constraint =
-          std::make_unique<OrNode>(std::move(left.constraint), std::move(right.constraint));
+      terms.push_back(std::move(right.constraint));
     }
 
-    return left;
+    return BuildBalanced(&terms, 0, terms.size(), false);
   }
 
   ParseResult ParseAndExpr() {
-    auto left = ParseUnaryExpr();
-    if (!left.error.ok()) {
-      return left;
+    auto first = ParseUnaryExpr();
+    if (!first.error.ok()) {
+      return first;
     }
+    std::vector<Constraint> terms;
+    terms.push_back(std::move(first.constraint));
 
     while (Match(TokenType::kAnd)) {
       auto right = ParseUnaryExpr();
       if (!right.error.ok()) {
         return right;
       }
-      left.constraint =
-          std::make_unique<AndNode>(std::move(left.constraint), std::move(right.constraint));
+      terms.push_back(std::move(right.constraint));
     }
 
-    return left;
+    return BuildBalanced(&terms, 0, terms.size(), true);
   }
 
   ParseResult ParseUnaryExpr() {
@@ -567,7 +664,7 @@ class Parser {
       if (!child.error.ok()) {
         return child;
       }
-      return {std::make_unique<NotNode>(std::move(child.constraint)), {}};
+      return MakeNode(std::make_unique<NotNode>(std::move(child.constraint)));
     }
     return ParseAtom();
   }
@@ -652,9 +749,9 @@ class Parser {
           return {nullptr, rv.error};
         }
         if (is_equals) {
-          return {std::make_unique<EqualsNode>(left_param, rv.value_index), {}};
+          return MakeNode(std::make_unique<EqualsNode>(left_param, rv.value_index));
         } else {
-          return {std::make_unique<NotEqualsNode>(left_param, rv.value_index), {}};
+          return MakeNode(std::make_unique<NotEqualsNode>(left_param, rv.value_index));
         }
       }
 
@@ -665,15 +762,13 @@ class Parser {
           return {nullptr, rp2.error};
         }
         if (is_equals) {
-          return {std::make_unique<ParamEqualsNode>(left_param, rp2.param_index,
-                                                    params_[left_param].values,
-                                                    params_[rp2.param_index].values),
-                  {}};
+          return MakeNode(std::make_unique<ParamEqualsNode>(left_param, rp2.param_index,
+                                                            params_[left_param].values,
+                                                            params_[rp2.param_index].values));
         } else {
-          return {std::make_unique<ParamNotEqualsNode>(left_param, rp2.param_index,
-                                                       params_[left_param].values,
-                                                       params_[rp2.param_index].values),
-                  {}};
+          return MakeNode(std::make_unique<ParamNotEqualsNode>(left_param, rp2.param_index,
+                                                               params_[left_param].values,
+                                                               params_[rp2.param_index].values));
         }
       }
 
@@ -751,7 +846,7 @@ class Parser {
                "Syntax: parameter IN {value1, value2, ...}"}};
     }
 
-    return {std::make_unique<InNode>(param_idx, std::move(value_indices)), {}};
+    return MakeNode(std::make_unique<InNode>(param_idx, std::move(value_indices)));
   }
 
   ParseResult ParseLikeExpr(const Token& param_tok) {
@@ -772,7 +867,8 @@ class Parser {
     }
     const Token& pattern_tok = Advance();
 
-    return {std::make_unique<LikeNode>(param_idx, pattern_tok.text, params_[param_idx].values), {}};
+    return MakeNode(
+        std::make_unique<LikeNode>(param_idx, pattern_tok.text, params_[param_idx].values));
   }
 
   ParseResult ParseRelationalRhs(const Token& param_tok, TokenType op_type) {
@@ -804,9 +900,16 @@ class Parser {
 
     if (Current().type == TokenType::kNumber) {
       const Token& num_tok = Advance();
-      double literal = std::strtod(num_tok.text.c_str(), nullptr);
-      return {std::make_unique<RelationalNode>(left_param, op, literal, params_[left_param].values),
-              {}};
+      double literal = 0.0;
+      if (!ParseFiniteDecimal(num_tok.text, &literal)) {
+        return {nullptr,
+                {Error::Code::kConstraintError,
+                 "Invalid or out-of-range decimal literal '" + num_tok.text + "' at position " +
+                     std::to_string(num_tok.position),
+                 "Relational literals must be finite, representable decimal numbers"}};
+      }
+      return MakeNode(
+          std::make_unique<RelationalNode>(left_param, op, literal, params_[left_param].values));
     }
 
     if (Current().type == TokenType::kIdentifier) {
@@ -817,17 +920,22 @@ class Parser {
         if (!rp2.error.ok()) {
           return {nullptr, rp2.error};
         }
-        return {std::make_unique<RelationalNode>(left_param, op, rp2.param_index,
-                                                 params_[left_param].values,
-                                                 params_[rp2.param_index].values),
-                {}};
+        return MakeNode(std::make_unique<RelationalNode>(left_param, op, rp2.param_index,
+                                                         params_[left_param].values,
+                                                         params_[rp2.param_index].values));
       }
       // Try parsing as a number (identifiers that look like numbers)
       if (IsNumeric(rhs_tok.text)) {
-        double literal = ToDouble(rhs_tok.text);
-        return {
-            std::make_unique<RelationalNode>(left_param, op, literal, params_[left_param].values),
-            {}};
+        double literal = 0.0;
+        if (!ParseFiniteDecimal(rhs_tok.text, &literal)) {
+          return {nullptr,
+                  {Error::Code::kConstraintError,
+                   "Invalid or out-of-range decimal literal '" + rhs_tok.text + "' at position " +
+                       std::to_string(rhs_tok.position),
+                   "Relational literals must be finite, representable decimal numbers"}};
+        }
+        return MakeNode(
+            std::make_unique<RelationalNode>(left_param, op, literal, params_[left_param].values));
       }
       return {nullptr,
               {Error::Code::kConstraintError,
@@ -848,6 +956,7 @@ class Parser {
   const std::vector<Parameter>& params_;
   ParseOptions options_;
   size_t pos_;
+  size_t node_count_ = 0;
 };
 
 }  // namespace
@@ -858,6 +967,13 @@ ParseResult ParseConstraint(const std::string& expression, const std::vector<Par
     return {nullptr,
             {Error::Code::kConstraintError, "Empty constraint expression",
              "Provide a non-empty constraint string"}};
+  }
+  if (expression.size() > kMaxExpressionBytes) {
+    return {nullptr,
+            {Error::Code::kConstraintError,
+             "Constraint expression byte limit exceeded (maximum " +
+                 std::to_string(kMaxExpressionBytes) + ")",
+             "Simplify or split the constraint expression"}};
   }
 
   auto tok_result = Tokenize(expression);

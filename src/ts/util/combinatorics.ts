@@ -38,6 +38,22 @@ export function generateCombinations(n: number, k: number): number[][] {
   return result;
 }
 
+/** Compute C(n, k), returning null when it exceeds limit or safe-integer range. */
+export function checkedBinomial(n: number, k: number, limit: number): number | null {
+  if (k > n) {
+    return 0;
+  }
+  const reducedK = Math.min(k, n - k);
+  let result = 1;
+  for (let i = 1; i <= reducedK; ++i) {
+    result = (result * (n - reducedK + i)) / i;
+    if (!Number.isSafeInteger(result) || result > limit) {
+      return null;
+    }
+  }
+  return result;
+}
+
 /// Decode a flat (mixed-radix) index into per-position value indices.
 ///
 /// @param flatIndex The flat index to decode.

@@ -41,7 +41,7 @@ export function validateConstraints(
   for (let i = 0; i < tests.length; ++i) {
     for (let j = 0; j < constraints.length; ++j) {
       const result = constraints[j].evaluate(tests[i].values);
-      if (result === CR.False) {
+      if (result !== CR.True) {
         violations.push({
           testIndex: i,
           constraintIndex: j,
@@ -76,7 +76,7 @@ export function validateConstraintReport(
   for (let i = 0; i < tests.length; ++i) {
     for (const constraint of constraints) {
       const result = constraint.evaluate(tests[i].values);
-      if (result === CR.False) {
+      if (result !== CR.True) {
         report.violations++;
         report.violatingIndices.push(i);
         break;

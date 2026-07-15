@@ -1,12 +1,60 @@
 #include "model/constraint_ast.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace coverwise {
 namespace model {
+
+namespace {
+
+std::vector<uint32_t> Utf8Codepoints(const std::string& value) {
+  std::vector<uint32_t> result;
+  result.reserve(value.size());
+  for (size_t i = 0; i < value.size();) {
+    const auto first = static_cast<unsigned char>(value[i]);
+    uint32_t codepoint = first;
+    size_t length = 1;
+    if ((first & 0xE0) == 0xC0) {
+      codepoint = first & 0x1F;
+      length = 2;
+    } else if ((first & 0xF0) == 0xE0) {
+      codepoint = first & 0x0F;
+      length = 3;
+    } else if ((first & 0xF8) == 0xF0) {
+      codepoint = first & 0x07;
+      length = 4;
+    }
+
+    bool valid = i + length <= value.size();
+    for (size_t offset = 1; valid && offset < length; ++offset) {
+      const auto next = static_cast<unsigned char>(value[i + offset]);
+      if ((next & 0xC0) != 0x80) {
+        valid = false;
+      } else {
+        codepoint = (codepoint << 6) | (next & 0x3F);
+      }
+    }
+    const bool overlong = (length == 2 && codepoint < 0x80) || (length == 3 && codepoint < 0x800) ||
+                          (length == 4 && codepoint < 0x10000);
+    if (!valid || overlong || (codepoint >= 0xD800 && codepoint <= 0xDFFF) ||
+        codepoint > 0x10FFFF) {
+      // Preserve malformed input deterministically as one unmatched byte.
+      result.push_back(0x110000u + first);
+      ++i;
+    } else {
+      result.push_back(codepoint);
+      i += length;
+    }
+  }
+  return result;
+}
+
+}  // namespace
 
 // --- EqualsNode ---
 
@@ -255,16 +303,20 @@ ConstraintResult LikeNode::Evaluate(const std::vector<uint32_t>& assignment) con
 }
 
 bool LikeNode::GlobMatch(const std::string& pattern, const std::string& text) {
+  const auto pattern_codepoints = Utf8Codepoints(pattern);
+  const auto text_codepoints = Utf8Codepoints(text);
   size_t pi = 0;
   size_t ti = 0;
   size_t star_pi = std::string::npos;
   size_t star_ti = 0;
 
-  while (ti < text.size()) {
-    if (pi < pattern.size() && (pattern[pi] == '?' || pattern[pi] == text[ti])) {
+  while (ti < text_codepoints.size()) {
+    if (pi < pattern_codepoints.size() && (pattern_codepoints[pi] == static_cast<uint32_t>('?') ||
+                                           pattern_codepoints[pi] == text_codepoints[ti])) {
       ++pi;
       ++ti;
-    } else if (pi < pattern.size() && pattern[pi] == '*') {
+    } else if (pi < pattern_codepoints.size() &&
+               pattern_codepoints[pi] == static_cast<uint32_t>('*')) {
       star_pi = pi;
       star_ti = ti;
       ++pi;
@@ -277,10 +329,10 @@ bool LikeNode::GlobMatch(const std::string& pattern, const std::string& text) {
     }
   }
 
-  while (pi < pattern.size() && pattern[pi] == '*') {
+  while (pi < pattern_codepoints.size() && pattern_codepoints[pi] == static_cast<uint32_t>('*')) {
     ++pi;
   }
-  return pi == pattern.size();
+  return pi == pattern_codepoints.size();
 }
 
 // --- ParamEqualsNode ---

@@ -279,7 +279,41 @@ TEST(CoverageValidatorTest, LargeValueProductNoOverflow) {
   EXPECT_EQ(report.total_tuples, 1000000u);
   EXPECT_EQ(report.covered_tuples, 0u);
   EXPECT_DOUBLE_EQ(report.coverage_ratio, 0.0);
-  EXPECT_EQ(report.uncovered.size(), 1000000u);
+  EXPECT_EQ(report.uncovered_count, 1000000u);
+  EXPECT_EQ(report.uncovered.size(), 1000u);
+  EXPECT_EQ(report.omitted_uncovered, 999000u);
+}
+
+TEST(CoverageValidatorTest, RejectsUint64TupleProductWrapBeforeEnumeration) {
+  std::vector<Parameter> params;
+  for (uint32_t pi = 0; pi < 8; ++pi) {
+    Parameter param;
+    param.name = "P" + std::to_string(pi);
+    for (uint32_t vi = 0; vi < 256; ++vi) param.values.push_back(std::to_string(vi));
+    params.push_back(std::move(param));
+  }
+  auto report = ValidateCoverage(params, {}, 8);
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kTupleExplosion);
+  EXPECT_EQ(report.total_tuples, 0u);
+  EXPECT_NE(report.coverage_ratio, 1.0);
+}
+
+TEST(CoverageValidatorTest, RejectsJustAboveTupleLimit) {
+  std::vector<Parameter> params = {
+      {"A", std::vector<std::string>(4000, "a"), {}},
+      {"B", std::vector<std::string>(4001, "b"), {}},
+  };
+  auto report = ValidateCoverage(params, {}, 2);
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kTupleExplosion);
+}
+
+TEST(CoverageValidatorTest, RejectsCombinationMetadataBeforeMaterialization) {
+  std::vector<Parameter> params;
+  for (uint32_t pi = 0; pi < 200; ++pi) {
+    params.push_back({"P" + std::to_string(pi), {"only"}, {}});
+  }
+  auto report = ValidateCoverage(params, {}, 3);
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kTupleExplosion);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,4 +389,47 @@ TEST(CoverageValidatorTest, InvalidValuesExcludedFromUniverse) {
   // The invalid-value tuples must never surface as uncovered.
   EXPECT_FALSE(UncoveredContains(report.uncovered, {"os=ie6", "browser=chrome"}));
   EXPECT_FALSE(UncoveredContains(report.uncovered, {"os=ie6", "browser=safari"}));
+}
+
+TEST(CoverageValidatorTest, ExcludesTupleWithoutCompleteConstraintWitness) {
+  std::vector<Parameter> params = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
+  };
+  std::vector<coverwise::model::Constraint> constraints;
+  for (const auto& expression : {"IF A=0 THEN C=0", "IF B=0 THEN C=1"}) {
+    auto parsed = coverwise::model::ParseConstraint(expression, params);
+    ASSERT_TRUE(parsed.error.ok());
+    constraints.push_back(std::move(parsed.constraint));
+  }
+
+  std::vector<TestCase> tests = {
+      {{0, 1, 0}},
+      {{1, 0, 1}},
+      {{1, 1, 0}},
+      {{1, 1, 1}},
+  };
+  auto report = ValidateCoverage(params, tests, 2, constraints);
+
+  EXPECT_EQ(report.total_tuples, 9u);
+  EXPECT_FALSE(UncoveredContains(report.uncovered, {"A=0", "B=0"}));
+}
+
+TEST(CoverageValidatorTest, MalformedAndConstraintViolatingTestsDoNotContribute) {
+  std::vector<Parameter> params = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
+  };
+  auto parsed = coverwise::model::ParseConstraint("IF A=0 THEN C=0", params);
+  ASSERT_TRUE(parsed.error.ok());
+  std::vector<coverwise::model::Constraint> constraints;
+  constraints.push_back(std::move(parsed.constraint));
+
+  // Both rows match A=0,B=0, but one is missing C and one violates C=0.
+  std::vector<TestCase> tests = {{{0, 0}}, {{0, 0, 1}}};
+  auto report = ValidateCoverage(params, tests, 2, constraints);
+
+  EXPECT_TRUE(UncoveredContains(report.uncovered, {"A=0", "B=0"}));
 }

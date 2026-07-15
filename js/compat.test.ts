@@ -5,7 +5,11 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { analyzeCoverage, estimateModel, extendTests, generate, init } from './index.js';
-import { generate as pureGenerate } from './pure/index.js';
+import {
+  analyzeCoverage as pureAnalyzeCoverage,
+  extendTests as pureExtendTests,
+  generate as pureGenerate,
+} from './pure/index.js';
 import type {
   CoverageReport,
   GenerateInput,
@@ -60,18 +64,6 @@ function buildGenerateOptions(input: GenerateInput, params: InternalParameter[])
 // ---------------------------------------------------------------------------
 
 function tsGenerate(input: GenerateInput): GenerateResult {
-  if (input.parameters.length === 0) {
-    // Match WASM behavior for empty parameters
-    return {
-      tests: [],
-      coverage: 1.0,
-      uncovered: [],
-      stats: { totalTuples: 0, coveredTuples: 0, testCount: 0 },
-      suggestions: [],
-      warnings: [],
-      strength: input.strength ?? 2,
-    };
-  }
   const params = toInternalParams(input.parameters);
   const opts = buildGenerateOptions(input, params);
   const result = tsGenerateRaw(opts);
@@ -310,13 +302,8 @@ const scenarios: Array<{ name: string; input: GenerateInput }> = [
     name: 'single parameter',
     input: {
       parameters: [{ name: 'os', values: ['win', 'mac', 'linux'] }],
+      strength: 1,
       seed: 42,
-    },
-  },
-  {
-    name: 'empty parameters',
-    input: {
-      parameters: [],
     },
   },
 ];
@@ -533,7 +520,7 @@ describe('WASM / TS compatibility', () => {
   // with the same error shape.
   describe('seed validation parity', () => {
     const params: Parameter[] = [{ name: 'os', values: ['win', 'mac'] }];
-    const validInput = (seed: number): GenerateInput => ({ parameters: params, seed });
+    const validInput = (seed: number): GenerateInput => ({ parameters: params, strength: 1, seed });
 
     const surfaces: Array<{ name: string; gen: (input: GenerateInput) => GenerateResult }> = [
       { name: 'wasm', gen: generate },
@@ -640,6 +627,82 @@ describe('WASM / TS compatibility', () => {
       expect(pureResult.classCoverage).toEqual(wasmResult.classCoverage);
       // Sanity: at least one class tuple is tracked.
       expect(wasmResult.classCoverage?.totalClassTuples).toBeGreaterThan(0);
+    });
+  });
+
+  describe('constrained class coverage parity', () => {
+    const input: GenerateInput = {
+      parameters: [
+        {
+          name: 'A',
+          values: [
+            { value: 'a0', class: 'c0' },
+            { value: 'a1', class: 'c1' },
+          ],
+        },
+        {
+          name: 'B',
+          values: [
+            { value: 'b0', class: 'd0' },
+            { value: 'b1', class: 'd1' },
+          ],
+        },
+      ],
+      constraints: ['IF A=a1 THEN B=b1'],
+      strength: 2,
+    };
+
+    it('excludes impossible class tuples on generate and extend', () => {
+      const wasmGenerated = generate(input);
+      const pureGenerated = pureGenerate(input);
+      expect(wasmGenerated.classCoverage).toEqual({
+        totalClassTuples: 3,
+        coveredClassTuples: 3,
+        classCoverageRatio: 1,
+      });
+      expect(pureGenerated.classCoverage).toEqual(wasmGenerated.classCoverage);
+
+      const existing = [{ A: 'a0', B: 'b0' }];
+      const wasmExtended = extendTests(existing, input);
+      const pureExtended = pureExtendTests(existing, input);
+      expect(wasmExtended.classCoverage).toEqual(wasmGenerated.classCoverage);
+      expect(pureExtended.classCoverage).toEqual(wasmGenerated.classCoverage);
+    });
+  });
+
+  describe('safe TestCase identity parity', () => {
+    const parameters: Parameter[] = [
+      { name: '__proto__', values: ['p0', 'p1'] },
+      { name: 'constructor', values: ['c0', 'c1'] },
+    ];
+
+    it('round-trips dangerous property names through generate and analyze', () => {
+      const wasmGenerated = generate({ parameters });
+      const pureGenerated = pureGenerate({ parameters });
+
+      for (const result of [wasmGenerated, pureGenerated]) {
+        expect(result.tests.length).toBeGreaterThan(0);
+        for (const test of result.tests) {
+          expect(Object.hasOwn(test, '__proto__')).toBe(true);
+          expect(Object.hasOwn(test, 'constructor')).toBe(true);
+        }
+      }
+      expect(analyzeCoverage(parameters, wasmGenerated.tests).coverageRatio).toBe(1);
+      expect(pureAnalyzeCoverage(parameters, pureGenerated.tests).coverageRatio).toBe(1);
+    });
+
+    it('rejects alias-primary collisions on both surfaces', () => {
+      const collision: GenerateInput = {
+        parameters: [
+          {
+            name: 'A',
+            values: [{ value: 'primary', aliases: ['collision'] }, 'collision'],
+          },
+          { name: 'B', values: ['0', '1'] },
+        ],
+      };
+      expect(() => generate(collision)).toThrow(/Ambiguous value or alias/);
+      expect(() => pureGenerate(collision)).toThrow(/Ambiguous value or alias/);
     });
   });
 

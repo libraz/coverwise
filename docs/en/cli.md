@@ -2,6 +2,15 @@
 
 The `coverwise` command-line tool reads JSON input and writes JSON output.
 
+The npm package does not install the native executable. Download the Linux x64 archive from
+[GitHub Releases](https://github.com/libraz/coverwise/releases), or build from source; the build-tree
+path is `build/bin/coverwise`, and CMake installs it to `bin/coverwise` under the selected prefix.
+
+All command outputs use CLI schema version `1` and include `"schemaVersion": 1`.
+The v1 migration makes empty array fields explicit, represents suggestions as
+`{ description, testCase }`, and uses `subModelCount`, `constraintCount`, and
+`parameters` in `stats` output.
+
 ## Commands
 
 ### `generate`
@@ -44,6 +53,7 @@ Only `parameters` is required. All other fields are optional.
 
 ```json
 {
+  "schemaVersion": 1,
   "tests": [
     { "os": "Windows", "browser": "Chrome" },
     { "os": "macOS", "browser": "Firefox" }
@@ -51,6 +61,8 @@ Only `parameters` is required. All other fields are optional.
   "negativeTests": [],
   "coverage": 1.0,
   "uncovered": [],
+  "uncoveredCount": 0,
+  "omittedUncovered": 0,
   "stats": {
     "totalTuples": 9,
     "coveredTuples": 9,
@@ -79,6 +91,7 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
 
 ```json
 {
+  "schemaVersion": 1,
   "totalTuples": 9,
   "coveredTuples": 7,
   "coverageRatio": 0.778,
@@ -86,9 +99,13 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
     {
       "tuple": ["os=Windows", "browser=Safari"],
       "params": ["os", "browser"],
+      "reason": "never covered",
       "display": "os=Windows, browser=Safari"
     }
-  ]
+  ],
+  "uncoveredCount": 2,
+  "omittedUncovered": 0,
+  "invalidTests": []
 }
 ```
 
@@ -115,14 +132,15 @@ coverwise stats <input.json>
 
 ```json
 {
+  "schemaVersion": 1,
   "parameterCount": 3,
   "totalValues": 8,
   "strength": 2,
   "totalTuples": 29,
   "estimatedTests": 10,
-  "subModels": 0,
+  "subModelCount": 0,
   "constraintCount": 1,
-  "parametersDetail": [
+  "parameters": [
     { "name": "os", "valueCount": 3, "invalidCount": 0 },
     { "name": "browser", "valueCount": 3, "invalidCount": 0 },
     { "name": "theme", "valueCount": 2, "invalidCount": 0 }

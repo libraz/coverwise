@@ -5,6 +5,7 @@
 #define COVERWISE_VALIDATOR_COVERAGE_VALIDATOR_H_
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "model/constraint_ast.h"
@@ -16,18 +17,27 @@ namespace validator {
 
 /// @brief Coverage validation report with human-readable uncovered tuples.
 struct CoverageReport {
-  uint32_t total_tuples = 0;
-  uint32_t covered_tuples = 0;
+  uint64_t total_tuples = 0;
+  uint64_t covered_tuples = 0;
   double coverage_ratio = 0.0;
   /// @brief Human-readable uncovered tuples (e.g. "os=win, browser=safari").
   std::vector<model::UncoveredTuple> uncovered;
+  uint64_t uncovered_count = 0;
+  uint64_t omitted_uncovered = 0;
+  struct InvalidTest {
+    uint32_t test_index = 0;
+    std::string reason;
+  };
+  std::vector<InvalidTest> invalid_tests;
+  model::Error error;
 };
 
 /// @brief Equivalence class coverage report.
 struct ClassCoverageReport {
-  uint32_t total_class_tuples = 0;
-  uint32_t covered_class_tuples = 0;
+  uint64_t total_class_tuples = 0;
+  uint64_t covered_class_tuples = 0;
   double coverage_ratio = 0.0;
+  model::Error error;
 };
 
 /// @brief Independently validate t-wise coverage of a test suite.

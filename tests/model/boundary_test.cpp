@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -106,6 +107,27 @@ TEST(BoundaryTest, MergeWithExplicitValues) {
   EXPECT_EQ(result.values[6], "101");
 }
 
+TEST(BoundaryTest, PreservesOriginalSpellingAndMetadataByValueIdentity) {
+  Parameter param("score", {"1.0", "other"}, {true, false});
+  param.set_aliases({{"one"}, {"fallback"}});
+  param.set_equivalence_classes({"numeric", "text"});
+  BoundaryConfig config{BoundaryConfig::Type::kInteger, 0, 2, 1.0};
+
+  auto result = ExpandBoundaryValues(param, config);
+
+  const uint32_t one = result.find_value_index("1.0");
+  ASSERT_NE(one, UINT32_MAX);
+  EXPECT_EQ(result.values[one], "1.0");
+  EXPECT_TRUE(result.is_invalid(one));
+  EXPECT_EQ(result.aliases(one), (std::vector<std::string>{"one"}));
+  EXPECT_EQ(result.equivalence_class(one), "numeric");
+  const uint32_t generated = result.find_value_index("-1");
+  ASSERT_NE(generated, UINT32_MAX);
+  EXPECT_FALSE(result.is_invalid(generated));
+  EXPECT_TRUE(result.aliases(generated).empty());
+  EXPECT_TRUE(result.equivalence_class(generated).empty());
+}
+
 TEST(BoundaryTest, MergeWithExplicitNonNumericValues) {
   // Mix of numeric and non-numeric explicit values.
   Parameter param("level", {"low", "50", "high"});
@@ -146,6 +168,9 @@ TEST(BoundaryTest, GenerationWithBoundaryValues) {
   EXPECT_DOUBLE_EQ(result.coverage, 1.0);
   EXPECT_TRUE(result.uncovered.empty());
   EXPECT_GT(result.tests.size(), 0u);
+  ASSERT_EQ(result.parameters.size(), 2u);
+  EXPECT_EQ(result.parameters[0].values,
+            (std::vector<std::string>{"0", "1", "2", "99", "100", "101"}));
 
   // Verify that expanded params were used: age should have 6 boundary values.
   // The tests should reference values 0..5 for the age parameter.
@@ -183,4 +208,44 @@ TEST(BoundaryTest, GenerationWithBoundaryAndExplicitValues) {
   auto report =
       coverwise::validator::ValidateCoverage(expanded_params, result.tests, opts.strength);
   EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+}
+
+TEST(BoundaryTest, SeedIndicesAreRemappedByValueIdentity) {
+  coverwise::model::GenerateOptions opts;
+  opts.parameters = {
+      {"score", {"50", "0"}},
+      {"status", {"pass", "fail"}},
+  };
+  opts.boundary_configs["score"] = {BoundaryConfig::Type::kInteger, 0, 100, 1.0};
+  opts.strength = 2;
+  opts.seeds = {{{0, 0}}};  // score=50 before expansion.
+
+  auto result = coverwise::core::Generate(opts);
+
+  ASSERT_TRUE(result.error.ok());
+  ASSERT_FALSE(result.tests.empty());
+  ASSERT_EQ(result.parameters.size(), 2u);
+  const uint32_t remapped = result.parameters[0].find_value_index("50");
+  ASSERT_NE(remapped, UINT32_MAX);
+  EXPECT_EQ(result.tests[0].values[0], remapped);
+  EXPECT_EQ(result.parameters[0].values[result.tests[0].values[0]], "50");
+}
+
+TEST(BoundaryTest, InvalidBoundaryConfigurationReturnsStructuredError) {
+  coverwise::model::GenerateOptions opts;
+  opts.parameters = {{"score", {"0", "1"}}, {"status", {"pass", "fail"}}};
+  opts.strength = 2;
+
+  opts.boundary_configs["score"] = {BoundaryConfig::Type::kFloat, 0, 1,
+                                    std::numeric_limits<double>::infinity()};
+  EXPECT_EQ(coverwise::core::Generate(opts).error.code,
+            coverwise::model::Error::Code::kInvalidInput);
+
+  opts.boundary_configs["score"] = {BoundaryConfig::Type::kInteger, 1.5, 10, 1};
+  EXPECT_EQ(coverwise::core::Generate(opts).error.code,
+            coverwise::model::Error::Code::kInvalidInput);
+
+  opts.boundary_configs["score"] = {BoundaryConfig::Type::kFloat, 2, 1, 0.5};
+  EXPECT_EQ(coverwise::core::Generate(opts).error.code,
+            coverwise::model::Error::Code::kInvalidInput);
 }

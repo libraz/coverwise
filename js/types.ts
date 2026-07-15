@@ -93,6 +93,10 @@ export interface GenerateResult {
   coverage: number;
   /** Uncovered tuples with context. Empty when coverage is 1.0. */
   uncovered: UncoveredTuple[];
+  /** Total uncovered tuple count before diagnostic truncation. */
+  uncoveredCount: number;
+  /** Number of uncovered tuples omitted from `uncovered`. */
+  omittedUncovered: number;
   /** Statistics for evaluation and comparison. */
   stats: GenerateStats;
   /** Actionable suggestions with proposed test cases. */
@@ -115,6 +119,10 @@ export interface CoverageReport {
   coverageRatio: number;
   /** Every uncovered tuple with context. */
   uncovered: UncoveredTuple[];
+  uncoveredCount: number;
+  omittedUncovered: number;
+  /** Rows excluded from coverage accounting and the reason for each. */
+  invalidTests: Array<{ testIndex: number; reason: string }>;
 }
 
 export interface ExtendInput extends GenerateInput {
@@ -131,6 +139,7 @@ export interface ModelStats {
   parameterCount: number;
   totalValues: number;
   strength: number;
+  /** Raw global + sub-model tuple upper bound before constraint exclusion. */
   totalTuples: number;
   estimatedTests: number;
   subModelCount: number;
