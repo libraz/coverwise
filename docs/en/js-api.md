@@ -59,9 +59,10 @@ interface GenerateInput {
 interface Parameter {
   name: string;
   values: (string | number | boolean | ParameterValue)[];
+  // Boundary expansion is all-or-nothing: type and range are both required.
   type?: 'integer' | 'float';  // Enables boundary value expansion.
-  range?: [number, number];    // Inclusive [min, max] range for expansion.
-  step?: number;               // Float boundary step. Default: 1.0.
+  range?: [number, number];    // Inclusive [min, max] range when type is set.
+  step?: number;               // Float step (default 1.0); integer accepts only 1.
 }
 
 interface ParameterValue {
@@ -150,6 +151,7 @@ generate({
 interface GenerateResult {
   tests: TestCase[];                // Positive test cases (no invalid values).
   negativeTests: TestCase[];        // Negative tests (exactly 1 invalid value each). Empty array if none.
+  negativeCoverage?: NegativeCoverage; // Feasible single-fault negative-tuple coverage.
   coverage: number;                 // Coverage ratio (0.0 – 1.0).
   uncovered: UncoveredTuple[];      // Uncovered tuples with reasons.
   stats: GenerateStats;
@@ -172,8 +174,16 @@ interface GenerateStats {
 interface UncoveredTuple {
   tuple: string[];    // e.g. ["os=Windows", "browser=Safari"]
   params: string[];   // e.g. ["os", "browser"]
+  indices: Array<[number, number]>; // Exact [parameter index, value index] pairs.
   reason: string;
   display: string;    // Human-readable: "os=Windows, browser=Safari"
+}
+
+interface NegativeCoverage {
+  totalTuples: number;
+  coveredTuples: number;
+  omittedTuples: number;
+  coverageRatio: number;
 }
 
 interface Suggestion {
@@ -250,6 +260,8 @@ const newTests = result.tests.slice(existing.length);
 
 Preview model statistics without running generation. Useful for estimating complexity before committing to a full generation.
 
+The estimate is a raw tuple upper bound before constraint exclusion, but malformed constraints and unknown parameter references are rejected just as they are by `generate`.
+
 ```typescript
 function estimateModel(input: GenerateInput): ModelStats
 ```
@@ -302,6 +314,7 @@ The Pure TypeScript API validates inputs and throws descriptive errors for:
 - `seed`: Must be a finite number. `NaN` and `Infinity` are rejected.
 - `maxTests`: Must be a non-negative integer when provided.
 - `parameters`: Must be a non-empty array.
+- Resource limits apply to public input: at most 1,024 parameters, 16,384 values per parameter, 100,000 test rows, 256 constraints, 64 KiB per string, and 1 MiB of aggregate string data.
 
 The WASM API performs equivalent validation at the C++ boundary.
 

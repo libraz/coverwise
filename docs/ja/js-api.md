@@ -59,9 +59,10 @@ interface GenerateInput {
 interface Parameter {
   name: string;
   values: (string | number | boolean | ParameterValue)[];
+  // 境界値展開は all-or-nothing: type と range の両方が必要。
   type?: 'integer' | 'float';  // 境界値展開を有効化。
-  range?: [number, number];    // 展開に使う包括的な [min, max] 範囲。
-  step?: number;               // float 境界値の刻み幅。デフォルト: 1.0。
+  range?: [number, number];    // type 指定時に展開に使う [min, max] 範囲。
+  step?: number;               // float の刻み幅（デフォルト 1.0）。integer は 1 のみ。
 }
 
 interface ParameterValue {
@@ -150,6 +151,7 @@ generate({
 interface GenerateResult {
   tests: TestCase[];                // 正常テストケース（無効値なし）。
   negativeTests: TestCase[];        // ネガティブテスト（無効値が正確に1つ）。該当なしの場合は空配列。
+  negativeCoverage?: NegativeCoverage; // 実行可能な単一障害ネガティブタプルのカバレッジ。
   coverage: number;                 // カバレッジ比率（0.0 – 1.0）。
   uncovered: UncoveredTuple[];      // 未カバータプルと理由。
   stats: GenerateStats;
@@ -172,8 +174,16 @@ interface GenerateStats {
 interface UncoveredTuple {
   tuple: string[];    // 例: ["os=Windows", "browser=Safari"]
   params: string[];   // 例: ["os", "browser"]
+  indices: Array<[number, number]>; // 正確な [パラメータインデックス, 値インデックス]。
   reason: string;
   display: string;    // 人間可読: "os=Windows, browser=Safari"
+}
+
+interface NegativeCoverage {
+  totalTuples: number;
+  coveredTuples: number;
+  omittedTuples: number;
+  coverageRatio: number;
 }
 
 interface Suggestion {
@@ -250,6 +260,8 @@ const newTests = result.tests.slice(existing.length);
 
 生成を実行せずにモデル統計をプレビューします。生成前の複雑さ推定に便利です。
 
+推定値は制約除外前の raw タプル上限ですが、不正な制約構文や未知のパラメータ参照は `generate` と同様に拒否されます。
+
 ```typescript
 function estimateModel(input: GenerateInput): ModelStats
 ```
@@ -302,6 +314,7 @@ Pure TypeScript API は入力を検証し、不正な値に対して説明的な
 - `seed`: 有限な数値である必要があります。`NaN` と `Infinity` は拒否されます。
 - `maxTests`: 指定する場合は非負の整数である必要があります。
 - `parameters`: 空でない配列である必要があります。
+- 公開入力にはリソース上限があります。パラメータは最大 1,024、各値配列は最大 16,384、テスト行は最大 100,000、制約は最大 256、文字列は各 64 KiB、文字列全体では 1 MiB です。
 
 WASM API は C++ 側の境界で同等のバリデーションを行います。
 

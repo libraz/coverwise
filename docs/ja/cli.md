@@ -41,7 +41,7 @@ coverwise generate <input.json> [> output.json]
     { "os": "Windows", "browser": "Chrome" }
   ],
   "subModels": [
-    { "parameters": ["os", "browser"], "strength": 3 }
+    { "parameters": ["os", "browser"], "strength": 2 }
   ]
 }
 ```
@@ -86,6 +86,8 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
 - `--strength` — 相互作用の強度（デフォルト: 2）
 - `--constraints` — 制約文字列の JSON ファイル（任意）。制約に違反するタプルはカバレッジの分母から除外されるため、制約付きで完全にカバーされたスイートは 100% と報告されます。
 
+`--tests` と `--existing` は、テスト配列そのものに加え `generate` が出力する schema-v1 エンベロープも受け付けます。したがって `coverwise generate input.json > tests.json` の出力をそのまま後続コマンドへ渡せます。
+
 **出力:**
 
 ```json
@@ -98,6 +100,7 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
     {
       "tuple": ["os=Windows", "browser=Safari"],
       "params": ["os", "browser"],
+      "indices": [[0, 0], [1, 2]],
       "reason": "never covered",
       "display": "os=Windows, browser=Safari"
     }
@@ -122,6 +125,8 @@ coverwise extend --existing <tests.json> <input.json> [> output.json]
 ### `stats`
 
 生成を実行せずにモデル統計をプレビューします。
+
+`stats` は、制約で除外する前の raw タプル数を推定しますが、報告前に制約構文とパラメータ参照を検証します。
 
 ```bash
 coverwise stats <input.json>

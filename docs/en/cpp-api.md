@@ -147,6 +147,7 @@ struct GenerateResult {
   std::vector<Parameter> parameters;  // Effective values after boundary expansion.
   std::vector<TestCase> tests;
   std::vector<TestCase> negative_tests;
+  std::optional<NegativeCoverage> negative_coverage;
   double coverage = 0.0;
   std::vector<UncoveredTuple> uncovered;
   uint64_t uncovered_count = 0;
@@ -167,6 +168,7 @@ struct GenerateStats {
 struct UncoveredTuple {
   std::vector<std::string> tuple;
   std::vector<std::string> params;
+  std::vector<std::pair<uint32_t, uint32_t>> indices;
   std::string reason;
   std::string ToString() const;
 };

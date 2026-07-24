@@ -42,7 +42,7 @@ coverwise generate <input.json> [> output.json]
     { "os": "Windows", "browser": "Chrome" }
   ],
   "subModels": [
-    { "parameters": ["os", "browser"], "strength": 3 }
+    { "parameters": ["os", "browser"], "strength": 2 }
   ]
 }
 ```
@@ -87,6 +87,8 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
 - `--strength` — Interaction strength (default: 2)
 - `--constraints` — JSON file with constraint strings (optional). Constraint-invalid tuples are excluded from the coverage denominator, so a fully covered constrained suite reports 100%.
 
+`--tests` and `--existing` accept either a bare test array or the schema-v1 envelope emitted by `generate`, so `coverwise generate input.json > tests.json` can be passed to the downstream commands unchanged.
+
 **Output:**
 
 ```json
@@ -99,6 +101,7 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
     {
       "tuple": ["os=Windows", "browser=Safari"],
       "params": ["os", "browser"],
+      "indices": [[0, 0], [1, 2]],
       "reason": "never covered",
       "display": "os=Windows, browser=Safari"
     }
@@ -123,6 +126,8 @@ coverwise extend --existing <tests.json> <input.json> [> output.json]
 ### `stats`
 
 Preview model statistics without running generation.
+
+`stats` validates constraint syntax and parameter references before reporting a raw (pre-constraint-exclusion) tuple estimate.
 
 ```bash
 coverwise stats <input.json>
