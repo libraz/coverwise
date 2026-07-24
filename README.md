@@ -18,16 +18,7 @@ coverwise provides three operations that form a test design loop:
 - **`extend`** — Generate only the tests needed to close coverage gaps
 - **`generate`** — Create a minimal test suite from scratch with full coverage
 
-```mermaid
-graph LR
-    A["Existing tests"] --> B["analyze"]
-    B --> C{"100%?"}
-    C -- No --> D["extend"]
-    D --> A
-    C -- Yes --> E["Done"]
-    F["No tests"] --> G["generate"]
-    G --> A
-```
+![coverwise workflow: generate builds a suite from scratch; analyze measures coverage; extend closes the gaps and loops back until coverage is complete.](assets/workflow.svg)
 
 Most combinatorial tools only support `generate`. coverwise treats `analyze` and `extend` as first-class operations.
 

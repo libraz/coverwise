@@ -18,16 +18,7 @@ coverwise はテスト設計ループを構成する3つの操作を提供しま
 - **`extend`** — カバレッジギャップを埋めるテストだけを生成
 - **`generate`** — ゼロから完全カバレッジの最小テストスイートを作成
 
-```mermaid
-graph LR
-    A["既存テスト"] --> B["analyze"]
-    B --> C{"100%?"}
-    C -- No --> D["extend"]
-    D --> A
-    C -- Yes --> E["完了"]
-    F["テストなし"] --> G["generate"]
-    G --> A
-```
+![coverwise のワークフロー: generate がゼロからスイートを構築し、analyze がカバレッジを測定し、extend がギャップを埋めてカバレッジが完全になるまでループします。](assets/workflow.svg)
 
 多くの組み合わせテストツールは `generate` のみをサポートしています。coverwise は `analyze` と `extend` を同等の操作として扱います。
 
@@ -113,6 +104,8 @@ const extended = cw.extendTests(existingTests, { parameters });
 
 ## CLI
 
+npm パッケージはネイティブ実行ファイルをインストールしません。Linux x64 バイナリは各 [GitHub Release](https://github.com/libraz/coverwise/releases) に添付されています。ソースからビルドすると `build/bin/coverwise` が生成され、`cmake --install build` で選択したプレフィックス配下の `bin/coverwise` にインストールされます。
+
 ```bash
 # 既存テストのカバレッジを分析
 coverwise analyze --params params.json --tests tests.json
@@ -142,7 +135,7 @@ coverwise stats input.json
 | **境界値** | 整数・浮動小数点の範囲を端と端付近の値に自動展開。 |
 | **同値クラス** | 値をクラスにグループ化し、クラスレベルのカバレッジを追跡。 |
 | **シードテスト** | 必須テストを起点に、不足分だけを追加生成。 |
-| **決定的出力** | 同じ入力＋シード＝毎回同じ出力。 |
+| **決定的出力** | 有効な入力＋シードが同じなら、ネイティブ C++・WASM・Pure TS で同一の出力。 |
 
 ## パフォーマンス
 
@@ -180,7 +173,7 @@ coverwise stats input.json
 | 15 × 3 | 5-wise | 729,729 | 1,277 | 220 ms | 761 ms |
 | 20 × 3 | 5-wise | 3,767,472 | 1,581 | 1.4 s | 4.2 s |
 
-Apple M シリーズで計測（seed=42）。理論下限は直交配列 (OA) 理論または v² 下界に基づく既知の下限値。貪欲法アルゴリズムは一般に理論最小値の 1.5〜2.5 倍のテスト数を生成します。WASM と Pure TS は異なる RNG 実装を使用するため、テスト数はわずかに異なる場合があります。
+Apple M シリーズで計測（seed=42）。理論下限は直交配列 (OA) 理論または v² 下界に基づく既知の下限値。貪欲法アルゴリズムは一般に理論最小値の 1.5〜2.5 倍のテスト数を生成します。ネイティブ C++・WASM・Pure TS は xoshiro128** と SplitMix32 シード、棄却サンプリングを共有するため、有効な入力とシードが同じなら、エンジン間で同一のテストスイートを生成します。
 
 ペアワイズ（最も一般的なユースケース）では WASM と Pure TS は同等の性能です。WASM が約3倍の優位を示すのは、60,000タプルを超える高強度構成のみです。
 
@@ -191,6 +184,7 @@ Apple M シリーズで計測（seed=42）。理論下限は直交配列 (OA) �
 make build            # デバッグビルド
 make test             # テスト実行
 make release          # 最適化ビルド
+cmake --install build --prefix ./install  # ライブラリ・ヘッダ・CMakeパッケージ・CLI
 
 # WebAssembly
 make wasm             # EmscriptenでWASMビルド
