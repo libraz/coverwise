@@ -19,7 +19,11 @@ function(coverwise_add_test TEST_NAME TEST_SOURCE)
   target_link_libraries(${TEST_NAME} PRIVATE coverwise::coverwise GTest::gtest_main)
   coverwise_enable_warnings(${TEST_NAME})
   coverwise_enable_sanitizers(${TEST_NAME})
-  gtest_discover_tests(${TEST_NAME})
+  # Some generator fixtures initialize enough static state that test discovery
+  # can exceed CMake's five-second default on a loaded CI runner. Discovery is
+  # still a build-time check; give it a bounded, realistic window instead of
+  # intermittently deleting the just-linked test executable.
+  gtest_discover_tests(${TEST_NAME} DISCOVERY_TIMEOUT 30)
 endfunction()
 
 # Util tests
