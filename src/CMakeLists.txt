@@ -45,5 +45,5 @@ if(COVERWISE_ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(COVERWISE_BUILD_WASM)
-  add_subdirectory(wasm)
+  add_subdirectory(binding/wasm)
 endif()

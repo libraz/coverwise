@@ -128,7 +128,7 @@ if(NOT COVERWISE_BUILD_WASM)
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/coverwise"
     FILES_MATCHING PATTERN "*.h"
     PATTERN "ts" EXCLUDE
-    PATTERN "wasm" EXCLUDE
+    PATTERN "binding" EXCLUDE
   )
   install(EXPORT coverwiseTargets
     FILE coverwiseTargets.cmake
