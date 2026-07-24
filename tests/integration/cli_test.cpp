@@ -326,8 +326,7 @@ TEST(CliAnalyzeTest, DedicatedConstraintsObjectRequiresConstraintsArray) {
   WriteFile(params_path, params);
   WriteFile(tests_path, tests);
 
-  for (const std::string& invalid :
-       {R"({})", R"({"constraint":["a=0"]})", R"({"constraints":null})"}) {
+  for (const char* invalid : {R"({})", R"({"constraint":["a=0"]})", R"({"constraints":null})"}) {
     const std::string constraints_path = TempPath("constraints_invalid.json");
     WriteFile(constraints_path, invalid);
     const auto result = RunCliCaptureStderr("analyze --params " + params_path + " --tests " +
