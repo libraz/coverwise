@@ -125,19 +125,20 @@ Error ValidateGenerateOptions(const GenerateOptions& options) {
         return Invalid("Boundary step must be finite and positive for parameter " + param_name);
       }
     } else {
-      constexpr double kInt64Min = static_cast<double>(std::numeric_limits<int64_t>::min());
-      constexpr double kInt64Max = static_cast<double>(std::numeric_limits<int64_t>::max());
-      if (std::floor(config.min_value) != config.min_value ||
-          std::floor(config.max_value) != config.max_value || config.min_value <= kInt64Min ||
-          config.max_value >= kInt64Max) {
-        return Invalid("Integer boundary endpoints must be integral and allow checked +/-1 for " +
-                       param_name);
+      // Integer endpoints and values must be JS safe integers (|v| <= 2^53-1),
+      // matching Number.isSafeInteger on the TypeScript surfaces so native/WASM
+      // and pure-TS accept or reject the same models.
+      constexpr double kMaxSafeInteger = 9007199254740991.0;  // 2^53 - 1
+      auto is_safe_integer = [](double v) {
+        return std::isfinite(v) && std::floor(v) == v && std::abs(v) <= kMaxSafeInteger;
+      };
+      if (!is_safe_integer(config.min_value) || !is_safe_integer(config.max_value)) {
+        return Invalid("Integer boundary endpoints must be safe integers for " + param_name);
       }
       for (const auto& value : param->values) {
         if (!util::IsNumeric(value)) continue;
         double numeric = util::ToDouble(value);
-        if (!std::isfinite(numeric) || std::floor(numeric) != numeric || numeric <= kInt64Min ||
-            numeric >= kInt64Max) {
+        if (!is_safe_integer(numeric)) {
           return Invalid(
               "Integer boundary parameter contains a non-integral or out-of-range value: " +
               param_name + "=" + value);

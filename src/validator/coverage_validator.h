@@ -48,11 +48,16 @@ struct ClassCoverageReport {
 /// (they do not count toward total_tuples or uncovered), matching the
 /// generator's CoverageEngine::ExcludeInvalidValues semantics.
 ///
-/// @param constraints Optional constraint AST list. Tuples whose partial
-///                    assignment evaluates any constraint to kFalse are
-///                    excluded from the coverage universe entirely (they
-///                    do not count toward total_tuples or uncovered), matching
-///                    the generator's ExcludeInvalidTuples semantics.
+/// @param constraints Optional constraint AST list. A tuple is excluded from the
+///                    coverage universe entirely (it does not count toward
+///                    total_tuples or uncovered) when it has no constraint-
+///                    satisfying completion — i.e. its partial assignment cannot
+///                    be extended to any full assignment of valid values that
+///                    satisfies every constraint. This is a completion-witness
+///                    test, stronger than checking whether the partial tuple
+///                    alone evaluates to kFalse (interacting implications can
+///                    make an individually-consistent tuple unreachable). It
+///                    matches the generator's ExcludeInvalidTuples semantics.
 CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
                                 const std::vector<model::TestCase>& tests, uint32_t strength,
                                 const std::vector<model::Constraint>& constraints = {});

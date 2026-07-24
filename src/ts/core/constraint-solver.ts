@@ -4,6 +4,30 @@ import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.j
 import type { Parameter } from '../model/parameter.js';
 import { type TestCase, UNASSIGNED } from '../model/test-case.js';
 
+/**
+ * Default recursion-node budget for a single feasibility search.
+ *
+ * A contradictory or otherwise hard model can make backtracking exponential.
+ * Bounding each search guarantees termination; satisfiable models resolve far
+ * below the limit under fail-first ordering. Mirrors kDefaultSolveNodeBudget in
+ * the C++ core.
+ */
+export const DEFAULT_SOLVE_NODE_BUDGET = 2_000_000;
+
+/**
+ * Budget and outcome for a bounded feasibility search. When `remaining` reaches
+ * zero the search aborts and sets `exceeded`, so the caller can surface an
+ * explicit error instead of silently treating the model as unsatisfiable.
+ */
+export interface SolveBudget {
+  remaining: number;
+  exceeded: boolean;
+}
+
+export function createSolveBudget(): SolveBudget {
+  return { remaining: DEFAULT_SOLVE_NODE_BUDGET, exceeded: false };
+}
+
 function constraintsCanStillPass(
   constraints: readonly ConstraintNode[],
   assignment: number[],
@@ -19,7 +43,13 @@ function search(
   assignment: number[],
   assignedCount: number,
   allowedValues: readonly (readonly boolean[])[] | null,
+  budget: SolveBudget,
 ): boolean {
+  if (budget.remaining === 0) {
+    budget.exceeded = true;
+    return false;
+  }
+  --budget.remaining;
   if (!constraintsCanStillPass(constraints, assignment)) {
     return false;
   }
@@ -53,20 +83,31 @@ function search(
       continue;
     }
     assignment[next] = vi;
-    if (search(params, constraints, assignment, assignedCount + 1, allowedValues)) {
+    if (search(params, constraints, assignment, assignedCount + 1, allowedValues, budget)) {
       return true;
+    }
+    if (budget.exceeded) {
+      assignment[next] = UNASSIGNED;
+      return false;
     }
   }
   assignment[next] = UNASSIGNED;
   return false;
 }
 
-/** Complete a partial assignment using a caller-provided allowed-value mask. */
+/**
+ * Complete a partial assignment using a caller-provided allowed-value mask.
+ *
+ * The search is node-bounded (see SolveBudget). If `budget` is provided and the
+ * budget is exhausted, `budget.exceeded` is set and the function returns null;
+ * pass none to use a private default budget and ignore the signal.
+ */
 export function completeAssignment(
   params: readonly Parameter[],
   constraints: readonly ConstraintNode[],
   allowedValues: readonly (readonly boolean[])[],
   partial: TestCase,
+  budget?: SolveBudget,
 ): TestCase | null {
   if (
     allowedValues.length !== params.length ||
@@ -87,16 +128,21 @@ export function completeAssignment(
     }
     ++assignedCount;
   }
-  return search(params, constraints, assignment, assignedCount, allowedValues)
+  const b = budget ?? createSolveBudget();
+  return search(params, constraints, assignment, assignedCount, allowedValues, b)
     ? { values: assignment }
     : null;
 }
 
-/** Complete a partial assignment using valid parameter values. */
+/**
+ * Complete a partial assignment using valid parameter values. The search is
+ * bounded; see completeAssignment for the `budget` semantics.
+ */
 export function completeValidAssignment(
   params: readonly Parameter[],
   constraints: readonly ConstraintNode[],
   partial: TestCase,
+  budget?: SolveBudget,
 ): TestCase | null {
   const assignment = new Array<number>(params.length).fill(UNASSIGNED);
   let assignedCount = 0;
@@ -111,7 +157,8 @@ export function completeValidAssignment(
     }
     ++assignedCount;
   }
-  return search(params, constraints, assignment, assignedCount, null)
+  const b = budget ?? createSolveBudget();
+  return search(params, constraints, assignment, assignedCount, null, b)
     ? { values: assignment }
     : null;
 }

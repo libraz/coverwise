@@ -7,7 +7,11 @@ import { hasInvalidValues, type Parameter, UNASSIGNED } from '../model/parameter
 import type { TestCase, UncoveredTuple } from '../model/test-case.js';
 import { DynamicBitset } from '../util/bitset.js';
 import { checkedBinomial, decodeMixedRadix, generateCombinations } from '../util/combinatorics.js';
-import { completeAssignment, completeValidAssignment } from './constraint-solver.js';
+import {
+  completeAssignment,
+  completeValidAssignment,
+  createSolveBudget,
+} from './constraint-solver.js';
 
 /// Result of CoverageEngine.create() factory method.
 export interface CreateResult {
@@ -29,26 +33,33 @@ export class CoverageEngine {
   private strength_ = 0;
   private totalTuples_ = 0;
   private invalidTuples_ = 0;
+  /// Number of set bits in covered_ (covered plus excluded tuples), maintained
+  /// incrementally so coveredCount is O(1) instead of rescanning the bitset.
+  private coveredBits_ = 0;
   private covered_: DynamicBitset = new DynamicBitset(0);
 
   /// Mapping from local param index to global param index.
   /// Empty means identity mapping (all params, no subset).
   private paramSubset_: number[] = [];
 
-  /// Pre-computed C(n, t) parameter index combinations.
-  /// When paramSubset_ is set, these contain GLOBAL param indices.
-  private paramCombinations_: number[][] = [];
+  /// Pre-computed C(n, t) parameter index combinations, stored flat with stride
+  /// strength_ (combo ci occupies [ci*strength_, (ci+1)*strength_)). A flat
+  /// buffer avoids one small array per combination near the cap and mirrors the
+  /// C++ layout. When paramSubset_ is set, these contain GLOBAL param indices.
+  private paramCombinations_: number[] = [];
+  private numCombinations_ = 0;
   private combinationOffsets_: number[] = [];
 
   /// paramToCombos_[p] = list of combination indices that include param p.
   private paramToCombos_: number[][] = [];
 
   /// paramPositionInCombo_[p][k] = position of p within
-  /// paramCombinations_[paramToCombos_[p][k]].
+  /// combination paramToCombos_[p][k].
   private paramPositionInCombo_: number[][] = [];
 
-  /// comboMultipliers_[ci][j] = product of value counts for positions j+1..t-1.
-  private comboMultipliers_: number[][] = [];
+  /// Mixed-radix multipliers per combination, stored flat with stride strength_:
+  /// mults(ci)[j] = product of value counts for positions j+1..t-1.
+  private comboMultipliers_: number[] = [];
 
   private constructor() {}
 
@@ -117,16 +128,20 @@ export class CoverageEngine {
 
   /// Mark all tuples covered by the given test case.
   addTestCase(testCase: TestCase): void {
-    for (let ci = 0; ci < this.paramCombinations_.length; ++ci) {
-      const combo = this.paramCombinations_[ci];
-      const mults = this.comboMultipliers_[ci];
+    for (let ci = 0; ci < this.numCombinations_; ++ci) {
+      const base = ci * this.strength_;
 
       let localIndex = 0;
       for (let j = 0; j < this.strength_; ++j) {
-        localIndex += testCase.values[combo[j]] * mults[j];
+        localIndex +=
+          testCase.values[this.paramCombinations_[base + j]] * this.comboMultipliers_[base + j];
       }
 
-      this.covered_.set(this.combinationOffsets_[ci] + localIndex);
+      const index = this.combinationOffsets_[ci] + localIndex;
+      if (!this.covered_.test(index)) {
+        this.covered_.set(index);
+        ++this.coveredBits_;
+      }
     }
   }
 
@@ -143,22 +158,21 @@ export class CoverageEngine {
     for (let k = 0; k < numRelevant; ++k) {
       const ci = relevantCombos[k];
       const pos = positions[k];
-      const combo = this.paramCombinations_[ci];
-      const mults = this.comboMultipliers_[ci];
+      const base = ci * this.strength_;
 
       // Check all other params are assigned and compute mixed-radix index.
       let allAssigned = true;
-      let localIndex = valueIndex * mults[pos];
+      let localIndex = valueIndex * this.comboMultipliers_[base + pos];
       for (let j = 0; j < this.strength_; ++j) {
         if (j === pos) {
           continue;
         }
-        const v = partial.values[combo[j]];
+        const v = partial.values[this.paramCombinations_[base + j]];
         if (v === UNASSIGNED) {
           allAssigned = false;
           break;
         }
-        localIndex += v * mults[j];
+        localIndex += v * this.comboMultipliers_[base + j];
       }
       if (!allAssigned) {
         continue;
@@ -176,13 +190,13 @@ export class CoverageEngine {
   scoreCandidate(candidate: TestCase): number {
     let score = 0;
 
-    for (let ci = 0; ci < this.paramCombinations_.length; ++ci) {
-      const combo = this.paramCombinations_[ci];
-      const mults = this.comboMultipliers_[ci];
+    for (let ci = 0; ci < this.numCombinations_; ++ci) {
+      const base = ci * this.strength_;
 
       let localIndex = 0;
       for (let j = 0; j < this.strength_; ++j) {
-        localIndex += candidate.values[combo[j]] * mults[j];
+        localIndex +=
+          candidate.values[this.paramCombinations_[base + j]] * this.comboMultipliers_[base + j];
       }
 
       if (!this.covered_.test(this.combinationOffsets_[ci] + localIndex)) {
@@ -198,9 +212,13 @@ export class CoverageEngine {
   /// For each t-tuple, builds a partial assignment and evaluates all
   /// constraints. If any constraint returns False, the tuple is marked
   /// as covered (excluded) and does not count toward coverage goals.
+  /// @param budgetExceeded Optional single-element out array; set to true if any
+  ///   per-tuple feasibility search exhausted its node budget, in which case
+  ///   exclusion stops early so the caller can surface an explicit error.
   excludeInvalidTuples(
     constraints: readonly ConstraintNode[],
     allowedValues: readonly (readonly boolean[])[] = [],
+    budgetExceeded?: { value: boolean },
   ): void {
     if (constraints.length === 0) {
       return;
@@ -219,16 +237,33 @@ export class CoverageEngine {
       }
 
       // Partial evaluation alone misses tuples made impossible by interacting
-      // implications. Require a complete valid-value witness instead.
+      // implications. Require a complete valid-value witness instead. Each
+      // per-tuple search is bounded; an exhausted budget stops exclusion so the
+      // caller can error out rather than proceed on a partially classified set.
+      const tupleBudget = createSolveBudget();
       const witness =
         allowedValues.length === 0
-          ? completeValidAssignment(this.params_, constraints, { values: assignment })
-          : completeAssignment(this.params_, constraints, allowedValues, { values: assignment });
+          ? completeValidAssignment(this.params_, constraints, { values: assignment }, tupleBudget)
+          : completeAssignment(
+              this.params_,
+              constraints,
+              allowedValues,
+              { values: assignment },
+              tupleBudget,
+            );
+      if (tupleBudget.exceeded) {
+        if (budgetExceeded !== undefined) {
+          budgetExceeded.value = true;
+        }
+        return false; // Stop; universe is not fully classified.
+      }
       const globalIndex = this.combinationOffsets_[ci] + vi;
       if (witness === null && !this.covered_.test(globalIndex)) {
         this.covered_.set(globalIndex);
         ++this.invalidTuples_;
+        ++this.coveredBits_;
       }
+      return true;
     });
   }
 
@@ -248,6 +283,7 @@ export class CoverageEngine {
           if (!this.covered_.test(globalIndex)) {
             this.covered_.set(globalIndex);
             ++this.invalidTuples_;
+            ++this.coveredBits_;
           }
           return;
         }
@@ -269,6 +305,7 @@ export class CoverageEngine {
       if (excluded && !this.covered_.test(globalIndex)) {
         this.covered_.set(globalIndex);
         ++this.invalidTuples_;
+        ++this.coveredBits_;
       }
     });
   }
@@ -281,6 +318,7 @@ export class CoverageEngine {
       if (!contains && !this.covered_.test(globalIndex)) {
         this.covered_.set(globalIndex);
         ++this.invalidTuples_;
+        ++this.coveredBits_;
       }
     });
   }
@@ -291,8 +329,11 @@ export class CoverageEngine {
   }
 
   /// Return the number of covered valid tuples.
+  ///
+  /// O(1): coveredBits_ (set bits: covered plus excluded) is tracked
+  /// incrementally, so this never rescans the bitset.
   get coveredCount(): number {
-    return this.covered_.count() - this.invalidTuples_;
+    return this.coveredBits_ - this.invalidTuples_;
   }
 
   /// Return coverage ratio [0.0, 1.0].
@@ -322,16 +363,63 @@ export class CoverageEngine {
       }
       const tuple: string[] = [];
       const paramNames: string[] = [];
+      const indices: Array<[number, number]> = [];
       for (let j = 0; j < combo.length; ++j) {
         const pi = combo[j];
         paramNames.push(params[pi].name);
         tuple.push(`${params[pi].name}=${params[pi].values[valueIndices[j]]}`);
+        indices.push([pi, valueIndices[j]]);
       }
-      uncovered.push({ tuple, params: paramNames, reason: 'never covered' });
+      uncovered.push({ tuple, params: paramNames, indices, reason: 'never covered' });
       return uncovered.length < limit;
     });
 
     return uncovered;
+  }
+
+  /// Return the first currently-uncovered tuple as a partial assignment, or null.
+  ///
+  /// The assignment fixes exactly this tuple's (parameter, value) pairs over the
+  /// global parameter space, leaving all other positions UNASSIGNED. Used by the
+  /// generator's completion phase to construct a test covering this tuple
+  /// directly instead of relying on randomized greedy construction.
+  firstUncovered(): { index: number; assignment: number[] } | null {
+    let found: { index: number; assignment: number[] } | null = null;
+    this.forEachTuple((ci, vi, combo, valueIndices) => {
+      const assignment = new Array<number>(this.params_.length).fill(UNASSIGNED);
+      for (let j = 0; j < combo.length; ++j) {
+        assignment[combo[j]] = valueIndices[j];
+      }
+      found = { index: this.combinationOffsets_[ci] + vi, assignment };
+      return false; // Stop after the first uncovered tuple.
+    });
+    return found;
+  }
+
+  /// Exclude a tuple (by global index) from the coverage target.
+  ///
+  /// Used when a tuple is partial-feasible but cannot be extended to any complete
+  /// constraint-satisfying assignment, so it is genuinely unreachable and must
+  /// not count as a coverage shortfall.
+  excludeTuple(index: number): void {
+    if (!this.covered_.test(index)) {
+      this.covered_.set(index);
+      ++this.invalidTuples_;
+      ++this.coveredBits_;
+    }
+  }
+
+  /// Clear all coverage and exclusion state, keeping the precomputed combination
+  /// and lookup tables intact.
+  ///
+  /// Lets a single engine be reused across passes that share the same parameters
+  /// and strength but apply different exclusions (e.g. negative-test generation,
+  /// which fixes a different invalid value each pass), avoiding a full table
+  /// rebuild per pass.
+  resetCoverage(): void {
+    this.covered_.reset();
+    this.invalidTuples_ = 0;
+    this.coveredBits_ = 0;
   }
 
   // --- Private methods ---
@@ -343,12 +431,18 @@ export class CoverageEngine {
   private forEachTuple(
     fn: (ci: number, vi: number, combo: number[], valueIndices: number[]) => boolean | undefined,
   ): void {
-    for (let ci = 0; ci < this.paramCombinations_.length; ++ci) {
-      const combo = this.paramCombinations_[ci];
+    // Reused per-combination buffer so callbacks keep receiving a number[] of
+    // length strength_, materialized from the flat storage.
+    const combo: number[] = new Array(this.strength_);
+    for (let ci = 0; ci < this.numCombinations_; ++ci) {
+      const cbase = ci * this.strength_;
+      for (let j = 0; j < this.strength_; ++j) {
+        combo[j] = this.paramCombinations_[cbase + j];
+      }
 
       // Pre-allocate radixes array once per combination.
-      const radixes: number[] = new Array(combo.length);
-      for (let j = 0; j < combo.length; ++j) {
+      const radixes: number[] = new Array(this.strength_);
+      for (let j = 0; j < this.strength_; ++j) {
         radixes[j] = this.params_[combo[j]].size;
       }
 
@@ -375,27 +469,35 @@ export class CoverageEngine {
 
   private initCombinations(): void {
     const n = this.params_.length;
-    this.paramCombinations_ = generateCombinations(n, this.strength_);
+    const combos = generateCombinations(n, this.strength_);
+    this.numCombinations_ = combos.length;
+    this.paramCombinations_ = new Array(this.numCombinations_ * this.strength_);
+    for (let ci = 0; ci < this.numCombinations_; ++ci) {
+      const base = ci * this.strength_;
+      for (let i = 0; i < this.strength_; ++i) {
+        this.paramCombinations_[base + i] = combos[ci][i];
+      }
+    }
   }
 
   private initCombinationsFromSubset(): void {
     const n = this.paramSubset_.length;
     const localCombos = generateCombinations(n, this.strength_);
 
-    // Map local indices to global param indices.
-    this.paramCombinations_ = [];
-    for (const local of localCombos) {
-      const globalCombo = new Array<number>(this.strength_);
+    // Map local indices to global param indices, stored flat.
+    this.numCombinations_ = localCombos.length;
+    this.paramCombinations_ = new Array(this.numCombinations_ * this.strength_);
+    for (let ci = 0; ci < this.numCombinations_; ++ci) {
+      const base = ci * this.strength_;
       for (let i = 0; i < this.strength_; ++i) {
-        globalCombo[i] = this.paramSubset_[local[i]];
+        this.paramCombinations_[base + i] = this.paramSubset_[localCombos[ci][i]];
       }
-      this.paramCombinations_.push(globalCombo);
     }
   }
 
   private buildLookupTables(): void {
     const numParams = this.params_.length;
-    const numCombos = this.paramCombinations_.length;
+    const numCombos = this.numCombinations_;
 
     // Build param-to-combinations index and position-in-combo lookup.
     this.paramToCombos_ = new Array(numParams);
@@ -406,25 +508,25 @@ export class CoverageEngine {
     }
 
     for (let ci = 0; ci < numCombos; ++ci) {
-      const combo = this.paramCombinations_[ci];
+      const base = ci * this.strength_;
       for (let j = 0; j < this.strength_; ++j) {
-        const pi = combo[j];
+        const pi = this.paramCombinations_[base + j];
         this.paramToCombos_[pi].push(ci);
         this.paramPositionInCombo_[pi].push(j);
       }
     }
 
-    // Build mixed-radix multipliers for each combination.
-    // comboMultipliers_[ci][j] = product of value counts for positions j+1..t-1.
-    this.comboMultipliers_ = new Array(numCombos);
+    // Build mixed-radix multipliers for each combination, stored flat.
+    // mults(ci)[j] = product of value counts for positions j+1..t-1.
+    this.comboMultipliers_ = new Array(numCombos * this.strength_);
     for (let ci = 0; ci < numCombos; ++ci) {
-      const combo = this.paramCombinations_[ci];
-      const mults = new Array<number>(this.strength_);
-      mults[this.strength_ - 1] = 1;
+      const base = ci * this.strength_;
+      this.comboMultipliers_[base + this.strength_ - 1] = 1;
       for (let j = this.strength_ - 2; j >= 0; --j) {
-        mults[j] = mults[j + 1] * this.params_[combo[j + 1]].size;
+        this.comboMultipliers_[base + j] =
+          this.comboMultipliers_[base + j + 1] *
+          this.params_[this.paramCombinations_[base + j + 1]].size;
       }
-      this.comboMultipliers_[ci] = mults;
     }
   }
 
@@ -437,11 +539,12 @@ export class CoverageEngine {
     // return a value above the limit. create() then surfaces a single structured
     // TupleExplosion error (instead of throwing a raw Error mid-computation), so
     // the explosion path is identical across C++ and TypeScript surfaces.
-    for (const combo of this.paramCombinations_) {
+    for (let ci = 0; ci < this.numCombinations_; ++ci) {
+      const base = ci * this.strength_;
       this.combinationOffsets_.push(total);
       let product = 1;
-      for (const pi of combo) {
-        product *= this.params_[pi].size;
+      for (let j = 0; j < this.strength_; ++j) {
+        product *= this.params_[this.paramCombinations_[base + j]].size;
         if (product > CoverageEngine.MAX_TUPLES) {
           return Math.min(total + product, Number.MAX_SAFE_INTEGER);
         }
@@ -478,19 +581,19 @@ function preflightModel(
   const combo = Array.from({ length: strength }, (_, index) => index);
   let total = 0;
   for (;;) {
+    // Compute the full product for this combination so the reported figure
+    // reflects the real (approximate) magnitude rather than a fixed sentinel just
+    // past the limit.
     let product = 1;
     for (const local of combo) {
       const pi = subset === null ? local : subset[local];
       product *= params[pi].size;
-      if (!Number.isSafeInteger(product) || product > CoverageEngine.MAX_TUPLES) {
-        return {
-          total: 0,
-          error: makeTupleExplosionError(CoverageEngine.MAX_TUPLES + 1, CoverageEngine.MAX_TUPLES),
-        };
-      }
+    }
+    if (product > CoverageEngine.MAX_TUPLES) {
+      return { total: 0, error: makeTupleExplosionError(product, CoverageEngine.MAX_TUPLES) };
     }
     total += product;
-    if (!Number.isSafeInteger(total) || total > CoverageEngine.MAX_TUPLES) {
+    if (total > CoverageEngine.MAX_TUPLES) {
       return { total: 0, error: makeTupleExplosionError(total, CoverageEngine.MAX_TUPLES) };
     }
 

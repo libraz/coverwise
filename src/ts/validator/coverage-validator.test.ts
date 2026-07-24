@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseConstraint } from '../model/constraint-parser.js';
+import { ErrorCode } from '../model/error.js';
 import { Parameter } from '../model/parameter.js';
 import type { GenerateResult, TestCase } from '../model/test-case.js';
 import { createGenerateResult } from '../model/test-case.js';
@@ -89,25 +90,20 @@ describe('validateCoverage', () => {
     expect(report.coverageRatio).toBe(1.0);
   });
 
-  it('strength > params: vacuous coverage, ratio = 1.0', () => {
+  it('strength > params: rejected as invalid input', () => {
     const report = validateCoverage(params2x2, [], 5);
-    expect(report.totalTuples).toBe(0);
-    expect(report.coverageRatio).toBe(1.0);
-    expect(report.uncovered).toHaveLength(0);
+    expect(report.error.code).toBe(ErrorCode.InvalidInput);
   });
 
-  it('strength 0: vacuous coverage, ratio = 1.0', () => {
+  it('strength 0: rejected as invalid input', () => {
     const report = validateCoverage(params2x2, [], 0);
-    expect(report.totalTuples).toBe(0);
-    expect(report.coverageRatio).toBe(1.0);
-    expect(report.uncovered).toHaveLength(0);
+    expect(report.error.code).toBe(ErrorCode.InvalidInput);
   });
 
-  it('single parameter: strength=2 > 1 param, vacuous coverage', () => {
+  it('single parameter: strength=2 > 1 param, rejected as invalid input', () => {
     const params = [new Parameter('os', ['win', 'mac', 'linux'])];
     const report = validateCoverage(params, [], 2);
-    expect(report.totalTuples).toBe(0);
-    expect(report.coverageRatio).toBe(1.0);
+    expect(report.error.code).toBe(ErrorCode.InvalidInput);
   });
 
   it('empty test suite: coverageRatio=0, uncovered contains all tuples', () => {
@@ -333,7 +329,7 @@ describe('computeClassCoverage', () => {
     expect(report.coverageRatio).toBe(1.0);
   });
 
-  it('no equivalence classes: returns zeros', () => {
+  it('no equivalence classes: empty universe is vacuously complete', () => {
     const params = [
       new Parameter('os', ['win', 'mac']),
       new Parameter('browser', ['chrome', 'safari']),
@@ -341,17 +337,18 @@ describe('computeClassCoverage', () => {
 
     const tests: TestCase[] = [{ values: [0, 0] }];
     const report = computeClassCoverage(params, tests, 2);
+    // No class tuples to cover -> vacuously complete (1.0), matching C++.
     expect(report.totalClassTuples).toBe(0);
     expect(report.coveredClassTuples).toBe(0);
-    expect(report.coverageRatio).toBe(0);
+    expect(report.coverageRatio).toBe(1.0);
   });
 
-  it('strength 0: returns zeros', () => {
+  it('strength 0: empty universe is vacuously complete', () => {
     const os = new Parameter('os', ['win', 'mac']);
     os.setEquivalenceClasses(['desktop', 'apple']);
     const report = computeClassCoverage([os], [], 0);
     expect(report.totalClassTuples).toBe(0);
-    expect(report.coverageRatio).toBe(0);
+    expect(report.coverageRatio).toBe(1.0);
   });
 });
 

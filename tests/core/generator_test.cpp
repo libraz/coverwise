@@ -1066,3 +1066,118 @@ TEST(EstimateModelEdgeTest, LargeValuesReturnTupleExplosion) {
   EXPECT_EQ(stats.error.code, coverwise::model::Error::Code::kTupleExplosion);
   EXPECT_EQ(stats.estimated_tests, 0u);
 }
+
+// ---------------------------------------------------------------------------
+// Completion phase: coverage completeness at hard endpoints
+// ---------------------------------------------------------------------------
+
+// Regression: greedy construction alone stalls at strength == parameter count
+// and used to finish below 100%. The deterministic completion phase must close
+// every feasible tuple, for every seed.
+TEST(GenerateCompletionTest, ReachesFullCoverageAtStrengthEqualsParamCount) {
+  for (uint32_t seed = 1; seed <= 10; ++seed) {
+    GenerateOptions opts;
+    opts.parameters.push_back({"A", {"a0", "a1", "a2", "a3"}, {}});
+    opts.parameters.push_back({"B", {"b0", "b1", "b2", "b3"}, {}});
+    opts.parameters.push_back({"C", {"c0", "c1", "c2", "c3"}, {}});
+    opts.parameters.push_back({"D", {"d0", "d1", "d2", "d3"}, {}});
+    opts.strength = 4;
+    opts.seed = seed;
+    auto result = Generate(opts);
+    EXPECT_DOUBLE_EQ(result.coverage, 1.0) << "seed=" << seed;
+    EXPECT_TRUE(result.uncovered.empty()) << "seed=" << seed;
+    // t == n is the full cross product: exactly 4^4 distinct tests.
+    EXPECT_EQ(result.tests.size(), 256u) << "seed=" << seed;
+    auto cov = coverwise::validator::ValidateCoverage(opts.parameters, result.tests, 4);
+    EXPECT_DOUBLE_EQ(cov.coverage_ratio, 1.0) << "seed=" << seed;
+  }
+}
+
+// Regression: high strength on a mixed model must also reach full coverage.
+TEST(GenerateCompletionTest, ReachesFullCoverageForHighStrengthMixedModel) {
+  GenerateOptions opts;
+  opts.parameters.push_back({"A", {"a0", "a1", "a2"}, {}});
+  opts.parameters.push_back({"B", {"b0", "b1", "b2"}, {}});
+  opts.parameters.push_back({"C", {"c0", "c1"}, {}});
+  opts.parameters.push_back({"D", {"d0", "d1", "d2"}, {}});
+  opts.parameters.push_back({"E", {"e0", "e1"}, {}});
+  opts.strength = 4;
+  opts.seed = 3;
+  auto result = Generate(opts);
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(result.uncovered.empty());
+}
+
+// Integer boundary endpoints are accepted/rejected on the JS safe-integer rule
+// (|v| <= 2^53-1), matching Number.isSafeInteger on the TypeScript surfaces so
+// native/WASM and pure-TS agree on the same model.
+TEST(GenerateBoundaryValidationTest, IntegerEndpointsUseSafeIntegerRule) {
+  auto make_opts = [](double max_value) {
+    GenerateOptions opts;
+    coverwise::model::Parameter p;
+    p.name = "n";  // Empty values: the boundary range supplies the value set.
+    opts.parameters.push_back(p);
+    opts.parameters.push_back({"other", {"a", "b"}, {}});
+    opts.strength = 2;
+    coverwise::model::BoundaryConfig bc;
+    bc.type = coverwise::model::BoundaryConfig::Type::kInteger;
+    bc.min_value = 0;
+    bc.max_value = max_value;
+    opts.boundary_configs["n"] = bc;
+    return opts;
+  };
+
+  // Within the safe-integer range: accepted.
+  auto ok = Generate(make_opts(1000.0));
+  EXPECT_EQ(ok.error.code, coverwise::model::Error::Code::kOk);
+
+  // Beyond 2^53: rejected as invalid input (previously accepted under int64).
+  auto bad = Generate(make_opts(1e18));
+  EXPECT_EQ(bad.error.code, coverwise::model::Error::Code::kInvalidInput);
+}
+
+// A hard contradictory (pigeonhole) model must terminate with a constraint
+// error in finite time rather than hanging on unbounded backtracking.
+TEST(GenerateCompletionTest, TerminatesOnHardContradictoryModel) {
+  GenerateOptions opts;
+  const int n = 12;
+  for (int i = 0; i < n; ++i) {
+    opts.parameters.push_back({"p" + std::to_string(i), {"0", "1"}, {}});
+  }
+  for (int i = 0; i < n; ++i) {
+    for (int j = i + 1; j < n; ++j) {
+      opts.constraint_expressions.push_back("IF p" + std::to_string(i) + "=0 THEN p" +
+                                            std::to_string(j) + "!=0");
+      opts.constraint_expressions.push_back("IF p" + std::to_string(i) + "=1 THEN p" +
+                                            std::to_string(j) + "!=1");
+    }
+  }
+  opts.strength = 2;
+  auto result = Generate(opts);
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_TRUE(result.tests.empty());
+}
+
+// Constraints that stall greedy must still reach full coverage with zero
+// violations in the output suite.
+TEST(GenerateCompletionTest, ReachesFullCoverageUnderStallingConstraints) {
+  GenerateOptions opts;
+  opts.parameters.push_back({"os", {"win", "mac", "linux"}, {}});
+  opts.parameters.push_back({"browser", {"chrome", "safari", "edge"}, {}});
+  opts.parameters.push_back({"arch", {"x86", "arm"}, {}});
+  opts.strength = 2;
+  opts.seed = 5;
+  opts.constraint_expressions = {"IF os=mac THEN browser!=edge", "IF os=win THEN browser!=safari"};
+  auto result = Generate(opts);
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(result.uncovered.empty());
+
+  std::vector<coverwise::model::Constraint> constraints;
+  for (const auto& expr : opts.constraint_expressions) {
+    auto parsed = coverwise::model::ParseConstraint(expr, opts.parameters);
+    ASSERT_TRUE(parsed.error.ok()) << parsed.error.message;
+    constraints.push_back(std::move(parsed.constraint));
+  }
+  auto con_report = coverwise::validator::ValidateConstraints(result.tests, constraints);
+  EXPECT_EQ(con_report.violations, 0u);
+}

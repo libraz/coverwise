@@ -64,7 +64,9 @@ export function decodeMixedRadix(flatIndex: number, radixes: readonly number[]):
   let remainder = flatIndex;
   for (let i = radixes.length - 1; i >= 0; i--) {
     out[i] = remainder % radixes[i];
-    remainder = (remainder / radixes[i]) | 0;
+    // Math.floor, not `| 0`: bitwise OR coerces to a signed 32-bit int and would
+    // corrupt indices at or above 2^31.
+    remainder = Math.floor(remainder / radixes[i]);
   }
   return out;
 }

@@ -263,8 +263,92 @@ TEST(CliAnalyzeTest, StrengthThreeCompleteSuiteExitsZero) {
   auto result =
       RunCli("analyze --params " + params_path + " --tests " + tests_path + " --strength 3");
   EXPECT_EQ(result.exit_code, 0) << result.stdout_text;
-  EXPECT_NE(result.stdout_text.find("\"coverageRatio\":1.000"), std::string::npos)
+  EXPECT_NE(result.stdout_text.find("\"coverageRatio\":1"), std::string::npos)
       << result.stdout_text;
+}
+
+// A constraint parse error surfaces on stderr, carries a JSON error envelope,
+// and exits 1 (documented constraint-error code) rather than being buried in
+// the warnings array.
+TEST(CliGenerateTest, ConstraintParseErrorSurfacesErrorEnvelopeAndExitsOne) {
+  const std::string input = R"({
+    "parameters": [
+      {"name": "a", "values": ["0", "1"]},
+      {"name": "b", "values": ["0", "1"]}
+    ],
+    "constraints": ["IF a=0 THEN"],
+    "strength": 2
+  })";
+  std::string input_path = TempPath("bad_constraint.json");
+  WriteFile(input_path, input);
+
+  auto result = RunCliCaptureStderr("generate " + input_path);
+  EXPECT_EQ(result.exit_code, 1) << result.stdout_text;
+  // The failure reason reaches stderr / the merged stream.
+  EXPECT_NE(result.stdout_text.find("error:"), std::string::npos) << result.stdout_text;
+  // The JSON body carries an error envelope mirroring the WASM surface.
+  EXPECT_NE(result.stdout_text.find("\"error\""), std::string::npos) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find("\"code\":1"), std::string::npos) << result.stdout_text;
+}
+
+// Golden output: the CLI generate surface must emit a byte-exact JSON document
+// for a fixed model and seed. This anchors the native/CLI surface to an
+// absolute value, catching cross-surface drift that WASM-vs-pure parity alone
+// cannot (both engines could change identically and still agree). The same
+// input+seed is pinned to the same `tests` array in the JS compat suite.
+TEST(CliGenerateTest, GoldenOutputIsByteExactForFixedSeed) {
+  const std::string input = R"({
+    "parameters": [
+      {"name": "os", "values": ["win", "mac", "linux"]},
+      {"name": "browser", "values": ["chrome", "firefox", "safari"]}
+    ],
+    "strength": 2,
+    "seed": 42
+  })";
+  const std::string path = TempPath("golden.json");
+  WriteFile(path, input);
+
+  auto result = RunCli("generate " + path);
+  ASSERT_EQ(result.exit_code, 0) << result.stdout_text;
+
+  const std::string expected =
+      R"({"schemaVersion":1,"tests":[{"os":"linux","browser":"firefox"},)"
+      R"({"os":"win","browser":"chrome"},{"os":"win","browser":"firefox"},)"
+      R"({"os":"mac","browser":"chrome"},{"os":"win","browser":"safari"},)"
+      R"({"os":"mac","browser":"firefox"},{"os":"mac","browser":"safari"},)"
+      R"({"os":"linux","browser":"safari"},{"os":"linux","browser":"chrome"}],)"
+      R"("uncoveredCount":0,"omittedUncovered":0,"negativeTests":[],"coverage":1,)"
+      R"("uncovered":[],"stats":{"totalTuples":9,"coveredTuples":9,"testCount":9},)"
+      R"("suggestions":[],"warnings":[],"strength":2})"
+      "\n";
+  EXPECT_EQ(result.stdout_text, expected);
+}
+
+// Analyzing a suite that contains a constraint-violating row is invalid input:
+// the CLI exits 3 (not 0) even when the valid subset covers everything, and
+// lists the offending row in invalidTests.
+TEST(CliAnalyzeTest, InvalidTestsExitInvalidInput) {
+  const std::string params = R"({
+    "parameters": [
+      {"name": "os", "values": ["win", "mac"]},
+      {"name": "br", "values": ["chrome", "ie"]}
+    ],
+    "constraints": ["IF os=mac THEN br!=ie"]
+  })";
+  const std::string tests = R"([
+    {"os": "win", "br": "chrome"},
+    {"os": "win", "br": "ie"},
+    {"os": "mac", "br": "chrome"},
+    {"os": "mac", "br": "ie"}
+  ])";
+  std::string params_path = TempPath("iparams.json");
+  std::string tests_path = TempPath("itests.json");
+  WriteFile(params_path, params);
+  WriteFile(tests_path, tests);
+
+  auto result = RunCli("analyze --params " + params_path + " --tests " + tests_path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find("\"invalidTests\""), std::string::npos) << result.stdout_text;
 }
 
 // A complete suite for a constrained model returns coverage 1.0 / exit 0 — the
@@ -292,7 +376,7 @@ TEST(CliAnalyzeTest, ConstrainedCompleteSuiteExitsZero) {
 
   auto result = RunCli("analyze --params " + params_path + " --tests " + tests_path);
   EXPECT_EQ(result.exit_code, 0) << result.stdout_text;
-  EXPECT_NE(result.stdout_text.find("\"coverageRatio\":1.000"), std::string::npos)
+  EXPECT_NE(result.stdout_text.find("\"coverageRatio\":1"), std::string::npos)
       << result.stdout_text;
 }
 

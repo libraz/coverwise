@@ -749,3 +749,109 @@ describe('estimateModel', () => {
     expect(stats.estimatedTests).toBe(0);
   });
 });
+
+describe('generate completion phase (coverage completeness)', () => {
+  it('reaches 100% coverage at strength === parameter count for every seed', () => {
+    // Greedy construction alone stalls here and used to finish below 100%.
+    // The deterministic completion phase must close every feasible tuple.
+    for (let seed = 1; seed <= 10; ++seed) {
+      const opts = createGenerateOptions({
+        parameters: [
+          { name: 'A', values: ['a0', 'a1', 'a2', 'a3'] },
+          { name: 'B', values: ['b0', 'b1', 'b2', 'b3'] },
+          { name: 'C', values: ['c0', 'c1', 'c2', 'c3'] },
+          { name: 'D', values: ['d0', 'd1', 'd2', 'd3'] },
+        ],
+        strength: 4,
+        seed,
+      });
+      const result = generate(opts);
+      expect(result.coverage).toBe(1.0);
+      expect(result.uncovered).toHaveLength(0);
+      // t === n is the full cross product: exactly 4^4 distinct tests.
+      expect(result.tests).toHaveLength(256);
+      const report = validateCoverage(
+        opts.parameters.map((p) => new Parameter(p.name, p.values)),
+        result.tests,
+        4,
+      );
+      expect(report.coverageRatio).toBe(1.0);
+    }
+  });
+
+  it('reaches 100% coverage for high strength on a mixed model', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['a0', 'a1', 'a2'] },
+        { name: 'B', values: ['b0', 'b1', 'b2'] },
+        { name: 'C', values: ['c0', 'c1'] },
+        { name: 'D', values: ['d0', 'd1', 'd2'] },
+        { name: 'E', values: ['e0', 'e1'] },
+      ],
+      strength: 4,
+      seed: 3,
+    });
+    const result = generate(opts);
+    expect(result.coverage).toBe(1.0);
+    expect(result.uncovered).toHaveLength(0);
+  });
+
+  it('accepts/rejects integer boundary endpoints on the safe-integer rule', () => {
+    const makeOpts = (maxValue: number) => {
+      const opts = createGenerateOptions({
+        parameters: [
+          { name: 'n', values: [] },
+          { name: 'other', values: ['a', 'b'] },
+        ],
+        strength: 2,
+      });
+      opts.boundaryConfigs = {
+        n: { type: BoundaryType.Integer, minValue: 0, maxValue, step: 1 },
+      };
+      return opts;
+    };
+    // Within the safe-integer range: accepted.
+    expect(generate(makeOpts(1000)).error.code).toBe(ErrorCode.Ok);
+    // Beyond 2^53: rejected as invalid input (parity with the native surface).
+    expect(generate(makeOpts(1e18)).error.code).toBe(ErrorCode.InvalidInput);
+  });
+
+  it('terminates with a constraint error on a hard contradictory model', () => {
+    // Pigeonhole: 12 binary parameters forced pairwise-distinct is unsatisfiable
+    // and drives exponential backtracking. The node-bounded search must return a
+    // constraint error in finite time instead of hanging.
+    const n = 12;
+    const parameters = Array.from({ length: n }, (_, i) => ({
+      name: `p${i}`,
+      values: ['0', '1'],
+    }));
+    const constraintExpressions: string[] = [];
+    for (let i = 0; i < n; ++i) {
+      for (let j = i + 1; j < n; ++j) {
+        constraintExpressions.push(`IF p${i}=0 THEN p${j}!=0`);
+        constraintExpressions.push(`IF p${i}=1 THEN p${j}!=1`);
+      }
+    }
+    const opts = createGenerateOptions({ parameters, strength: 2, constraintExpressions });
+    const result = generate(opts);
+    expect(result.error.code).toBe(ErrorCode.ConstraintError);
+    expect(result.tests).toHaveLength(0);
+  });
+
+  it('reaches 100% coverage under constraints that stall greedy', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+        { name: 'browser', values: ['chrome', 'safari', 'edge'] },
+        { name: 'arch', values: ['x86', 'arm'] },
+      ],
+      strength: 2,
+      seed: 5,
+      constraintExpressions: ['IF os=mac THEN browser!=edge', 'IF os=win THEN browser!=safari'],
+    });
+    const result = generate(opts);
+    expect(result.coverage).toBe(1.0);
+    expect(result.uncovered).toHaveLength(0);
+    expect(countPositiveViolations(result, opts)).toBe(0);
+  });
+});

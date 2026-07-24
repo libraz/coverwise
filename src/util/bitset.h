@@ -33,12 +33,6 @@ class DynamicBitset {
   /// @brief Return the total number of bits.
   uint32_t Size() const { return num_bits_; }
 
-  /// @brief Count bits set in (this AND NOT other).
-  uint32_t CountAndNot(const DynamicBitset& other) const;
-
-  /// @brief Set all bits from other into this (this |= other).
-  void UnionWith(const DynamicBitset& other);
-
   /// @brief Clear all bits.
   void Reset();
 

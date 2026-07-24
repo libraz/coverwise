@@ -69,6 +69,10 @@ describe('CoverageEngine', () => {
       const result = CoverageEngine.create(params, 5);
       expect(result.error.code).toBe(ErrorCode.TupleExplosion);
       expect(result.error.message).toBe('t-wise tuple count exceeds safety limit');
+      // The detail reports the real magnitude — a single combination's product is
+      // 100^5 = 10,000,000,000 — not a fixed sentinel just past the limit.
+      expect(result.error.detail).toContain('10000000000');
+      expect(result.error.detail).not.toContain('16000001');
     });
 
     it('near-threshold model just under MAX_TUPLES succeeds without spurious explosion', () => {

@@ -136,6 +136,22 @@ const JS_NUMBER_CORPUS: ReadonlyArray<[number, string]> = [
   [1e20, '100000000000000000000'],
   [-3.14, '-3.14'],
   [123456789.0, '123456789'],
+  // Subnormal and extreme magnitudes.
+  [5e-324, '5e-324'], // Number.MIN_VALUE (subnormal)
+  [2.2250738585072014e-308, '2.2250738585072014e-308'], // smallest normal
+  [1.7976931348623157e308, '1.7976931348623157e+308'], // Number.MAX_VALUE
+  // Safe-integer boundary.
+  [9007199254740991, '9007199254740991'], // MAX_SAFE_INTEGER
+  [9007199254740992, '9007199254740992'],
+  // Exponential thresholds (n === 22 and n === -7 tip into scientific form).
+  [1e22, '1e+22'],
+  [5e-7, '5e-7'],
+  // Rounding that carries into a new magnitude: shortest round-trip is 1e+23.
+  [9.999999999999999e22, '1e+23'],
+  // Decimal-form boundaries around n in (-6, 0].
+  [0.0001, '0.0001'],
+  [0.00001, '0.00001'],
+  [0.5, '0.5'],
 ];
 
 describe('jsNumberToString', () => {

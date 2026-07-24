@@ -147,15 +147,20 @@ void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t
                            std::vector<std::string>& warnings) {
   constexpr uint32_t kMaxRetries = 50;
 
+  // The combination and lookup tables depend only on (params, strength), which
+  // are identical across every invalid value, so the engine is built once and
+  // its coverage state reset per pass instead of rebuilt.
+  auto fresh_result = CoverageEngine::Create(params, strength);
+  if (!fresh_result.second.ok()) return;
+  auto& fresh_cov = fresh_result.first;
+
   for (uint32_t pi = 0; pi < static_cast<uint32_t>(params.size()); ++pi) {
     for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
       if (!params[pi].is_invalid(vi)) continue;
 
-      // Create a coverage engine for generating tests that pair this invalid
-      // value with valid values of all other parameters.
-      auto fresh_result = CoverageEngine::Create(params, strength);
-      if (!fresh_result.second.ok()) continue;
-      auto& fresh_cov = fresh_result.first;
+      // Reset coverage/exclusion state for this invalid value, reusing the
+      // precomputed tables.
+      fresh_cov.ResetCoverage();
 
       // Build mask: pi can only be vi, others can only be valid.
       auto neg_mask = BuildNegativeMask(params, pi, vi);
@@ -213,8 +218,22 @@ std::vector<std::vector<double>> ResolveWeights(const std::vector<model::Paramet
   std::vector<std::vector<double>> resolved(params.size());
   for (uint32_t pi = 0; pi < static_cast<uint32_t>(params.size()); ++pi) {
     resolved[pi].resize(params[pi].size(), 1.0);
+    auto pit = config.entries.find(params[pi].name);
+    if (pit == config.entries.end()) continue;
     for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
-      resolved[pi][vi] = config.GetWeight(params[pi].name, params[pi].values[vi]);
+      // Resolve by key presence (not GetWeight's 1.0 sentinel) so an explicit
+      // weight of 1.0 is honored and a weight keyed by one of the value's
+      // aliases is not silently dropped to the default.
+      auto vit = pit->second.find(params[pi].values[vi]);
+      if (vit == pit->second.end()) {
+        for (const auto& alias : params[pi].aliases(vi)) {
+          vit = pit->second.find(alias);
+          if (vit != pit->second.end()) break;
+        }
+      }
+      if (vit != pit->second.end()) {
+        resolved[pi][vi] = vit->second;
+      }
     }
   }
   return resolved;
@@ -328,8 +347,9 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
   for (const auto& expr : opts.constraint_expressions) {
     auto parse_result = model::ParseConstraint(expr, opts.parameters);
     if (!parse_result.error.ok()) {
-      result.warnings.push_back(parse_result.error.message + ": " + parse_result.error.detail);
-      result.error = parse_result.error;
+      model::Error err = model::AnnotateConstraintError(expr, parse_result.error);
+      result.warnings.push_back(err.message + ": " + err.detail);
+      result.error = err;
       return result;
     }
     constraints.push_back(std::move(parse_result.constraint));
@@ -337,21 +357,36 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
 
   // Reject a contradictory model before tuple accounting or generation. This
   // also supplies the same valid-value semantics used by tuple feasibility.
+  // The search is node-bounded; an exhausted budget is reported explicitly
+  // rather than being silently treated as "unsatisfiable".
   if (!constraints.empty()) {
     model::TestCase witness;
     witness.values.assign(opts.parameters.size(), model::kUnassigned);
-    if (!CompleteValidAssignment(opts.parameters, constraints, witness)) {
-      result.error = {model::Error::Code::kConstraintError, "Constraints are unsatisfiable",
-                      "No complete assignment using valid values satisfies all constraints"};
+    SolveBudget budget;
+    if (!CompleteValidAssignment(opts.parameters, constraints, witness, &budget)) {
+      if (budget.exceeded) {
+        result.error = {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
+                        "The constraint model is too complex to solve within the search budget"};
+      } else {
+        result.error = {model::Error::Code::kConstraintError, "Constraints are unsatisfiable",
+                        "No complete assignment using valid values satisfies all constraints"};
+      }
       result.warnings.push_back(result.error.message + ": " + result.error.detail);
       return result;
     }
   }
 
   // Exclude tuples that are inherently invalid due to constraints.
-  coverage.ExcludeInvalidTuples(constraints);
+  bool exclude_budget_exceeded = false;
+  coverage.ExcludeInvalidTuples(constraints, {}, &exclude_budget_exceeded);
   for (auto& eng : sub_engines) {
-    eng.ExcludeInvalidTuples(constraints);
+    eng.ExcludeInvalidTuples(constraints, {}, &exclude_budget_exceeded);
+  }
+  if (exclude_budget_exceeded) {
+    result.error = {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
+                    "Tuple feasibility could not be determined within the search budget"};
+    result.warnings.push_back(result.error.message + ": " + result.error.detail);
+    return result;
   }
 
   // Exclude tuples involving invalid values for positive generation.
@@ -450,14 +485,67 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
     result.tests.push_back(std::move(tc));
   }
 
-  // Warn if generation stopped before reaching full coverage.
+  // Deterministic completion phase. Randomized greedy construction can stall on
+  // hard-to-reach tuples (notably t == parameter count, or tightly constrained
+  // models), abandoning tuples that are in fact coverable and leaving coverage
+  // below 100%. For each remaining uncovered tuple, build a test that covers it
+  // directly by fixing the tuple's values and completing the rest with a
+  // constraint feasibility search. A tuple that cannot be completed is genuinely
+  // infeasible and is excluded from the coverage target so it no longer counts
+  // as a shortfall. This runs after greedy so the common case keeps a small
+  // suite while completeness is still guaranteed for every feasible tuple.
+  bool completion_budget_exceeded = false;
+  auto complete_partial = [&](model::TestCase& witness) {
+    SolveBudget budget;
+    bool ok = has_invalid
+                  ? CompleteAssignment(opts.parameters, constraints, valid_mask, witness, &budget)
+                  : CompleteValidAssignment(opts.parameters, constraints, witness, &budget);
+    if (budget.exceeded) completion_budget_exceeded = true;
+    return ok;
+  };
+  {
+    auto pick_incomplete = [&]() -> CoverageEngine* {
+      if (!coverage.IsComplete()) return &coverage;
+      for (auto& eng : sub_engines) {
+        if (!eng.IsComplete()) return &eng;
+      }
+      return nullptr;
+    };
+    CoverageEngine* eng = nullptr;
+    while ((eng = pick_incomplete()) != nullptr) {
+      if (opts.max_tests > 0 && result.tests.size() >= static_cast<size_t>(opts.max_tests)) break;
+      CoverageEngine::UncoveredAssignment ua;
+      if (!eng->FirstUncovered(ua)) break;  // Defensive: IsComplete() disagreed.
+      model::TestCase witness{ua.assignment};
+      bool completed = complete_partial(witness);
+      if (completion_budget_exceeded) break;
+      if (!completed) {
+        // Partial-feasible but not extensible to a full satisfying assignment.
+        eng->ExcludeTuple(ua.index);
+        continue;
+      }
+      coverage.AddTestCase(witness);
+      for (auto& e : sub_engines) {
+        e.AddTestCase(witness);
+      }
+      result.tests.push_back(std::move(witness));
+    }
+  }
+  if (completion_budget_exceeded) {
+    result.error = {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
+                    "A coverage witness could not be found within the search budget"};
+    result.warnings.push_back(result.error.message + ": " + result.error.detail);
+    return result;
+  }
+
+  // Warn if generation stopped before reaching full coverage. After the
+  // completion phase this can only happen when maxTests bounds the suite.
   if (!AllComplete(coverage, sub_engines)) {
     if (opts.max_tests > 0 && result.tests.size() >= static_cast<size_t>(opts.max_tests)) {
       result.warnings.push_back("Generation stopped at maxTests (" +
                                 std::to_string(opts.max_tests) + ") before reaching 100% coverage");
     } else {
-      result.warnings.push_back("Generation stopped before reaching 100% coverage after " +
-                                std::to_string(kMaxRetries) + " consecutive zero-score candidates");
+      result.warnings.push_back("Generation stopped before reaching 100% coverage");
     }
   }
 
@@ -491,13 +579,10 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
       if (result.suggestions.size() >= kMaxSuggestions) break;
       model::TestCase witness;
       witness.values.assign(opts.parameters.size(), model::kUnassigned);
-      for (const auto& entry : ut.tuple) {
-        for (uint32_t pi = 0; pi < opts.parameters.size(); ++pi) {
-          const std::string prefix = opts.parameters[pi].name + "=";
-          if (entry.rfind(prefix, 0) != 0) continue;
-          witness.values[pi] = opts.parameters[pi].find_value_index(entry.substr(prefix.size()));
-          break;
-        }
+      // Reconstruct the witness from (param, value) indices rather than parsing
+      // "name=value" strings, which is ambiguous when a name or value holds '='.
+      for (const auto& [pi, vi] : ut.indices) {
+        if (pi < witness.values.size()) witness.values[pi] = vi;
       }
       if (!CompleteValidAssignment(opts.parameters, constraints, witness)) continue;
       model::Suggestion suggestion;

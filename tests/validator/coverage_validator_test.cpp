@@ -177,8 +177,9 @@ TEST(CoverageValidatorTest, SingleParameterStrengthOne) {
 // ---------------------------------------------------------------------------
 // 6. StrengthExceedsParamCount
 //
-// strength (3) > number of parameters (2): no tuples can be formed.
-// The validator returns an empty report (total_tuples=0, coverage_ratio=0.0).
+// strength (3) > number of parameters (2) is invalid input — the validator
+// rejects it (matching generate) rather than green-lighting the query with a
+// vacuous 100% coverage.
 // ---------------------------------------------------------------------------
 TEST(CoverageValidatorTest, StrengthExceedsParamCount) {
   std::vector<Parameter> params = {
@@ -192,10 +193,7 @@ TEST(CoverageValidatorTest, StrengthExceedsParamCount) {
 
   auto report = ValidateCoverage(params, tests, 3);
 
-  EXPECT_EQ(report.total_tuples, 0u);
-  // Vacuous coverage: nothing to cover means everything is covered.
-  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
-  EXPECT_TRUE(report.uncovered.empty());
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kInvalidInput);
 }
 
 // ---------------------------------------------------------------------------

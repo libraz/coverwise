@@ -112,6 +112,17 @@ describe('encodeMixedRadix / decodeMixedRadix', () => {
       expect(decodeMixedRadix(0, [3, 2, 2])).toEqual([0, 0, 0]);
       expect(encodeMixedRadix([0, 0, 0], [3, 2, 2])).toBe(0);
     });
+
+    it('decodes flat indices at or above 2^31 without signed truncation', () => {
+      // Regression: an intermediate `| 0` would coerce the running quotient to a
+      // signed 32-bit int and corrupt every index once the value reaches 2^31.
+      // Use two 100k-radix positions so the quotient after the low digit exceeds
+      // 2^31 (3_000_000_000 / 100_000 = 30_000).
+      const radixes = [100_000, 100_000];
+      const flat = 3_000_000_000; // 30_000 * 100_000 + 0
+      expect(decodeMixedRadix(flat, radixes)).toEqual([30_000, 0]);
+      expect(encodeMixedRadix([30_000, 0], radixes)).toBe(flat);
+    });
   });
 
   describe('edge cases', () => {

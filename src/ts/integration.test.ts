@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { estimateModel, extend, generate } from './core/generator.js';
+import { ErrorCode } from './model/error.js';
 import {
   createGenerateOptions,
   createWeightConfig,
@@ -652,10 +653,10 @@ describe('analyzeCoverage() edge cases', () => {
     expect(report.uncovered.length).toBe(4);
   });
 
-  it('single parameter -> 0 tuples for pairwise', () => {
+  it('single parameter with default pairwise strength -> invalid input', () => {
+    // strength (2) > parameter count (1) is rejected, matching generate.
     const report = tsAnalyzeCoverage([{ name: 'a', values: ['1', '2'] }], [{ a: '1' }]);
-    expect(report.totalTuples).toBe(0);
-    expect(report.coverageRatio).toBe(1.0);
+    expect(report.error.code).toBe(ErrorCode.InvalidInput);
   });
 });
 

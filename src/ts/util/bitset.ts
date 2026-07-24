@@ -57,25 +57,6 @@ export class DynamicBitset {
     return this.numBits;
   }
 
-  /// Count bits set in (this AND NOT other).
-  /// If other is shorter, missing blocks are treated as 0.
-  countAndNot(other: DynamicBitset): number {
-    let total = 0;
-    const otherLen = other.blocks.length;
-    for (let i = 0; i < this.blocks.length; i++) {
-      const otherBlock = i < otherLen ? other.blocks[i] : 0;
-      total += popcount32((this.blocks[i] & ~otherBlock) >>> 0);
-    }
-    return total;
-  }
-
-  /// Set all bits from other into this (this |= other).
-  unionWith(other: DynamicBitset): void {
-    for (let i = 0; i < this.blocks.length; i++) {
-      this.blocks[i] |= other.blocks[i];
-    }
-  }
-
   /// Clear all bits.
   reset(): void {
     this.blocks.fill(0);

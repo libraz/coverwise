@@ -63,16 +63,16 @@ function generateCombinations(n: number, k: number): number[][] {
 }
 
 /**
- * Check if a test case covers a specific value tuple for given parameter indices.
+ * Recursion-node budget for a single feasibility search. Bounds the otherwise
+ * exponential backtracking so a hard model terminates; an exhausted budget is
+ * reported explicitly rather than being read as "infeasible". Mirrors the C++
+ * validator's kMaxSearchNodes.
  */
-function testCovers(test: TestCase, paramIndices: number[], valueIndices: number[]): boolean {
-  for (let i = 0; i < paramIndices.length; ++i) {
-    const pi = paramIndices[i];
-    if (pi >= test.values.length || test.values[pi] !== valueIndices[i]) {
-      return false;
-    }
-  }
-  return true;
+const MAX_SEARCH_NODES = 2_000_000;
+
+interface SearchBudget {
+  remaining: number;
+  exceeded: boolean;
 }
 
 // Independent feasibility oracle. Keep this separate from the generation core
@@ -82,7 +82,13 @@ function validatorSearch(
   constraints: ConstraintNode[],
   assignment: number[],
   cursor: number,
+  budget: SearchBudget,
 ): boolean {
+  if (budget.remaining === 0) {
+    budget.exceeded = true;
+    return false;
+  }
+  --budget.remaining;
   for (const constraint of constraints) {
     if (constraint.evaluate(assignment) === ConstraintResult.False) {
       return false;
@@ -101,8 +107,12 @@ function validatorSearch(
       continue;
     }
     assignment[cursor] = vi;
-    if (validatorSearch(params, constraints, assignment, cursor + 1)) {
+    if (validatorSearch(params, constraints, assignment, cursor + 1, budget)) {
       return true;
+    }
+    if (budget.exceeded) {
+      assignment[cursor] = UNASSIGNED;
+      return false;
     }
   }
   assignment[cursor] = UNASSIGNED;
@@ -113,8 +123,10 @@ function hasSatisfyingCompletion(
   params: Parameter[],
   constraints: ConstraintNode[],
   partial: number[],
+  budget?: SearchBudget,
 ): boolean {
-  return validatorSearch(params, constraints, partial.slice(), 0);
+  const b = budget ?? { remaining: MAX_SEARCH_NODES, exceeded: false };
+  return validatorSearch(params, constraints, partial.slice(), 0, b);
 }
 
 function validatePositiveTest(
@@ -127,6 +139,9 @@ function validatePositiveTest(
   }
   for (let pi = 0; pi < params.length; ++pi) {
     const vi = test.values[pi];
+    if (vi === UNASSIGNED) {
+      return `missing value for parameter ${params[pi].name}`;
+    }
     if (!Number.isInteger(vi) || vi < 0 || vi >= params[pi].size) {
       return `value index ${vi} is out of range for parameter ${params[pi].name}`;
     }
@@ -134,10 +149,10 @@ function validatePositiveTest(
       return `value ${params[pi].name}=${params[pi].values[vi]} is marked invalid`;
     }
   }
-  if (
-    !constraints.every((constraint) => constraint.evaluate(test.values) === ConstraintResult.True)
-  ) {
-    return 'constraint evaluation is false or indeterminate';
+  for (let ci = 0; ci < constraints.length; ++ci) {
+    if (constraints[ci].evaluate(test.values) !== ConstraintResult.True) {
+      return `violates constraint #${ci + 1} (constraint evaluation is false or indeterminate)`;
+    }
   }
   return '';
 }
@@ -221,10 +236,16 @@ export function validateCoverage(
 
   const n = params.length;
 
-  // Edge case: strength is 0 or exceeds parameter count.
-  // Vacuous coverage: nothing to cover means everything is covered.
+  // A strength of 0, or greater than the parameter count, is invalid input —
+  // the same rule generate enforces (generate-options validation). Reporting
+  // vacuous 100% coverage here would make the oracle green-light an
+  // unanswerable query.
   if (strength === 0 || strength > n) {
-    report.coverageRatio = 1.0;
+    report.error = {
+      code: ErrorCode.InvalidInput,
+      message: 'Strength must be between 1 and parameter count',
+      detail: `strength=${strength}, parameters=${n}`,
+    };
     return report;
   }
 
@@ -248,6 +269,10 @@ export function validateCoverage(
     }
   }
 
+  // Buffers reused across combinations to avoid per-tuple allocation.
+  const valueIndices = new Array<number>(strength);
+  let coveredFlags = new Uint8Array(0);
+
   for (const combo of combinations) {
     // Step 2: Enumerate all value tuples (cartesian product) for this combination.
     let numTuples = 1;
@@ -255,10 +280,28 @@ export function validateCoverage(
       numTuples *= params[pi].size;
     }
 
+    // Step 2.5: Project every valid test onto its flat value-tuple index for this
+    // combination in a single pass, so the coverage check below is an O(1) lookup
+    // instead of rescanning all tests per tuple. A valid test always has an
+    // in-range value for every parameter (guaranteed by validatePositiveTest), so
+    // the projection is total. The encoding here (most-significant digit first)
+    // must match the decode in the tuple loop.
+    if (coveredFlags.length < numTuples) {
+      coveredFlags = new Uint8Array(numTuples);
+    } else {
+      coveredFlags.fill(0, 0, numTuples);
+    }
+    for (const test of validTests) {
+      let f = 0;
+      for (let j = 0; j < strength; ++j) {
+        f = f * params[combo[j]].size + test.values[combo[j]];
+      }
+      coveredFlags[f] = 1;
+    }
+
     // Iterate over all value tuples using a flat index.
     for (let flat = 0; flat < numTuples; ++flat) {
       // Decode flat index into value indices (mixed-radix decomposition).
-      const valueIndices = new Array<number>(strength);
       let remainder = flat;
       for (let i = strength - 1; i >= 0; --i) {
         const radix = params[combo[i]].size;
@@ -286,9 +329,18 @@ export function validateCoverage(
         for (let i = 0; i < strength; ++i) {
           assignment[combo[i]] = valueIndices[i];
         }
-        const excluded = !hasSatisfyingCompletion(params, constraints, assignment);
+        const tupleBudget: SearchBudget = { remaining: MAX_SEARCH_NODES, exceeded: false };
+        const excluded = !hasSatisfyingCompletion(params, constraints, assignment, tupleBudget);
         for (let i = 0; i < strength; ++i) {
           assignment[combo[i]] = UNASSIGNED;
+        }
+        if (tupleBudget.exceeded) {
+          report.error = {
+            code: ErrorCode.ConstraintError,
+            message: 'Constraint search budget exceeded',
+            detail: 'Tuple feasibility could not be determined within the search budget',
+          };
+          return report;
         }
         if (excluded) {
           continue;
@@ -297,16 +349,8 @@ export function validateCoverage(
 
       ++report.totalTuples;
 
-      // Step 3: Check if any test case covers this value tuple.
-      let covered = false;
-      for (const test of validTests) {
-        if (testCovers(test, combo, valueIndices)) {
-          covered = true;
-          break;
-        }
-      }
-
-      if (covered) {
+      // Step 3: Coverage is an O(1) lookup into the projection built above.
+      if (coveredFlags[flat]) {
         ++report.coveredTuples;
       } else {
         ++report.uncoveredCount;
@@ -446,7 +490,11 @@ export function computeClassCoverage(
 
   const n = params.length;
 
+  // A universe with no class tuples to cover is vacuously fully covered (1.0),
+  // matching the totalClassTuples === 0 branch below and validateCoverage's
+  // empty-universe handling. Only a genuine enumeration error keeps ratio 0.
   if (strength === 0 || strength > n) {
+    report.coverageRatio = 1.0;
     return report;
   }
 
@@ -464,6 +512,7 @@ export function computeClassCoverage(
   }
 
   if (classParams.length === 0) {
+    report.coverageRatio = 1.0;
     return report;
   }
 

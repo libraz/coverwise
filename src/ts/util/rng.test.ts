@@ -90,6 +90,36 @@ describe('Rng', () => {
     });
   });
 
+  // Pins the xoshiro128** + SplitMix32 integer stream to an absolute golden
+  // sequence. The identical expected values are asserted from the C++ side in
+  // tests/util/rng_test.cpp (RngTest.MatchesTypeScriptReferenceStream), so the
+  // two surfaces independently lock to one stream: if either implementation
+  // drifts, its own golden test fails. This is what guarantees byte-identical
+  // generation across the C++/WASM and TypeScript surfaces.
+  describe('cross-surface golden stream', () => {
+    it('matches the pinned reference stream shared with C++', () => {
+      const cases: Array<{ seed: number; max: number; expected: number[] }> = [
+        { seed: 42, max: 1000, expected: [924, 897, 282, 142, 180, 290, 186, 688, 214, 302] },
+        { seed: 123, max: 10, expected: [1, 5, 9, 0, 4, 8, 4, 3, 0, 9] },
+        { seed: 7, max: 100, expected: [0, 87, 49, 28, 27, 69, 77, 14] },
+      ];
+      for (const { seed, max, expected } of cases) {
+        const rng = new Rng(seed);
+        const actual = expected.map(() => rng.nextUint32(max));
+        expect(actual, `seed=${seed}`).toEqual(expected);
+      }
+    });
+
+    // The low-32-bit seed truncation must match C++ (static_cast<uint32_t>).
+    it('uses only the low 32 bits of the seed', () => {
+      const a = new Rng(42);
+      const b = new Rng((42 + 2 ** 32) >>> 0);
+      const seqA = Array.from({ length: 50 }, () => a.nextUint32(1000));
+      const seqB = Array.from({ length: 50 }, () => b.nextUint32(1000));
+      expect(seqA).toEqual(seqB);
+    });
+  });
+
   describe('seed', () => {
     it('reseeding produces the same sequence as a fresh instance', () => {
       const rng = new Rng(100);

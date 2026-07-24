@@ -190,14 +190,34 @@ ConstraintResult IfThenElseNode::Evaluate(const std::vector<uint32_t>& assignmen
 
 // --- RelationalNode ---
 
+namespace {
+
+// Precompute numeric conversions for a parameter's value strings so relational
+// evaluation never reparses on the hot path. For each value index, `valid`
+// records whether the string is numeric and `numeric` holds its parsed double
+// (0.0 for non-numeric values, which Evaluate never reads).
+void PrecomputeNumeric(const std::vector<std::string>& values, std::vector<double>& numeric,
+                       std::vector<uint8_t>& valid) {
+  numeric.resize(values.size());
+  valid.resize(values.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    const bool is_num = IsNumeric(values[i]);
+    valid[i] = is_num ? 1 : 0;
+    numeric[i] = is_num ? ToDouble(values[i]) : 0.0;
+  }
+}
+
+}  // namespace
+
 RelationalNode::RelationalNode(uint32_t param_index, RelOp op, double literal,
                                const std::vector<std::string>& param_values)
     : left_param_(param_index),
       op_(op),
       is_param_comparison_(false),
       literal_(literal),
-      right_param_(0),
-      left_values_(param_values) {}
+      right_param_(0) {
+  PrecomputeNumeric(param_values, left_numeric_, left_valid_);
+}
 
 RelationalNode::RelationalNode(uint32_t left_param, RelOp op, uint32_t right_param,
                                const std::vector<std::string>& left_values,
@@ -206,9 +226,10 @@ RelationalNode::RelationalNode(uint32_t left_param, RelOp op, uint32_t right_par
       op_(op),
       is_param_comparison_(true),
       literal_(0.0),
-      right_param_(right_param),
-      left_values_(left_values),
-      right_values_(right_values) {}
+      right_param_(right_param) {
+  PrecomputeNumeric(left_values, left_numeric_, left_valid_);
+  PrecomputeNumeric(right_values, right_numeric_, right_valid_);
+}
 
 bool RelationalNode::CompareValues(double left, double right) const {
   switch (op_) {
@@ -233,10 +254,10 @@ ConstraintResult RelationalNode::Evaluate(const std::vector<uint32_t>& assignmen
     return ConstraintResult::kUnknown;
   }
 
-  if (left_val >= left_values_.size() || !IsNumeric(left_values_[left_val])) {
+  if (left_val >= left_valid_.size() || !left_valid_[left_val]) {
     return ConstraintResult::kFalse;
   }
-  double left_num = ToDouble(left_values_[left_val]);
+  double left_num = left_numeric_[left_val];
 
   if (is_param_comparison_) {
     if (right_param_ >= assignment.size()) {
@@ -246,10 +267,10 @@ ConstraintResult RelationalNode::Evaluate(const std::vector<uint32_t>& assignmen
     if (right_val == kUnassigned) {
       return ConstraintResult::kUnknown;
     }
-    if (right_val >= right_values_.size() || !IsNumeric(right_values_[right_val])) {
+    if (right_val >= right_valid_.size() || !right_valid_[right_val]) {
       return ConstraintResult::kFalse;
     }
-    double right_num = ToDouble(right_values_[right_val]);
+    double right_num = right_numeric_[right_val];
     return CompareValues(left_num, right_num) ? ConstraintResult::kTrue : ConstraintResult::kFalse;
   }
 
@@ -339,9 +360,10 @@ bool LikeNode::GlobMatch(const std::string& pattern, const std::string& text) {
 
 ParamEqualsNode::ParamEqualsNode(uint32_t left_param, uint32_t right_param,
                                  const std::vector<std::string>& left_values,
-                                 const std::vector<std::string>& right_values)
+                                 const std::vector<std::string>& right_values, bool case_sensitive)
     : left_param_(left_param),
       right_param_(right_param),
+      case_sensitive_(case_sensitive),
       left_values_(left_values),
       right_values_(right_values) {}
 
@@ -357,16 +379,21 @@ ConstraintResult ParamEqualsNode::Evaluate(const std::vector<uint32_t>& assignme
   if (lv >= left_values_.size() || rv >= right_values_.size()) {
     return ConstraintResult::kFalse;
   }
-  return left_values_[lv] == right_values_[rv] ? ConstraintResult::kTrue : ConstraintResult::kFalse;
+  const bool equal = case_sensitive_
+                         ? (left_values_[lv] == right_values_[rv])
+                         : util::CaseInsensitiveEqual(left_values_[lv], right_values_[rv]);
+  return equal ? ConstraintResult::kTrue : ConstraintResult::kFalse;
 }
 
 // --- ParamNotEqualsNode ---
 
 ParamNotEqualsNode::ParamNotEqualsNode(uint32_t left_param, uint32_t right_param,
                                        const std::vector<std::string>& left_values,
-                                       const std::vector<std::string>& right_values)
+                                       const std::vector<std::string>& right_values,
+                                       bool case_sensitive)
     : left_param_(left_param),
       right_param_(right_param),
+      case_sensitive_(case_sensitive),
       left_values_(left_values),
       right_values_(right_values) {}
 
@@ -382,7 +409,10 @@ ConstraintResult ParamNotEqualsNode::Evaluate(const std::vector<uint32_t>& assig
   if (lv >= left_values_.size() || rv >= right_values_.size()) {
     return ConstraintResult::kFalse;
   }
-  return left_values_[lv] != right_values_[rv] ? ConstraintResult::kTrue : ConstraintResult::kFalse;
+  const bool equal = case_sensitive_
+                         ? (left_values_[lv] == right_values_[rv])
+                         : util::CaseInsensitiveEqual(left_values_[lv], right_values_[rv]);
+  return equal ? ConstraintResult::kFalse : ConstraintResult::kTrue;
 }
 
 }  // namespace model

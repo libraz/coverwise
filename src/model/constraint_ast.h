@@ -179,8 +179,14 @@ class RelationalNode : public ConstraintNode {
   bool is_param_comparison_;
   double literal_;
   uint32_t right_param_;
-  std::vector<std::string> left_values_;
-  std::vector<std::string> right_values_;
+  // Numeric conversions are precomputed at construction so Evaluate never
+  // reparses on the hot path (mirrors LikeNode's precomputed matching). For
+  // each value index, `*_valid_` records whether the string is numeric and
+  // `*_numeric_` holds its parsed double (0.0 when not numeric).
+  std::vector<double> left_numeric_;
+  std::vector<uint8_t> left_valid_;
+  std::vector<double> right_numeric_;
+  std::vector<uint8_t> right_valid_;
 };
 
 /// @brief IN-set membership test: param IN {val1, val2, ...}.
@@ -227,21 +233,24 @@ class LikeNode : public ConstraintNode {
 /// @brief Parameter-to-parameter equality comparison.
 ///
 /// Compares the string values of two parameters. Equal if the string
-/// representations are identical.
+/// representations match. Matching honors @p case_sensitive so it is consistent
+/// with value-to-literal comparisons (case-insensitive by default).
 class ParamEqualsNode : public ConstraintNode {
  public:
   /// @param left_param Index of the left parameter.
   /// @param right_param Index of the right parameter.
   /// @param left_values String values of the left parameter.
   /// @param right_values String values of the right parameter.
+  /// @param case_sensitive When false (default), values match case-insensitively.
   ParamEqualsNode(uint32_t left_param, uint32_t right_param,
                   const std::vector<std::string>& left_values,
-                  const std::vector<std::string>& right_values);
+                  const std::vector<std::string>& right_values, bool case_sensitive = false);
   ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override;
 
  private:
   uint32_t left_param_;
   uint32_t right_param_;
+  bool case_sensitive_;
   std::vector<std::string> left_values_;
   std::vector<std::string> right_values_;
 };
@@ -249,21 +258,24 @@ class ParamEqualsNode : public ConstraintNode {
 /// @brief Parameter-to-parameter inequality comparison.
 ///
 /// Compares the string values of two parameters. Not equal if the string
-/// representations differ.
+/// representations differ. Matching honors @p case_sensitive so it is consistent
+/// with value-to-literal comparisons (case-insensitive by default).
 class ParamNotEqualsNode : public ConstraintNode {
  public:
   /// @param left_param Index of the left parameter.
   /// @param right_param Index of the right parameter.
   /// @param left_values String values of the left parameter.
   /// @param right_values String values of the right parameter.
+  /// @param case_sensitive When false (default), values match case-insensitively.
   ParamNotEqualsNode(uint32_t left_param, uint32_t right_param,
                      const std::vector<std::string>& left_values,
-                     const std::vector<std::string>& right_values);
+                     const std::vector<std::string>& right_values, bool case_sensitive = false);
   ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override;
 
  private:
   uint32_t left_param_;
   uint32_t right_param_;
+  bool case_sensitive_;
   std::vector<std::string> left_values_;
   std::vector<std::string> right_values_;
 };

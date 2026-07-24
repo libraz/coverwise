@@ -251,9 +251,14 @@ export function validateGenerateOptions(options: GenerateOptions): ErrorInfo {
       if (!Number.isSafeInteger(config.minValue) || !Number.isSafeInteger(config.maxValue)) {
         return invalid(`Integer boundary endpoints must be safe integers for ${paramName}`);
       }
+      // Gate on the shared isNumeric predicate (same as the identity loop above
+      // and the C++ core) so both surfaces classify a value as numeric — and
+      // therefore range-check it — identically.
       for (const value of param.values) {
-        const numeric = Number(value);
-        if (value.trim().length > 0 && Number.isFinite(numeric) && !Number.isSafeInteger(numeric)) {
+        if (!isNumeric(value)) {
+          continue;
+        }
+        if (!Number.isSafeInteger(Number(value))) {
           return invalid(
             `Integer boundary parameter contains a non-integral or out-of-range value: ${paramName}=${value}`,
           );

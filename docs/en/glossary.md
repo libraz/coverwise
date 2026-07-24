@@ -90,7 +90,7 @@ A value at or near the edge of a valid range (minimum, maximum, and adjacent val
 
 ### Weight
 
-A hint to the generator about value preference. When multiple values offer equal coverage improvement, higher-weighted values are chosen first. Does not affect coverage completeness.
+A hint to the generator about value preference. When multiple values offer equal coverage improvement, one is chosen by weighted random selection — the probability of picking a value is proportional to its weight, so a higher weight makes a value more likely (not guaranteed) to be chosen. Does not affect coverage completeness.
 
 ## Algorithm
 

@@ -51,7 +51,8 @@ enum class TokenType {
 struct Token {
   TokenType type;
   std::string text;
-  size_t position;  // Unicode codepoint offset in the original expression
+  size_t position;          // Unicode codepoint offset in the original expression
+  bool was_quoted = false;  // True if this identifier came from a quoted string literal.
 };
 
 // --- Tokenizer ---
@@ -163,7 +164,11 @@ TokenizeResult Tokenize(const std::string& expr) {
   const auto codepoint_positions = BuildCodepointPositions(expr);
 
   while (i < len) {
-    if (std::isspace(static_cast<unsigned char>(expr[i]))) {
+    // Explicit ASCII whitespace set (space, tab, LF, CR), matching the
+    // TypeScript tokenizer. Avoids locale-dependent std::isspace, which also
+    // treats \v and \f as space and would diverge from the pure-JS surface.
+    const char c = expr[i];
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
       ++i;
       continue;
     }
@@ -245,6 +250,24 @@ TokenizeResult Tokenize(const std::string& expr) {
       continue;
     }
 
+    // LIKE pattern: after the LIKE keyword, consume a glob pattern. This must be
+    // checked before the number branch so a pattern that starts with a digit
+    // (e.g. version LIKE 1.*) is read as a pattern rather than a decimal literal
+    // that then chokes on '*'.
+    if (expect_pattern) {
+      size_t j = i;
+      while (j < len && IsGlobPatternChar(expr[j])) {
+        ++j;
+      }
+      if (j > i) {
+        std::string pattern = expr.substr(i, j - i);
+        tokens.push_back({TokenType::kIdentifier, pattern, start});
+        i = j;
+        expect_pattern = false;
+        continue;
+      }
+    }
+
     // Number literal. Signs and a leading dot are accepted only after an operator,
     // preserving string values such as "-1" inside IN sets as identifiers.
     const bool after_comparison = !tokens.empty() && IsComparisonToken(tokens.back().type);
@@ -266,6 +289,16 @@ TokenizeResult Tokenize(const std::string& expr) {
       } else if (j > i) {
         std::string num = expr.substr(i, j - i);
         tokens.push_back({TokenType::kNumber, num, start});
+      } else if (expr[i] != '+' && IsIdentChar(expr[i])) {
+        // ScanDecimal found no number (e.g. a value like "-foo" after '='). Treat
+        // it as an identifier value, matching how the same token is accepted
+        // inside an IN set, instead of rejecting a non-numeric value that starts
+        // with a sign.
+        j = i;
+        while (j < len && IsIdentChar(expr[j])) {
+          ++j;
+        }
+        tokens.push_back({TokenType::kIdentifier, expr.substr(i, j - i), start});
       } else {
         return {{},
                 {Error::Code::kConstraintError,
@@ -275,21 +308,6 @@ TokenizeResult Tokenize(const std::string& expr) {
       i = j;
       expect_pattern = false;
       continue;
-    }
-
-    // LIKE pattern: after LIKE keyword, consume pattern with glob chars
-    if (expect_pattern) {
-      size_t j = i;
-      while (j < len && IsGlobPatternChar(expr[j])) {
-        ++j;
-      }
-      if (j > i) {
-        std::string pattern = expr.substr(i, j - i);
-        tokens.push_back({TokenType::kIdentifier, pattern, start});
-        i = j;
-        expect_pattern = false;
-        continue;
-      }
     }
 
     // Quoted string: "..." or '...'. Supports backslash escapes \" and \\ so a
@@ -318,7 +336,7 @@ TokenizeResult Tokenize(const std::string& expr) {
                 {Error::Code::kConstraintError,
                  "Unterminated string literal starting at position " + std::to_string(start), ""}};
       }
-      tokens.push_back({TokenType::kIdentifier, content, start});
+      tokens.push_back({TokenType::kIdentifier, content, start, /*was_quoted=*/true});
       i = j + 1;
       expect_pattern = false;
       continue;
@@ -359,8 +377,11 @@ TokenizeResult Tokenize(const std::string& expr) {
              ""}};
   }
 
+  // Bound only the actual nesting depth (parenthesis nesting), not the total
+  // count of operators. A flat expression such as 200 OR-connected clauses has
+  // shallow nesting and must be accepted; deep NOT recursion is bounded inside
+  // the recursive-descent parser itself (see ParseExpression / ParseUnaryExpr).
   size_t paren_depth = 0;
-  size_t recursive_syntax = 0;
   for (const auto& token : tokens) {
     if (token.type == TokenType::kLParen) {
       ++paren_depth;
@@ -373,18 +394,6 @@ TokenizeResult Tokenize(const std::string& expr) {
       }
     } else if (token.type == TokenType::kRParen && paren_depth > 0) {
       --paren_depth;
-    }
-    if (token.type == TokenType::kNot || token.type == TokenType::kImplies ||
-        token.type == TokenType::kIf || token.type == TokenType::kLParen) {
-      ++recursive_syntax;
-      const bool adds_ast_node = token.type != TokenType::kLParen;
-      if (recursive_syntax > kMaxAstDepth || (adds_ast_node && recursive_syntax >= kMaxAstDepth)) {
-        return {
-            {},
-            {Error::Code::kConstraintError,
-             "Constraint AST depth limit exceeded (maximum " + std::to_string(kMaxAstDepth) + ")",
-             "Simplify or split the constraint expression"}};
-      }
     }
   }
 
@@ -660,7 +669,17 @@ class Parser {
 
   ParseResult ParseUnaryExpr() {
     if (Match(TokenType::kNot)) {
+      // Bound the actual prefix-NOT recursion depth to keep the stack safe on a
+      // long unparenthesized NOT chain (which the token pre-scan cannot see).
+      if (++not_depth_ > kMaxAstDepth) {
+        return {nullptr,
+                {Error::Code::kConstraintError,
+                 "Constraint nesting depth limit exceeded (maximum " +
+                     std::to_string(kMaxAstDepth) + ")",
+                 "Simplify or split the constraint expression"}};
+      }
       auto child = ParseUnaryExpr();
+      --not_depth_;
       if (!child.error.ok()) {
         return child;
       }
@@ -737,10 +756,14 @@ class Parser {
       }
       uint32_t left_param = rp.param_index;
 
-      // Determine if RHS is a value of the left param or a parameter name
+      // Determine if RHS is a value of the left param or a parameter name. A
+      // quoted RHS is always a literal value, never a parameter reference, so a
+      // quoted token that collides with a parameter name is not silently turned
+      // into a param-to-param comparison.
       bool rhs_is_value =
           IsValueOfParam(left_param, value_tok.text, params_, options_.case_sensitive);
-      bool rhs_is_param = IsParameterName(value_tok.text, params_, options_.case_sensitive);
+      bool rhs_is_param = !value_tok.was_quoted &&
+                          IsParameterName(value_tok.text, params_, options_.case_sensitive);
 
       // If it's a value of the left param, prefer param=value interpretation
       if (rhs_is_value) {
@@ -762,13 +785,13 @@ class Parser {
           return {nullptr, rp2.error};
         }
         if (is_equals) {
-          return MakeNode(std::make_unique<ParamEqualsNode>(left_param, rp2.param_index,
-                                                            params_[left_param].values,
-                                                            params_[rp2.param_index].values));
+          return MakeNode(std::make_unique<ParamEqualsNode>(
+              left_param, rp2.param_index, params_[left_param].values,
+              params_[rp2.param_index].values, options_.case_sensitive));
         } else {
-          return MakeNode(std::make_unique<ParamNotEqualsNode>(left_param, rp2.param_index,
-                                                               params_[left_param].values,
-                                                               params_[rp2.param_index].values));
+          return MakeNode(std::make_unique<ParamNotEqualsNode>(
+              left_param, rp2.param_index, params_[left_param].values,
+              params_[rp2.param_index].values, options_.case_sensitive));
         }
       }
 
@@ -957,6 +980,7 @@ class Parser {
   ParseOptions options_;
   size_t pos_;
   size_t node_count_ = 0;
+  size_t not_depth_ = 0;  ///< Current prefix-NOT recursion depth (bounds the stack).
 };
 
 }  // namespace
@@ -983,6 +1007,11 @@ ParseResult ParseConstraint(const std::string& expression, const std::vector<Par
 
   Parser parser(std::move(tok_result.tokens), params, options);
   return parser.Parse();
+}
+
+Error AnnotateConstraintError(const std::string& expression, Error error) {
+  error.message = "Invalid constraint \"" + expression + "\": " + error.message;
+  return error;
 }
 
 }  // namespace model

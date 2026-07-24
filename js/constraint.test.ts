@@ -3,6 +3,7 @@ import { ConstraintResult } from '../src/ts/model/constraint-ast.js';
 import { parseConstraint } from '../src/ts/model/constraint-parser.js';
 import { Parameter } from '../src/ts/model/parameter.js';
 import { allOf, anyOf, not, when } from './constraint';
+import { CoverwiseError } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Basic operators
@@ -112,6 +113,11 @@ describe('when().in()', () => {
       'os IN {"Windows 11", "macOS Sonoma"}',
     );
   });
+
+  it('rejects an empty set at construction with a CoverwiseError', () => {
+    expect(() => when('os').in()).toThrow(CoverwiseError);
+    expect(() => when('os').in()).toThrow('at least one');
+  });
 });
 
 describe('when().like()', () => {
@@ -195,7 +201,8 @@ describe('allOf()', () => {
     expect(c.toString()).toBe('(a = 1 OR a = 2) AND b = 3');
   });
 
-  it('throws on empty', () => {
+  it('throws a CoverwiseError on empty', () => {
+    expect(() => allOf()).toThrow(CoverwiseError);
     expect(() => allOf()).toThrow('at least one');
   });
 });
@@ -211,7 +218,8 @@ describe('anyOf()', () => {
     expect(c.toString()).toBe('a = 1 OR b = 2 OR c = 3');
   });
 
-  it('throws on empty', () => {
+  it('throws a CoverwiseError on empty', () => {
+    expect(() => anyOf()).toThrow(CoverwiseError);
     expect(() => anyOf()).toThrow('at least one');
   });
 });

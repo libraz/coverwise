@@ -41,33 +41,6 @@ TEST(DynamicBitsetTest, Clear) {
   EXPECT_EQ(bs.Count(), 0u);
 }
 
-TEST(DynamicBitsetTest, CountAndNot) {
-  DynamicBitset a(100);
-  DynamicBitset b(100);
-
-  a.Set(1);
-  a.Set(2);
-  a.Set(3);
-
-  b.Set(2);
-
-  // a AND NOT b = {1, 3}
-  EXPECT_EQ(a.CountAndNot(b), 2u);
-}
-
-TEST(DynamicBitsetTest, UnionWith) {
-  DynamicBitset a(100);
-  DynamicBitset b(100);
-
-  a.Set(1);
-  b.Set(2);
-
-  a.UnionWith(b);
-  EXPECT_TRUE(a.Test(1));
-  EXPECT_TRUE(a.Test(2));
-  EXPECT_EQ(a.Count(), 2u);
-}
-
 TEST(DynamicBitsetTest, Reset) {
   DynamicBitset bs(64);
   bs.Set(0);

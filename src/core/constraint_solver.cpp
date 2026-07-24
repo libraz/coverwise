@@ -22,7 +22,13 @@ bool ConstraintsCanStillPass(const std::vector<model::Constraint>& constraints,
 
 bool Search(const std::vector<model::Parameter>& params,
             const std::vector<model::Constraint>& constraints, std::vector<uint32_t>& assignment,
-            uint32_t assigned_count, const std::vector<std::vector<bool>>* allowed_values) {
+            uint32_t assigned_count, const std::vector<std::vector<bool>>* allowed_values,
+            SolveBudget& budget) {
+  if (budget.remaining == 0) {
+    budget.exceeded = true;
+    return false;
+  }
+  --budget.remaining;
   if (!ConstraintsCanStillPass(constraints, assignment)) {
     return false;
   }
@@ -56,8 +62,12 @@ bool Search(const std::vector<model::Parameter>& params,
       continue;
     }
     assignment[next] = vi;
-    if (Search(params, constraints, assignment, assigned_count + 1, allowed_values)) {
+    if (Search(params, constraints, assignment, assigned_count + 1, allowed_values, budget)) {
       return true;
+    }
+    if (budget.exceeded) {
+      assignment[next] = model::kUnassigned;
+      return false;
     }
   }
   assignment[next] = model::kUnassigned;
@@ -69,7 +79,7 @@ bool Search(const std::vector<model::Parameter>& params,
 bool CompleteAssignment(const std::vector<model::Parameter>& params,
                         const std::vector<model::Constraint>& constraints,
                         const std::vector<std::vector<bool>>& allowed_values,
-                        model::TestCase& assignment) {
+                        model::TestCase& assignment, SolveBudget* budget) {
   if (allowed_values.size() != params.size()) return false;
   for (uint32_t pi = 0; pi < params.size(); ++pi) {
     if (allowed_values[pi].size() != params[pi].size()) return false;
@@ -85,12 +95,14 @@ bool CompleteAssignment(const std::vector<model::Parameter>& params,
     if (vi >= params[pi].size() || !allowed_values[pi][vi]) return false;
     ++assigned_count;
   }
-  return Search(params, constraints, assignment.values, assigned_count, &allowed_values);
+  SolveBudget local;
+  SolveBudget& b = budget ? *budget : local;
+  return Search(params, constraints, assignment.values, assigned_count, &allowed_values, b);
 }
 
 bool CompleteValidAssignment(const std::vector<model::Parameter>& params,
                              const std::vector<model::Constraint>& constraints,
-                             model::TestCase& assignment) {
+                             model::TestCase& assignment, SolveBudget* budget) {
   if (assignment.values.size() != params.size()) {
     assignment.values.resize(params.size(), model::kUnassigned);
   }
@@ -104,7 +116,9 @@ bool CompleteValidAssignment(const std::vector<model::Parameter>& params,
     }
     ++assigned_count;
   }
-  return Search(params, constraints, assignment.values, assigned_count, nullptr);
+  SolveBudget local;
+  SolveBudget& b = budget ? *budget : local;
+  return Search(params, constraints, assignment.values, assigned_count, nullptr, b);
 }
 
 }  // namespace core

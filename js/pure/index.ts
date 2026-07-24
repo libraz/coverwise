@@ -35,11 +35,10 @@ import {
   generate as internalGenerate,
 } from '../../src/ts/core/generator.js';
 import type { ConstraintNode } from '../../src/ts/model/constraint-ast.js';
-import { parseConstraint } from '../../src/ts/model/constraint-parser.js';
+import { annotateConstraintError, parseConstraint } from '../../src/ts/model/constraint-parser.js';
 import { validateCoverage as internalValidateCoverage } from '../../src/ts/validator/coverage-validator.js';
 import type {
   CoverageReport,
-  CoverwiseErrorCode,
   ExtendInput,
   GenerateInput,
   GenerateResult,
@@ -47,7 +46,7 @@ import type {
   Parameter,
   TestCase,
 } from '../types.js';
-import { CoverwiseError } from '../types.js';
+import { CoverwiseError, errorCodeFromNumber } from '../types.js';
 import {
   validateConstraints,
   validateExtendMode,
@@ -77,31 +76,13 @@ function validateInput(input: GenerateInput): void {
   validateGenerateInput(input, pureScalarError);
 }
 
-/**
- * Map the numeric internal {@link ErrorCode} to its canonical string code.
- * Mirrors errorCodeFromNumber in ../types.js (kept local to avoid importing a
- * numeric-mapping helper that the public surface does not otherwise need).
- */
-function toErrorCode(code: number): CoverwiseErrorCode {
-  switch (code) {
-    case 1:
-      return 'CONSTRAINT_ERROR';
-    case 2:
-      return 'INSUFFICIENT_COVERAGE';
-    case 4:
-      return 'TUPLE_EXPLOSION';
-    default:
-      return 'INVALID_INPUT';
-  }
-}
-
 /** Throw a CoverwiseError when the internal engine reports a structured error. */
 function throwOnResultError(error: { code: number; message: string; detail: string }): void {
   if (error.code === 0) {
     return;
   }
   const message = error.detail ? `${error.message}: ${error.detail}` : error.message;
-  throw new CoverwiseError(toErrorCode(error.code), message);
+  throw new CoverwiseError(errorCodeFromNumber(error.code), message);
 }
 
 // --- Core API ---
@@ -164,11 +145,15 @@ export function analyzeCoverage(
     for (const expr of constraints) {
       const parseResult = parseConstraint(expr, params);
       if (parseResult.error.code !== 0 || !parseResult.constraint) {
+        // Uniform cross-surface message: same "Invalid constraint …" prefix and
+        // ": <detail>" rendering that the generate paths (core + WASM) produce.
+        const annotated = annotateConstraintError(expr, parseResult.error);
+        const message = annotated.detail
+          ? `${annotated.message}: ${annotated.detail}`
+          : annotated.message;
         throw new CoverwiseError(
-          toErrorCode(parseResult.error.code),
-          `Invalid constraint "${expr}": ${parseResult.error.message}${
-            parseResult.error.detail ? ` — ${parseResult.error.detail}` : ''
-          }`,
+          annotated.code !== 0 ? errorCodeFromNumber(annotated.code) : 'CONSTRAINT_ERROR',
+          message,
         );
       }
       parsedConstraints.push(parseResult.constraint);

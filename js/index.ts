@@ -229,16 +229,16 @@ export function estimateModel(input: GenerateInput): ModelStats {
  * Class-based wrapper around the coverwise API.
  * Provides the same functionality as the free functions in an object-oriented style.
  *
+ * Every method delegates to the corresponding free function so the two styles
+ * share a single implementation and cannot drift (validation, existing-test
+ * preservation, and error mapping stay identical).
+ *
  * @example
  * const cw = await Coverwise.create();
  * const result = cw.generate({ parameters: [...] });
  */
 export class Coverwise {
-  private module: WasmModule;
-
-  private constructor(module: WasmModule) {
-    this.module = module;
-  }
+  private constructor() {}
 
   /**
    * Create a Coverwise instance.
@@ -250,17 +250,14 @@ export class Coverwise {
    */
   static async create(): Promise<Coverwise> {
     await init();
-    return new Coverwise(getModule());
+    return new Coverwise();
   }
 
   /**
    * Generate a covering array. One function, sensible defaults.
    */
   generate(input: GenerateInput): GenerateResult {
-    validateInput(input);
-    const result = checkResult<GenerateResult>(this.module.generate(input));
-    result.negativeTests = result.negativeTests ?? [];
-    return result;
+    return generate(input);
   }
 
   /**
@@ -272,35 +269,20 @@ export class Coverwise {
     strength?: number,
     constraints?: string[],
   ): CoverageReport {
-    validateParameters(parameters);
-    validateTestArray(tests, 'tests');
-    const s = validateStrength(strength, wasmScalarError);
-    const result = checkResult<CoverageReport>(
-      this.module.analyzeCoverage(parameters, tests, s, constraints ?? []),
-    );
-    if (result.totalTuples === 0) {
-      result.coverageRatio = 1.0;
-    }
-    return result;
+    return analyzeCoverage(parameters, tests, strength, constraints);
   }
 
   /**
    * Extend an existing test suite with additional tests to improve coverage.
    */
   extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
-    validateTestArray(existing, 'existing');
-    validateInput(input);
-    validateExtendMode(input.mode);
-    const result = checkResult<GenerateResult>(this.module.extendTests(existing, input));
-    result.negativeTests = result.negativeTests ?? [];
-    return result;
+    return extendTests(existing, input);
   }
 
   /**
    * Get model statistics without running generation.
    */
   estimateModel(input: GenerateInput): ModelStats {
-    validateInput(input);
-    return checkResult<ModelStats>(this.module.estimateModel(input));
+    return estimateModel(input);
   }
 }

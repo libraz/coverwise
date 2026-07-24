@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   analyzeCoverage,
   Coverwise,
+  CoverwiseError,
   estimateModel,
   extendTests,
   generate,
@@ -383,10 +384,29 @@ describe('analyzeCoverage() edge cases', () => {
     expect(report.uncovered.length).toBe(4);
   });
 
-  it('single parameter → 0 tuples for pairwise', () => {
-    const report = analyzeCoverage([{ name: 'a', values: ['1', '2'] }], [{ a: '1' }]);
-    expect(report.totalTuples).toBe(0);
-    expect(report.coverageRatio).toBe(1.0);
+  it('single parameter with default pairwise strength → invalid input', () => {
+    // strength (2) > parameter count (1) is rejected, matching generate. A
+    // vacuous 100% would let the oracle green-light an unanswerable query.
+    expect(() => analyzeCoverage([{ name: 'a', values: ['1', '2'] }], [{ a: '1' }])).toThrow(
+      CoverwiseError,
+    );
+  });
+
+  it('a test row missing a parameter reports a readable reason, not a sentinel', () => {
+    // Regression: a missing parameter used to surface the internal unassigned
+    // sentinel ("value index 4294967295 is out of range"). It must instead say
+    // which parameter is missing.
+    const report = analyzeCoverage(
+      [
+        { name: 'os', values: ['win', 'mac'] },
+        { name: 'br', values: ['chrome', 'ie'] },
+      ],
+      [{ os: 'win', br: 'chrome' }, { os: 'mac' }],
+    );
+    expect(report.invalidTests).toHaveLength(1);
+    expect(report.invalidTests[0].testIndex).toBe(1);
+    expect(report.invalidTests[0].reason).toBe('missing value for parameter br');
+    expect(report.invalidTests[0].reason).not.toContain('4294967295');
   });
 });
 
@@ -789,6 +809,41 @@ describe('Coverwise class', () => {
     expect(result.coverage).toBe(1.0);
     expect(result.tests.length).toBeGreaterThan(1);
     expect(result.tests[0]).toEqual({ os: 'win', browser: 'chrome' });
+  });
+
+  it('extendTests(): keeps existing rows verbatim, including aliased values', () => {
+    // Regression: the class method must preserve existing tests as-is (same
+    // object, unrotated values) exactly like the free function — not re-emit
+    // them through the engine, which could rewrite an aliased value.
+    const params: Parameter[] = [
+      { name: 'os', values: ['win', 'mac', 'linux'] },
+      {
+        name: 'browser',
+        values: [{ value: 'chrome', aliases: ['chromium'] }, 'firefox', 'safari'],
+      },
+    ];
+    const existing: TestCase[] = [{ os: 'win', browser: 'chrome' }];
+    const classResult = cw.extendTests(existing, { parameters: params });
+    const freeResult = extendTests(existing, { parameters: params });
+    expect(classResult.tests[0]).toBe(existing[0]);
+    expect(classResult.tests[0]).toEqual({ os: 'win', browser: 'chrome' });
+    // Class and free function must produce identical suites.
+    expect(classResult.tests).toEqual(freeResult.tests);
+  });
+
+  it('analyzeCoverage(): rejects malformed constraints with CoverwiseError', () => {
+    // Regression: the class method must run the same constraint validation as
+    // the free function; a non-array/non-string constraints value must raise a
+    // CoverwiseError rather than silently succeeding or leaking a raw error.
+    const params: Parameter[] = [
+      { name: 'os', values: ['win', 'mac'] },
+      { name: 'browser', values: ['chrome', 'firefox'] },
+    ];
+    const tests: TestCase[] = [{ os: 'win', browser: 'chrome' }];
+    // biome-ignore lint/suspicious/noExplicitAny: intentionally malformed input.
+    expect(() => cw.analyzeCoverage(params, tests, 2, 42 as any)).toThrow(CoverwiseError);
+    // biome-ignore lint/suspicious/noExplicitAny: intentionally malformed input.
+    expect(() => cw.analyzeCoverage(params, tests, 2, [7] as any)).toThrow(CoverwiseError);
   });
 
   it('estimateModel(): returns stats', () => {

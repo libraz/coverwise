@@ -86,6 +86,8 @@ interface Token {
   text: string;
   /** Unicode codepoint offset in the original expression. */
   position: number;
+  /** True if this identifier came from a quoted string literal. */
+  wasQuoted?: boolean;
 }
 
 // --- Tokenizer ---
@@ -337,6 +339,24 @@ function tokenize(expr: string): TokenizeResult {
       continue;
     }
 
+    // LIKE pattern: after the LIKE keyword, consume a glob pattern. This must be
+    // checked before the number branch so a pattern that starts with a digit
+    // (e.g. version LIKE 1.*) is read as a pattern rather than a decimal literal
+    // that then chokes on '*'.
+    if (expectPattern) {
+      let j = i;
+      while (j < len && isGlobPatternChar(expr[j])) {
+        j++;
+      }
+      if (j > i) {
+        const pattern = expr.substring(i, j);
+        tokens.push({ type: TokenType.Identifier, text: pattern, position: start });
+        i = j;
+        expectPattern = false;
+        continue;
+      }
+    }
+
     // Number literal. Signs and a leading dot are accepted only after an operator,
     // preserving string values such as '-1' inside IN sets as identifiers.
     const afterComparison = tokens.length > 0 && isComparisonToken(tokens[tokens.length - 1].type);
@@ -359,6 +379,16 @@ function tokenize(expr: string): TokenizeResult {
       } else if (j > i) {
         const num = expr.substring(i, j);
         tokens.push({ type: TokenType.Number, text: num, position: start });
+      } else if (expr[i] !== '+' && isIdentChar(expr[i])) {
+        // scanDecimal found no number (e.g. a value like '-foo' after '='). Treat
+        // it as an identifier value, matching how the same token is accepted
+        // inside an IN set, instead of rejecting a non-numeric value that starts
+        // with a sign.
+        j = i;
+        while (j < len && isIdentChar(expr[j])) {
+          j++;
+        }
+        tokens.push({ type: TokenType.Identifier, text: expr.substring(i, j), position: start });
       } else {
         return {
           tokens: [],
@@ -372,21 +402,6 @@ function tokenize(expr: string): TokenizeResult {
       i = j;
       expectPattern = false;
       continue;
-    }
-
-    // LIKE pattern: after LIKE keyword, consume pattern with glob chars
-    if (expectPattern) {
-      let j = i;
-      while (j < len && isGlobPatternChar(expr[j])) {
-        j++;
-      }
-      if (j > i) {
-        const pattern = expr.substring(i, j);
-        tokens.push({ type: TokenType.Identifier, text: pattern, position: start });
-        i = j;
-        expectPattern = false;
-        continue;
-      }
     }
 
     // Quoted string: "..." or '...'. Supports backslash escapes \" and \\ so a
@@ -420,7 +435,7 @@ function tokenize(expr: string): TokenizeResult {
           },
         };
       }
-      tokens.push({ type: TokenType.Identifier, text: content, position: start });
+      tokens.push({ type: TokenType.Identifier, text: content, position: start, wasQuoted: true });
       i = j + 1;
       expectPattern = false;
       continue;
@@ -464,8 +479,11 @@ function tokenize(expr: string): TokenizeResult {
     };
   }
 
+  // Bound only the actual nesting depth (parenthesis nesting), not the total
+  // count of operators. A flat expression such as 200 OR-connected clauses has
+  // shallow nesting and must be accepted; deep NOT recursion is bounded inside
+  // the recursive-descent parser itself (see parseUnary).
   let parenDepth = 0;
-  let recursiveSyntax = 0;
   for (const token of tokens) {
     if (token.type === TokenType.LParen) {
       parenDepth++;
@@ -481,25 +499,6 @@ function tokenize(expr: string): TokenizeResult {
       }
     } else if (token.type === TokenType.RParen && parenDepth > 0) {
       parenDepth--;
-    }
-    if (
-      token.type === TokenType.Not ||
-      token.type === TokenType.Implies ||
-      token.type === TokenType.If ||
-      token.type === TokenType.LParen
-    ) {
-      recursiveSyntax++;
-      const addsAstNode = token.type !== TokenType.LParen;
-      if (recursiveSyntax > MAX_AST_DEPTH || (addsAstNode && recursiveSyntax >= MAX_AST_DEPTH)) {
-        return {
-          tokens: [],
-          error: {
-            code: ErrorCode.ConstraintError,
-            message: `Constraint AST depth limit exceeded (maximum ${MAX_AST_DEPTH})`,
-            detail: 'Simplify or split the constraint expression',
-          },
-        };
-      }
     }
   }
 
@@ -627,6 +626,8 @@ function isValueOfParam(
 class Parser {
   private pos: number;
   private nodeCount = 0;
+  /** Current prefix-NOT recursion depth (bounds the stack). */
+  private notDepth = 0;
 
   constructor(
     private readonly tokens: Token[],
@@ -816,7 +817,20 @@ class Parser {
 
   private parseUnaryExpr(): ParseResult {
     if (this.match(TokenType.Not)) {
+      // Bound the actual prefix-NOT recursion depth to keep the stack safe on a
+      // long unparenthesized NOT chain (which the token pre-scan cannot see).
+      if (++this.notDepth > MAX_AST_DEPTH) {
+        return {
+          constraint: null,
+          error: {
+            code: ErrorCode.ConstraintError,
+            message: `Constraint nesting depth limit exceeded (maximum ${MAX_AST_DEPTH})`,
+            detail: 'Simplify or split the constraint expression',
+          },
+        };
+      }
       const child = this.parseUnaryExpr();
+      this.notDepth--;
       if (child.error.code !== ErrorCode.Ok || child.constraint === null) {
         return child;
       }
@@ -917,14 +931,19 @@ class Parser {
       }
       const leftParam = rp.paramIndex;
 
-      // Determine if RHS is a value of the left param or a parameter name
+      // Determine if RHS is a value of the left param or a parameter name. A
+      // quoted RHS is always a literal value, never a parameter reference, so a
+      // quoted token that collides with a parameter name is not silently turned
+      // into a param-to-param comparison.
       const rhsIsValue = isValueOfParam(
         leftParam,
         valueTok.text,
         this.params,
         this.options.caseSensitive,
       );
-      const rhsIsParam = isParameterName(valueTok.text, this.params, this.options.caseSensitive);
+      const rhsIsParam =
+        !valueTok.wasQuoted &&
+        isParameterName(valueTok.text, this.params, this.options.caseSensitive);
 
       // If it's a value of the left param, prefer param=value interpretation
       if (rhsIsValue) {
@@ -951,6 +970,7 @@ class Parser {
               rp2.paramIndex,
               this.params[leftParam].values,
               this.params[rp2.paramIndex].values,
+              this.options.caseSensitive,
             ),
           );
         }
@@ -960,6 +980,7 @@ class Parser {
             rp2.paramIndex,
             this.params[leftParam].values,
             this.params[rp2.paramIndex].values,
+            this.options.caseSensitive,
           ),
         );
       }
@@ -1227,6 +1248,19 @@ class Parser {
  * @param options Parsing options (e.g., case sensitivity). Defaults to case-insensitive.
  * @returns ParseResult with the AST on success, or an error on failure.
  */
+/**
+ * Prefix a constraint parse error with the offending expression.
+ *
+ * Produces the uniform cross-surface message
+ * `Invalid constraint "<expression>": <original message>` so every surface
+ * (CLI, WASM, pure-JS generate and analyze) reports constraint failures in a
+ * single format that names the source expression. The detail field is left
+ * unchanged; each surface appends it consistently.
+ */
+export function annotateConstraintError(expression: string, error: ErrorInfo): ErrorInfo {
+  return { ...error, message: `Invalid constraint "${expression}": ${error.message}` };
+}
+
 export function parseConstraint(
   expression: string,
   params: Parameter[],

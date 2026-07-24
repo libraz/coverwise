@@ -15,13 +15,16 @@ namespace validator {
 
 /// @brief Constraint validation report.
 ///
-/// This aggregate report is the canonical, cross-surface shape: it matches the
-/// TypeScript ConstraintReport (validateConstraintReport) field-for-field, with
-/// per-test violation semantics (a test that violates any constraint is counted
-/// once). Per-violation detail (which specific constraint a test violated) is a
-/// TypeScript-only convenience exposed via validateConstraints; it is not part
-/// of the canonical surface and the WASM binding intentionally exports only the
-/// aggregate report.
+/// This aggregate report matches the TypeScript ConstraintReport
+/// (validateConstraintReport) field-for-field, with per-test violation semantics
+/// (a test that violates any constraint is counted once).
+///
+/// ValidateConstraints is an internal building block — it runs as part of
+/// generation and is available to native/C++ embedders, but it is not a
+/// standalone public entry point. The WASM binding exposes only generate,
+/// analyzeCoverage, extendTests, and estimateModel; constraint validation is
+/// reached through those (e.g. analyzeCoverage reports constraint-invalid rows),
+/// not via a dedicated exported function.
 struct ConstraintReport {
   uint32_t total_tests = 0;
   uint32_t violations = 0;

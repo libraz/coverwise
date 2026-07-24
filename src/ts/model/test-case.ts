@@ -18,6 +18,15 @@ export interface UncoveredTuple {
   tuple: string[];
   /** Parameter names involved, e.g. ["os", "browser"] */
   params: string[];
+  /**
+   * (parameter index, value index) pairs identifying this tuple.
+   *
+   * Carried alongside the string form so callers can reconstruct a witness
+   * assignment without parsing "name=value" strings, which is ambiguous when a
+   * parameter name or value contains '='. Internal aid; not part of the public
+   * JSON surface.
+   */
+  indices?: Array<[number, number]>;
   /** Why this tuple is uncovered. */
   reason: string;
 }

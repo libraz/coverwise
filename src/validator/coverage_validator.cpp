@@ -19,28 +19,26 @@ constexpr uint64_t kMaxTuples = 16'000'000;
 constexpr uint64_t kMaxCombinations = 1'000'000;
 constexpr size_t kMaxDiagnosticTuples = 1'000;
 
-/// @brief Check if a test case covers a specific value tuple for given parameter indices.
-///
-/// @param test The test case to check.
-/// @param param_indices The parameter indices in the tuple.
-/// @param value_indices The expected value indices for each parameter.
-/// @return true if the test case matches all values in the tuple.
-bool TestCovers(const model::TestCase& test, const std::vector<uint32_t>& param_indices,
-                const std::vector<uint32_t>& value_indices) {
-  for (size_t i = 0; i < param_indices.size(); ++i) {
-    uint32_t pi = param_indices[i];
-    if (pi >= test.values.size() || test.values[pi] != value_indices[i]) {
-      return false;
-    }
-  }
-  return true;
-}
+/// Recursion-node budget for a single feasibility search. Bounds the otherwise
+/// exponential backtracking so a hard model terminates; an exhausted budget is
+/// reported explicitly rather than being read as "infeasible".
+constexpr uint64_t kMaxSearchNodes = 2'000'000;
+
+struct SearchBudget {
+  uint64_t remaining = kMaxSearchNodes;
+  bool exceeded = false;
+};
 
 // Independent feasibility oracle. This intentionally does not use the core
 // solver so validator agreement cannot be caused by shared implementation.
 bool ValidatorSearch(const std::vector<model::Parameter>& params,
                      const std::vector<model::Constraint>& constraints,
-                     std::vector<uint32_t>& assignment, uint32_t cursor) {
+                     std::vector<uint32_t>& assignment, uint32_t cursor, SearchBudget& budget) {
+  if (budget.remaining == 0) {
+    budget.exceeded = true;
+    return false;
+  }
+  --budget.remaining;
   for (const auto& constraint : constraints) {
     if (constraint->Evaluate(assignment) == model::ConstraintResult::kFalse) {
       return false;
@@ -60,7 +58,11 @@ bool ValidatorSearch(const std::vector<model::Parameter>& params,
   for (uint32_t vi = 0; vi < params[cursor].size(); ++vi) {
     if (params[cursor].is_invalid(vi)) continue;
     assignment[cursor] = vi;
-    if (ValidatorSearch(params, constraints, assignment, cursor + 1)) return true;
+    if (ValidatorSearch(params, constraints, assignment, cursor + 1, budget)) return true;
+    if (budget.exceeded) {
+      assignment[cursor] = model::kUnassigned;
+      return false;
+    }
   }
   assignment[cursor] = model::kUnassigned;
   return false;
@@ -68,9 +70,12 @@ bool ValidatorSearch(const std::vector<model::Parameter>& params,
 
 bool HasSatisfyingCompletion(const std::vector<model::Parameter>& params,
                              const std::vector<model::Constraint>& constraints,
-                             const std::vector<uint32_t>& partial) {
+                             const std::vector<uint32_t>& partial, bool* exceeded = nullptr) {
   auto assignment = partial;
-  return ValidatorSearch(params, constraints, assignment, 0);
+  SearchBudget budget;
+  bool result = ValidatorSearch(params, constraints, assignment, 0, budget);
+  if (exceeded != nullptr) *exceeded = budget.exceeded;
+  return result;
 }
 
 std::string ValidatePositiveTest(const model::TestCase& test,
@@ -82,6 +87,9 @@ std::string ValidatePositiveTest(const model::TestCase& test,
   }
   for (uint32_t pi = 0; pi < params.size(); ++pi) {
     uint32_t vi = test.values[pi];
+    if (vi == model::kUnassigned) {
+      return "missing value for parameter " + params[pi].name;
+    }
     if (vi >= params[pi].size()) {
       return "value index " + std::to_string(vi) + " is out of range for parameter " +
              params[pi].name;
@@ -90,9 +98,10 @@ std::string ValidatePositiveTest(const model::TestCase& test,
       return "value " + params[pi].name + "=" + params[pi].values[vi] + " is marked invalid";
     }
   }
-  for (const auto& constraint : constraints) {
-    if (constraint->Evaluate(test.values) != model::ConstraintResult::kTrue) {
-      return "constraint evaluation is false or indeterminate";
+  for (size_t ci = 0; ci < constraints.size(); ++ci) {
+    if (constraints[ci]->Evaluate(test.values) != model::ConstraintResult::kTrue) {
+      return "violates constraint #" + std::to_string(ci + 1) +
+             " (constraint evaluation is false or indeterminate)";
     }
   }
   return {};
@@ -147,10 +156,13 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
   CoverageReport report;
   uint32_t n = static_cast<uint32_t>(params.size());
 
-  // Edge case: strength is 0 or exceeds parameter count.
-  // Vacuous coverage: nothing to cover means everything is covered.
+  // A strength of 0, or greater than the parameter count, is invalid input —
+  // the same rule generate enforces (options_validation.cpp). Reporting vacuous
+  // 100% coverage here would make the oracle green-light an unanswerable query.
   if (strength == 0 || strength > n) {
-    report.coverage_ratio = 1.0;
+    report.error = {model::Error::Code::kInvalidInput,
+                    "Strength must be between 1 and parameter count",
+                    "strength=" + std::to_string(strength) + ", parameters=" + std::to_string(n)};
     return report;
   }
 
@@ -173,6 +185,10 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
     }
   }
 
+  // Buffers reused across combinations to avoid per-tuple heap allocation.
+  std::vector<uint32_t> value_indices(strength);
+  std::vector<char> covered_flags;
+
   for (const auto& combo : combinations) {
     // Step 2: Enumerate all value tuples (cartesian product) for this combination.
     // Compute the number of tuples for this combination. Accumulate in 64-bit to
@@ -182,10 +198,24 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
       num_tuples *= params[pi].size();
     }
 
+    // Step 2.5: Project every valid test onto its flat value-tuple index for this
+    // combination in a single pass, so the coverage check below is an O(1) lookup
+    // instead of rescanning all tests per tuple. A valid test always has an
+    // in-range value for every parameter (guaranteed by ValidatePositiveTest), so
+    // the projection is total. The encoding here (most-significant digit first)
+    // must match the decode in the tuple loop.
+    covered_flags.assign(static_cast<size_t>(num_tuples), 0);
+    for (const auto* test : valid_tests) {
+      uint64_t flat = 0;
+      for (uint32_t j = 0; j < strength; ++j) {
+        flat = flat * params[combo[j]].size() + test->values[combo[j]];
+      }
+      covered_flags[static_cast<size_t>(flat)] = 1;
+    }
+
     // Iterate over all value tuples using a flat index.
     for (uint64_t flat = 0; flat < num_tuples; ++flat) {
       // Decode flat index into value indices (mixed-radix decomposition).
-      std::vector<uint32_t> value_indices(strength);
       uint64_t remainder = flat;
       for (int i = static_cast<int>(strength) - 1; i >= 0; --i) {
         uint32_t radix = params[combo[i]].size();
@@ -215,10 +245,16 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
         for (uint32_t j = 0; j < strength; ++j) {
           assignment[combo[j]] = value_indices[j];
         }
-        bool excluded = !HasSatisfyingCompletion(params, constraints, assignment);
+        bool tuple_exceeded = false;
+        bool excluded = !HasSatisfyingCompletion(params, constraints, assignment, &tuple_exceeded);
         // Reset assignment for reuse.
         for (uint32_t j = 0; j < strength; ++j) {
           assignment[combo[j]] = model::kUnassigned;
+        }
+        if (tuple_exceeded) {
+          report.error = {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
+                          "Tuple feasibility could not be determined within the search budget"};
+          return report;
         }
         if (excluded) {
           continue;
@@ -227,16 +263,8 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
 
       ++report.total_tuples;
 
-      // Step 3: Check if any test case covers this value tuple.
-      bool covered = false;
-      for (const auto* test : valid_tests) {
-        if (TestCovers(*test, combo, value_indices)) {
-          covered = true;
-          break;
-        }
-      }
-
-      if (covered) {
+      // Step 3: Coverage is an O(1) lookup into the projection built above.
+      if (covered_flags[static_cast<size_t>(flat)]) {
         ++report.covered_tuples;
       } else {
         ++report.uncovered_count;
@@ -338,7 +366,11 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
   ClassCoverageReport report;
   uint32_t n = static_cast<uint32_t>(params.size());
 
+  // A universe with no class tuples to cover is vacuously fully covered (1.0),
+  // matching the total_class_tuples == 0 branch below and ValidateCoverage's
+  // empty-universe handling. Only a genuine enumeration error keeps ratio 0.0.
   if (strength == 0 || strength > n) {
+    report.coverage_ratio = 1.0;
     return report;
   }
 
@@ -354,6 +386,7 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
   }
 
   if (class_params.empty()) {
+    report.coverage_ratio = 1.0;
     return report;
   }
 

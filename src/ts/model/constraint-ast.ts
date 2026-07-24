@@ -1,6 +1,6 @@
 /// AST-based constraint representation for combinatorial test generation.
 
-import { isNumeric, toDouble } from '../util/string_util.js';
+import { asciiCaseInsensitiveEqual, isNumeric, toDouble } from '../util/string_util.js';
 import { UNASSIGNED } from './test-case.js';
 
 export { UNASSIGNED };
@@ -243,8 +243,14 @@ export class RelationalNode implements ConstraintNode {
   private readonly isParamComparison: boolean;
   private readonly literal: number;
   private readonly rightParam: number;
-  private readonly leftValues: string[];
-  private readonly rightValues: string[];
+  // Numeric conversions precomputed at construction so evaluate() never
+  // reparses on the hot path (mirrors LikeNode's precomputed matching). Parallel
+  // to the value index: `*Valid` marks numeric strings, `*Numeric` holds the
+  // parsed value (0 for non-numeric, which evaluate() never reads).
+  private readonly leftNumeric: Float64Array;
+  private readonly leftValid: Uint8Array;
+  private readonly rightNumeric: Float64Array;
+  private readonly rightValid: Uint8Array;
 
   /** Compare a parameter value against a literal numeric value. */
   static fromLiteral(
@@ -281,8 +287,21 @@ export class RelationalNode implements ConstraintNode {
     this.isParamComparison = isParamComparison;
     this.literal = literal;
     this.rightParam = rightParam;
-    this.leftValues = leftValues;
-    this.rightValues = rightValues;
+    [this.leftNumeric, this.leftValid] = RelationalNode.precompute(leftValues);
+    [this.rightNumeric, this.rightValid] = RelationalNode.precompute(rightValues);
+  }
+
+  /** Precompute numeric conversions for a parameter's value strings. */
+  private static precompute(values: string[]): [Float64Array, Uint8Array] {
+    const numeric = new Float64Array(values.length);
+    const valid = new Uint8Array(values.length);
+    for (let i = 0; i < values.length; i++) {
+      if (isNumeric(values[i])) {
+        valid[i] = 1;
+        numeric[i] = toDouble(values[i]);
+      }
+    }
+    return [numeric, valid];
   }
 
   evaluate(assignment: number[]): ConstraintResult {
@@ -294,10 +313,10 @@ export class RelationalNode implements ConstraintNode {
       return ConstraintResult.Unknown;
     }
 
-    if (leftVal >= this.leftValues.length || !isNumeric(this.leftValues[leftVal])) {
+    if (leftVal >= this.leftValid.length || this.leftValid[leftVal] === 0) {
       return ConstraintResult.False;
     }
-    const leftNum = toDouble(this.leftValues[leftVal]);
+    const leftNum = this.leftNumeric[leftVal];
 
     if (this.isParamComparison) {
       if (this.rightParam >= assignment.length) {
@@ -307,10 +326,10 @@ export class RelationalNode implements ConstraintNode {
       if (rightVal === UNASSIGNED) {
         return ConstraintResult.Unknown;
       }
-      if (rightVal >= this.rightValues.length || !isNumeric(this.rightValues[rightVal])) {
+      if (rightVal >= this.rightValid.length || this.rightValid[rightVal] === 0) {
         return ConstraintResult.False;
       }
-      const rightNum = toDouble(this.rightValues[rightVal]);
+      const rightNum = this.rightNumeric[rightVal];
       return this.compareValues(leftNum, rightNum) ? ConstraintResult.True : ConstraintResult.False;
     }
 
@@ -447,7 +466,8 @@ export function globMatch(pattern: string, text: string): boolean {
  * Parameter-to-parameter equality comparison.
  *
  * Compares the string values of two parameters. Equal if the string
- * representations are identical.
+ * representations match. Matching honors caseSensitive so it is consistent with
+ * value-to-literal comparisons (case-insensitive by default).
  */
 export class ParamEqualsNode implements ConstraintNode {
   constructor(
@@ -455,6 +475,7 @@ export class ParamEqualsNode implements ConstraintNode {
     private readonly rightParam: number,
     private readonly leftValues: string[],
     private readonly rightValues: string[],
+    private readonly caseSensitive = false,
   ) {}
 
   evaluate(assignment: number[]): ConstraintResult {
@@ -469,9 +490,10 @@ export class ParamEqualsNode implements ConstraintNode {
     if (lv >= this.leftValues.length || rv >= this.rightValues.length) {
       return ConstraintResult.False;
     }
-    return this.leftValues[lv] === this.rightValues[rv]
-      ? ConstraintResult.True
-      : ConstraintResult.False;
+    const equal = this.caseSensitive
+      ? this.leftValues[lv] === this.rightValues[rv]
+      : asciiCaseInsensitiveEqual(this.leftValues[lv], this.rightValues[rv]);
+    return equal ? ConstraintResult.True : ConstraintResult.False;
   }
 
   toString(): string {
@@ -483,7 +505,8 @@ export class ParamEqualsNode implements ConstraintNode {
  * Parameter-to-parameter inequality comparison.
  *
  * Compares the string values of two parameters. Not equal if the string
- * representations differ.
+ * representations differ. Matching honors caseSensitive so it is consistent with
+ * value-to-literal comparisons (case-insensitive by default).
  */
 export class ParamNotEqualsNode implements ConstraintNode {
   constructor(
@@ -491,6 +514,7 @@ export class ParamNotEqualsNode implements ConstraintNode {
     private readonly rightParam: number,
     private readonly leftValues: string[],
     private readonly rightValues: string[],
+    private readonly caseSensitive = false,
   ) {}
 
   evaluate(assignment: number[]): ConstraintResult {
@@ -505,9 +529,10 @@ export class ParamNotEqualsNode implements ConstraintNode {
     if (lv >= this.leftValues.length || rv >= this.rightValues.length) {
       return ConstraintResult.False;
     }
-    return this.leftValues[lv] !== this.rightValues[rv]
-      ? ConstraintResult.True
-      : ConstraintResult.False;
+    const equal = this.caseSensitive
+      ? this.leftValues[lv] === this.rightValues[rv]
+      : asciiCaseInsensitiveEqual(this.leftValues[lv], this.rightValues[rv]);
+    return equal ? ConstraintResult.False : ConstraintResult.True;
   }
 
   toString(): string {

@@ -53,6 +53,15 @@ struct ParseOptions {
 ParseResult ParseConstraint(const std::string& expression, const std::vector<Parameter>& params,
                             const ParseOptions& options = {});
 
+/// @brief Prefix a constraint parse error with the offending expression.
+///
+/// Produces the uniform cross-surface message
+/// `Invalid constraint "<expression>": <original message>` so every surface
+/// (CLI, WASM, pure-JS generate and analyze) reports constraint failures in a
+/// single format that names the source expression. The detail field is left
+/// unchanged; each surface appends it consistently.
+Error AnnotateConstraintError(const std::string& expression, Error error);
+
 }  // namespace model
 }  // namespace coverwise
 

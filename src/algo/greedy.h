@@ -52,8 +52,10 @@ using ScoreFn = std::function<uint32_t(const model::TestCase&, uint32_t, uint32_
 ///   to be considered. If empty, all values are allowed.
 /// @param weights Optional per-parameter per-value weights for tie-breaking.
 ///   If non-empty, weights[pi][vi] is the weight for value vi of param pi.
-///   When multiple values tie on coverage score, the highest-weighted one is
-///   preferred. Default weight is 1.0.
+///   When multiple values tie on coverage score, one is chosen by weighted
+///   random selection: the probability of picking a value is proportional to its
+///   weight (a higher weight makes a value more likely, not certain). Default
+///   weight is 1.0, which reduces to a uniform random tie-break.
 /// @return The constructed test case, or std::nullopt if no constraint-satisfying
 ///   value exists for some parameter. A constraint-violating value is never
 ///   written into the returned test case.

@@ -189,6 +189,10 @@ TEST(CoverageEngineTest, TupleExplosionErrorMessageParity) {
   EXPECT_FALSE(err.ok());
   EXPECT_EQ(err.code, coverwise::model::Error::Code::kTupleExplosion);
   EXPECT_EQ(err.message, "t-wise tuple count exceeds safety limit");
+  // The detail reports the real (approximate) magnitude — a single combination's
+  // product is 100^5 = 10,000,000,000 — not a fixed sentinel just past the limit.
+  EXPECT_NE(err.detail.find("10000000000"), std::string::npos) << err.detail;
+  EXPECT_EQ(err.detail.find("16000001"), std::string::npos) << err.detail;
 }
 
 TEST(CoverageEngineTest, GetUncoveredTuplesContents) {

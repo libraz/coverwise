@@ -348,6 +348,18 @@ TEST(ConstraintParserTest, LikeStarWildcard) {
   EXPECT_EQ(result.constraint->Evaluate({3}), ConstraintResult::kFalse);
 }
 
+// A LIKE pattern that starts with a digit (e.g. a version glob) must be read as
+// a pattern, not a decimal literal that then chokes on the glob character.
+TEST(ConstraintParserTest, LikePatternStartingWithDigit) {
+  std::vector<Parameter> params = {{"version", {"1.0", "1.5", "2.0"}, {}}};
+
+  auto result = ParseConstraint("version LIKE 1.*", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_EQ(result.constraint->Evaluate({0}), ConstraintResult::kTrue);   // 1.0
+  EXPECT_EQ(result.constraint->Evaluate({1}), ConstraintResult::kTrue);   // 1.5
+  EXPECT_EQ(result.constraint->Evaluate({2}), ConstraintResult::kFalse);  // 2.0
+}
+
 TEST(ConstraintParserTest, LikeQuestionWildcard) {
   std::vector<Parameter> params = {{"size", {"s", "m", "l", "xl", "xxl"}, {}}};
 
@@ -400,6 +412,39 @@ TEST(ConstraintParserTest, ParamToParamEquals) {
   EXPECT_EQ(result.constraint->Evaluate({0, 0}), ConstraintResult::kTrue);
   // src=a, dst=b -> kFalse
   EXPECT_EQ(result.constraint->Evaluate({0, 1}), ConstraintResult::kFalse);
+}
+
+// A non-numeric value that starts with '-' is accepted on the RHS of = / !=,
+// the same way it is inside an IN set (not rejected as a bad decimal literal).
+TEST(ConstraintParserTest, DashPrefixedNonNumericValueOnRhs) {
+  std::vector<Parameter> params = {{"flag", {"-on", "-off", "0"}, {}}};
+
+  auto eq = ParseConstraint("flag = -on", params);
+  ASSERT_TRUE(eq.error.ok()) << eq.error.message;
+  EXPECT_EQ(eq.constraint->Evaluate({0}), ConstraintResult::kTrue);   // -on
+  EXPECT_EQ(eq.constraint->Evaluate({1}), ConstraintResult::kFalse);  // -off
+
+  // Consistent with the same value accepted inside an IN set.
+  auto in_set = ParseConstraint("flag IN {-on, -off}", params);
+  EXPECT_TRUE(in_set.error.ok()) << in_set.error.message;
+}
+
+// A quoted RHS is a literal value, even when its text collides with a parameter
+// name: `speed != "mode"` must not be silently reinterpreted as the
+// param-to-param comparison `speed != mode`. Since "mode" is not a value of
+// speed, this is a value-lookup error rather than a valid constraint.
+TEST(ConstraintParserTest, QuotedRhsCollidingWithParamNameIsNotParamToParam) {
+  std::vector<Parameter> params = {
+      {"speed", {"fast", "slow"}, {}},
+      {"mode", {"a", "b"}, {}},
+  };
+
+  auto quoted = ParseConstraint("speed != \"mode\"", params);
+  EXPECT_FALSE(quoted.error.ok());
+
+  // The unquoted form is still a valid param-to-param comparison.
+  auto unquoted = ParseConstraint("speed != mode", params);
+  EXPECT_TRUE(unquoted.error.ok()) << unquoted.error.message;
 }
 
 TEST(ConstraintParserTest, ParamToParamNotEquals) {
@@ -1368,10 +1413,21 @@ TEST(ConstraintParserLimitsTest, LogicalAstDepthBoundary) {
     for (size_t i = 0; i < depth; ++i) value += "NOT ";
     return value + "p=x";
   };
-  EXPECT_TRUE(ParseConstraint(expression(127), params).error.ok());
-  auto over_limit = ParseConstraint(expression(128), params);
+  // Prefix-NOT nesting uses the same 128-level bound as parenthesis nesting.
+  EXPECT_TRUE(ParseConstraint(expression(128), params).error.ok());
+  auto over_limit = ParseConstraint(expression(129), params);
   EXPECT_FALSE(over_limit.error.ok());
-  EXPECT_NE(over_limit.error.message.find("AST depth limit"), std::string::npos);
+  EXPECT_NE(over_limit.error.message.find("depth limit"), std::string::npos);
+}
+
+// A flat expression with many operators but shallow nesting must be accepted:
+// the depth guard measures real nesting, not the total operator count.
+TEST(ConstraintParserLimitsTest, FlatDisjunctionIsNotDepthLimited) {
+  std::vector<Parameter> params = {{"p", {"x"}, {}}};
+  std::string value = "p=x";
+  for (size_t i = 0; i < 300; ++i) value += " OR p=x";
+  auto result = ParseConstraint(value, params);
+  EXPECT_TRUE(result.error.ok()) << result.error.message;
 }
 
 TEST(ConstraintParserLimitsTest, AstNodeLimitBoundaryUsesBalancedLogicalTree) {
@@ -1405,6 +1461,29 @@ TEST(ConstraintParserLimitsTest, LikeQuestionMatchesUnicodeCodepoints) {
   ASSERT_TRUE(astral_one.error.ok()) << astral_one.error.message;
   EXPECT_EQ(astral_one.constraint->Evaluate({0}), ConstraintResult::kTrue);
   EXPECT_EQ(astral_one.constraint->Evaluate({1}), ConstraintResult::kFalse);
+}
+
+TEST(ConstraintParserLimitsTest, ParamToParamComparisonHonorsCaseSensitivity) {
+  // Regression: param-to-param comparison previously compared value strings
+  // byte-strict even when name/value matching is case-insensitive by default,
+  // contradicting the documented case-insensitive behavior.
+  std::vector<Parameter> params = {{"a", {"X", "Y"}, {}}, {"b", {"x", "z"}, {}}};
+
+  auto eq = ParseConstraint("a = b", params);
+  ASSERT_TRUE(eq.error.ok()) << eq.error.message;
+  EXPECT_EQ(eq.constraint->Evaluate({0, 0}), ConstraintResult::kTrue);   // 'X' == 'x'
+  EXPECT_EQ(eq.constraint->Evaluate({1, 0}), ConstraintResult::kFalse);  // 'Y' != 'x'
+
+  auto neq = ParseConstraint("a != b", params);
+  ASSERT_TRUE(neq.error.ok()) << neq.error.message;
+  EXPECT_EQ(neq.constraint->Evaluate({0, 0}), ConstraintResult::kFalse);  // equal -> != false
+
+  // With case_sensitive, 'X' and 'x' are distinct.
+  coverwise::model::ParseOptions cs;
+  cs.case_sensitive = true;
+  auto eq_cs = ParseConstraint("a = b", params, cs);
+  ASSERT_TRUE(eq_cs.error.ok()) << eq_cs.error.message;
+  EXPECT_EQ(eq_cs.constraint->Evaluate({0, 0}), ConstraintResult::kFalse);
 }
 
 TEST(ConstraintParserLimitsTest, DeterministicFuzzCorpusNeverThrows) {

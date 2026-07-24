@@ -29,6 +29,12 @@ struct UncoveredTuple {
   std::vector<std::string> tuple;
   /// @brief Parameter names involved, e.g. ["os", "browser"]
   std::vector<std::string> params;
+  /// @brief (parameter index, value index) pairs identifying this tuple.
+  ///
+  /// Carried alongside the string form so callers can reconstruct a witness
+  /// assignment without parsing "name=value" strings, which is ambiguous when a
+  /// parameter name or value contains '='.
+  std::vector<std::pair<uint32_t, uint32_t>> indices;
   /// @brief Why this tuple is uncovered.
   std::string reason = "never covered";
 

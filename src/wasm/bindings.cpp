@@ -650,7 +650,7 @@ val wasmAnalyzeCoverage(val js_params, val js_tests, val js_strength, val js_con
         std::string expr = js_constraints[i].as<std::string>();
         auto parse_result = coverwise::model::ParseConstraint(expr, params);
         if (!parse_result.error.ok()) {
-          return MakeError(parse_result.error);
+          return MakeError(coverwise::model::AnnotateConstraintError(expr, parse_result.error));
         }
         constraints.push_back(std::move(parse_result.constraint));
       }

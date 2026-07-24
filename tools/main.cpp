@@ -43,6 +43,29 @@ constexpr int kExitConstraintError = 1;
 constexpr int kExitInsufficientCoverage = 2;
 constexpr int kExitInvalidInput = 3;
 
+/// @brief Map a structured Error::Code to the documented CLI exit code.
+///
+/// This is the single mapping used by every subcommand so exit codes never
+/// diverge: constraint errors are exit 1, invalid input and tuple explosion are
+/// exit 3, insufficient coverage is exit 2, and ok is 0. The raw enum value is
+/// never returned directly (kTupleExplosion == 4 would otherwise leak an
+/// undocumented exit code).
+int ErrorExitCode(coverwise::model::Error::Code code) {
+  using Code = coverwise::model::Error::Code;
+  switch (code) {
+    case Code::kConstraintError:
+      return kExitConstraintError;
+    case Code::kInvalidInput:
+    case Code::kTupleExplosion:
+      return kExitInvalidInput;
+    case Code::kInsufficientCoverage:
+      return kExitInsufficientCoverage;
+    case Code::kOk:
+      return kExitOk;
+  }
+  return kExitOk;
+}
+
 /// @brief Map a generator result's error/coverage to a CLI exit code.
 ///
 /// A constraint parse error takes precedence (exit 1). Otherwise, any coverage
@@ -50,16 +73,8 @@ constexpr int kExitInvalidInput = 3;
 /// coverage (exit 2). A fully covered suite yields OK (exit 0). Invalid-input
 /// errors surfaced in the result map to exit 3.
 int ResultExitCode(const coverwise::model::GenerateResult& result) {
-  using Code = coverwise::model::Error::Code;
-  switch (result.error.code) {
-    case Code::kConstraintError:
-      return kExitConstraintError;
-    case Code::kInvalidInput:
-    case Code::kTupleExplosion:
-      return kExitInvalidInput;
-    case Code::kInsufficientCoverage:
-    case Code::kOk:
-      break;
+  if (result.error.code != coverwise::model::Error::Code::kOk) {
+    return ErrorExitCode(result.error.code);
   }
   if (result.coverage < 1.0) {
     return kExitInsufficientCoverage;
@@ -460,21 +475,10 @@ class JsonWriter {
     if (!std::isfinite(v)) {
       throw std::runtime_error("cannot serialize a non-finite JSON number");
     }
-    // Integer values print without decimal point.
-    if (v >= -1e15 && v <= 1e15 && v == std::floor(v)) {
-      out_ << static_cast<int64_t>(v);
-    } else {
-      out_ << std::setprecision(17) << v;
-    }
-  }
-
-  /// @brief Write a number with fixed decimal precision.
-  void WriteNumberFixed(double v, int precision) {
-    if (!std::isfinite(v)) {
-      throw std::runtime_error("cannot serialize a non-finite JSON number");
-    }
-    out_ << std::fixed << std::setprecision(precision) << v;
-    out_ << std::defaultfloat;
+    // Use the shared ECMAScript Number-to-String algorithm so CLI numeric output
+    // is byte-identical to the WASM / npm / pure-TS surfaces (shortest round-trip
+    // form, no fixed-precision artifacts).
+    out_ << coverwise::util::JsNumberToString(v);
   }
 
   void WriteString(const std::string& s) {
@@ -1133,8 +1137,33 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
   w.Key("strength");
   w.WriteNumber(static_cast<double>(strength));
 
+  // error: emitted only on an early-exit failure (constraint parse error,
+  // invalid input, tuple explosion), mirroring the WASM envelope's { code,
+  // message } so CLI JSON consumers detect failures uniformly across surfaces.
+  if (result.error.code != coverwise::model::Error::Code::kOk) {
+    w.Key("error");
+    w.BeginObject();
+    w.Key("code");
+    w.WriteNumber(static_cast<double>(static_cast<int>(result.error.code)));
+    w.Key("message");
+    std::string msg = result.error.message;
+    if (!result.error.detail.empty()) msg += ": " + result.error.detail;
+    w.WriteString(msg);
+    w.EndObject();
+  }
+
   w.EndObject();
   std::cout << '\n';
+}
+
+/// @brief Emit a structured result error to stderr, if any. Keeps the failure
+/// reason visible on the error stream (not just buried in the JSON warnings),
+/// consistent with the analyze subcommand and the WASM surface.
+void ReportResultError(const coverwise::model::GenerateResult& result) {
+  if (result.error.code == coverwise::model::Error::Code::kOk) return;
+  std::cerr << "error: " << result.error.message;
+  if (!result.error.detail.empty()) std::cerr << ": " << result.error.detail;
+  std::cerr << "\n";
 }
 
 void WriteCoverageReport(const coverwise::validator::CoverageReport& report) {
@@ -1150,7 +1179,7 @@ void WriteCoverageReport(const coverwise::validator::CoverageReport& report) {
   w.WriteNumber(static_cast<double>(report.covered_tuples));
 
   w.Key("coverageRatio");
-  w.WriteNumberFixed(report.coverage_ratio, 3);
+  w.WriteNumber(report.coverage_ratio);
 
   w.Key("uncovered");
   w.BeginArray();
@@ -1305,6 +1334,7 @@ int RunGenerate(int argc, char* argv[]) {
   int exit_code = ResultExitCode(result);
 
   WriteGenerateResult(result, effective_params, options.strength);
+  ReportResultError(result);
   return exit_code;
 }
 
@@ -1462,11 +1492,20 @@ int RunAnalyze(int argc, char* argv[]) {
   auto report = coverwise::validator::ValidateCoverage(params, tests, strength, constraints);
   if (!report.error.ok()) {
     std::cerr << "error: " << report.error.message << ": " << report.error.detail << "\n";
-    return static_cast<int>(report.error.code);
+    return ErrorExitCode(report.error.code);
   }
 
   WriteCoverageReport(report);
 
+  // A suite that contains invalid rows (out-of-range, invalid-value, or
+  // constraint-violating tests) is malformed input, so exit with invalid-input
+  // even when the valid subset covers everything. The details are still in the
+  // JSON body (invalidTests). This takes precedence over the coverage shortfall.
+  if (!report.invalid_tests.empty()) {
+    std::cerr << "error: " << report.invalid_tests.size()
+              << " invalid test(s) in the analyzed suite\n";
+    return kExitInvalidInput;
+  }
   if (report.coverage_ratio < 1.0) {
     return kExitInsufficientCoverage;
   }
@@ -1610,6 +1649,7 @@ int RunExtend(int argc, char* argv[]) {
   int exit_code = ResultExitCode(result);
 
   WriteGenerateResult(result, effective_params, options.strength);
+  ReportResultError(result);
   return exit_code;
 }
 

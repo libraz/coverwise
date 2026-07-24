@@ -118,10 +118,11 @@ TEST(EquivalenceClassTest, NoClasses) {
 
   auto report = ComputeClassCoverage(params, tests, 2);
 
-  // No classes defined, everything should be zero.
+  // No classes defined: the class-tuple universe is empty, so class coverage is
+  // vacuously complete (1.0), matching the empty-universe handling elsewhere.
   EXPECT_EQ(report.total_class_tuples, 0u);
   EXPECT_EQ(report.covered_class_tuples, 0u);
-  EXPECT_DOUBLE_EQ(report.coverage_ratio, 0.0);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
 }
 
 TEST(EquivalenceClassTest, ConstraintExcludesUnsatisfiableClassTuple) {

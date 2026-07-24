@@ -48,19 +48,23 @@ model::Error PreflightModel(const std::vector<model::Parameter>& params,
   std::vector<uint32_t> combo(strength);
   for (uint32_t i = 0; i < strength; ++i) combo[i] = i;
   uint64_t total = 0;
+  constexpr uint64_t kU64Max = std::numeric_limits<uint64_t>::max();
   for (;;) {
+    // Compute the full product for this combination, saturating at UINT64_MAX so
+    // the reported figure reflects the real (approximate) magnitude rather than a
+    // fixed sentinel just past the limit.
     uint64_t product = 1;
     for (uint32_t local : combo) {
       uint32_t pi = subset.empty() ? local : subset[local];
       uint64_t radix = params[pi].size();
-      if (radix != 0 && product > CoverageEngine::kMaxTuples / radix) {
-        return MakeTupleExplosionError(CoverageEngine::kMaxTuples + 1ULL,
-                                       CoverageEngine::kMaxTuples);
-      }
-      product *= radix;
+      product = (radix != 0 && product > kU64Max / radix) ? kU64Max : product * radix;
+    }
+    if (product > CoverageEngine::kMaxTuples) {
+      return MakeTupleExplosionError(product, CoverageEngine::kMaxTuples);
     }
     if (total > CoverageEngine::kMaxTuples - product) {
-      return MakeTupleExplosionError(total + product, CoverageEngine::kMaxTuples);
+      uint64_t reported = (total > kU64Max - product) ? kU64Max : total + product;
+      return MakeTupleExplosionError(reported, CoverageEngine::kMaxTuples);
     }
     total += product;
 
@@ -120,35 +124,41 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
 
 void CoverageEngine::InitCombinations() {
   uint32_t n = static_cast<uint32_t>(params_.size());
-  param_combinations_ = util::GenerateCombinations(n, strength_);
+  auto combos = util::GenerateCombinations(n, strength_);
+  num_combinations_ = static_cast<uint32_t>(combos.size());
+  param_combinations_.resize(static_cast<size_t>(num_combinations_) * strength_);
+  for (uint32_t ci = 0; ci < num_combinations_; ++ci) {
+    for (uint32_t i = 0; i < strength_; ++i) {
+      param_combinations_[static_cast<size_t>(ci) * strength_ + i] = combos[ci][i];
+    }
+  }
 }
 
 void CoverageEngine::InitCombinationsFromSubset() {
   uint32_t n = static_cast<uint32_t>(param_subset_.size());
   auto local_combos = util::GenerateCombinations(n, strength_);
 
-  // Map local indices to global param indices.
-  param_combinations_.clear();
-  param_combinations_.reserve(local_combos.size());
-  for (const auto& local : local_combos) {
-    std::vector<uint32_t> global_combo(strength_);
+  // Map local indices to global param indices, stored flat.
+  num_combinations_ = static_cast<uint32_t>(local_combos.size());
+  param_combinations_.resize(static_cast<size_t>(num_combinations_) * strength_);
+  for (uint32_t ci = 0; ci < num_combinations_; ++ci) {
     for (uint32_t i = 0; i < strength_; ++i) {
-      global_combo[i] = param_subset_[local[i]];
+      param_combinations_[static_cast<size_t>(ci) * strength_ + i] =
+          param_subset_[local_combos[ci][i]];
     }
-    param_combinations_.push_back(std::move(global_combo));
   }
 }
 
 void CoverageEngine::BuildLookupTables() {
   uint32_t num_params = static_cast<uint32_t>(params_.size());
-  uint32_t num_combos = static_cast<uint32_t>(param_combinations_.size());
+  uint32_t num_combos = num_combinations_;
 
   // Build param-to-combinations index and position-in-combo lookup.
   param_to_combos_.assign(num_params, {});
   param_position_in_combo_.assign(num_params, {});
 
   for (uint32_t ci = 0; ci < num_combos; ++ci) {
-    const auto& combo = param_combinations_[ci];
+    const uint32_t* combo = Combo(ci);
     for (uint32_t j = 0; j < strength_; ++j) {
       uint32_t pi = combo[j];
       param_to_combos_[pi].push_back(ci);
@@ -156,13 +166,12 @@ void CoverageEngine::BuildLookupTables() {
     }
   }
 
-  // Build mixed-radix multipliers for each combination.
-  // combo_multipliers_[ci][j] = product of value counts for positions j+1..t-1.
-  combo_multipliers_.resize(num_combos);
+  // Build mixed-radix multipliers for each combination, stored flat.
+  // Mults(ci)[j] = product of value counts for positions j+1..t-1.
+  combo_multipliers_.resize(static_cast<size_t>(num_combos) * strength_);
   for (uint32_t ci = 0; ci < num_combos; ++ci) {
-    const auto& combo = param_combinations_[ci];
-    auto& mults = combo_multipliers_[ci];
-    mults.resize(strength_);
+    const uint32_t* combo = Combo(ci);
+    uint32_t* mults = &combo_multipliers_[static_cast<size_t>(ci) * strength_];
     mults[strength_ - 1] = 1;
     for (int j = static_cast<int>(strength_) - 2; j >= 0; --j) {
       mults[j] = mults[j + 1] * params_[combo[j + 1]].size();
@@ -173,13 +182,14 @@ void CoverageEngine::BuildLookupTables() {
 uint32_t CoverageEngine::ComputeTotalTuples() {
   uint64_t total = 0;
   combination_offsets_.clear();
-  combination_offsets_.reserve(param_combinations_.size());
+  combination_offsets_.reserve(num_combinations_);
 
-  for (const auto& combo : param_combinations_) {
+  for (uint32_t ci = 0; ci < num_combinations_; ++ci) {
+    const uint32_t* combo = Combo(ci);
     combination_offsets_.push_back(static_cast<uint32_t>(total));
     uint64_t product = 1;
-    for (uint32_t pi : combo) {
-      product *= params_[pi].size();
+    for (uint32_t j = 0; j < strength_; ++j) {
+      product *= params_[combo[j]].size();
       if (product > kMaxTuples) {
         return static_cast<uint32_t>(std::min(total + product, static_cast<uint64_t>(UINT32_MAX)));
       }
@@ -194,16 +204,20 @@ uint32_t CoverageEngine::ComputeTotalTuples() {
 
 void CoverageEngine::AddTestCase(const model::TestCase& test_case) {
   assert(test_case.values.size() >= params_.size());
-  for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
-    const auto& combo = param_combinations_[ci];
-    const auto& mults = combo_multipliers_[ci];
+  for (uint32_t ci = 0; ci < num_combinations_; ++ci) {
+    const uint32_t* combo = Combo(ci);
+    const uint32_t* mults = Mults(ci);
 
     uint32_t local_index = 0;
     for (uint32_t j = 0; j < strength_; ++j) {
       local_index += test_case.values[combo[j]] * mults[j];
     }
 
-    covered_.Set(combination_offsets_[ci] + local_index);
+    const uint32_t index = combination_offsets_[ci] + local_index;
+    if (!covered_.Test(index)) {
+      covered_.Set(index);
+      ++covered_bits_;
+    }
   }
 }
 
@@ -218,8 +232,8 @@ uint32_t CoverageEngine::ScoreValue(const model::TestCase& partial, uint32_t par
   for (uint32_t k = 0; k < num_relevant; ++k) {
     uint32_t ci = relevant_combos[k];
     uint32_t pos = positions[k];
-    const auto& combo = param_combinations_[ci];
-    const auto& mults = combo_multipliers_[ci];
+    const uint32_t* combo = Combo(ci);
+    const uint32_t* mults = Mults(ci);
 
     // Check all other params are assigned and compute mixed-radix index.
     bool all_assigned = true;
@@ -247,9 +261,9 @@ uint32_t CoverageEngine::ScoreCandidate(const model::TestCase& candidate) const 
   assert(candidate.values.size() >= params_.size());
   uint32_t score = 0;
 
-  for (uint32_t ci = 0; ci < param_combinations_.size(); ++ci) {
-    const auto& combo = param_combinations_[ci];
-    const auto& mults = combo_multipliers_[ci];
+  for (uint32_t ci = 0; ci < num_combinations_; ++ci) {
+    const uint32_t* combo = Combo(ci);
+    const uint32_t* mults = Mults(ci);
 
     uint32_t local_index = 0;
     for (uint32_t j = 0; j < strength_; ++j) {
@@ -269,14 +283,15 @@ std::vector<model::UncoveredTuple> CoverageEngine::GetUncoveredTuples(
   std::vector<model::UncoveredTuple> result;
   result.reserve(std::min(limit, TotalTuples() - CoveredCount()));
 
-  ForEachTupleUntil([&](uint32_t /*global_index*/, const std::vector<uint32_t>& combo,
+  ForEachTupleUntil([&](uint32_t /*global_index*/, const uint32_t* combo,
                         const std::vector<uint32_t>& value_indices) {
     if (result.size() >= limit) return false;
     model::UncoveredTuple ut;
-    for (uint32_t j = 0; j < combo.size(); ++j) {
+    for (uint32_t j = 0; j < strength_; ++j) {
       uint32_t pi = combo[j];
       ut.params.push_back(params[pi].name);
       ut.tuple.push_back(params[pi].name + "=" + params[pi].values[value_indices[j]]);
+      ut.indices.emplace_back(pi, value_indices[j]);
     }
     result.push_back(std::move(ut));
     return result.size() < limit;
@@ -285,48 +300,83 @@ std::vector<model::UncoveredTuple> CoverageEngine::GetUncoveredTuples(
   return result;
 }
 
+bool CoverageEngine::FirstUncovered(UncoveredAssignment& out) const {
+  bool found = false;
+  ForEachTupleUntil([&](uint32_t global_index, const uint32_t* combo,
+                        const std::vector<uint32_t>& value_indices) {
+    out.index = global_index;
+    out.assignment.assign(params_.size(), model::kUnassigned);
+    for (uint32_t j = 0; j < strength_; ++j) {
+      out.assignment[combo[j]] = value_indices[j];
+    }
+    found = true;
+    return false;  // Stop after the first uncovered tuple.
+  });
+  return found;
+}
+
+void CoverageEngine::ExcludeTuple(uint32_t index) {
+  if (!covered_.Test(index)) {
+    covered_.Set(index);
+    ++invalid_tuples_;
+    ++covered_bits_;
+  }
+}
+
 void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& constraints,
-                                          const std::vector<std::vector<bool>>& allowed_values) {
+                                          const std::vector<std::vector<bool>>& allowed_values,
+                                          bool* budget_exceeded) {
   if (constraints.empty()) return;
 
   uint32_t num_params = static_cast<uint32_t>(params_.size());
   std::vector<uint32_t> assignment(num_params, model::kUnassigned);
 
-  ForEachTuple([&](uint32_t global_index, const std::vector<uint32_t>& combo,
-                   const std::vector<uint32_t>& value_indices) {
+  ForEachTupleUntil([&](uint32_t global_index, const uint32_t* combo,
+                        const std::vector<uint32_t>& value_indices) {
     // Build partial assignment with only this tuple's parameters set.
-    for (uint32_t j = 0; j < combo.size(); ++j) {
+    for (uint32_t j = 0; j < strength_; ++j) {
       assignment[combo[j]] = value_indices[j];
     }
 
     // A tuple belongs to the coverage universe only when it can be extended to
     // a complete assignment using valid values. Evaluating the partial tuple
-    // alone is insufficient for interacting implications.
+    // alone is insufficient for interacting implications. Each per-tuple search
+    // is bounded; an exhausted budget stops exclusion so the caller can error
+    // out rather than proceed on a partially classified universe.
     model::TestCase witness{assignment};
-    bool invalid = allowed_values.empty()
-                       ? !CompleteValidAssignment(params_, constraints, witness)
-                       : !CompleteAssignment(params_, constraints, allowed_values, witness);
+    SolveBudget tuple_budget;
+    bool invalid =
+        allowed_values.empty()
+            ? !CompleteValidAssignment(params_, constraints, witness, &tuple_budget)
+            : !CompleteAssignment(params_, constraints, allowed_values, witness, &tuple_budget);
+
+    // Reset assignment for reuse.
+    for (uint32_t j = 0; j < strength_; ++j) {
+      assignment[combo[j]] = model::kUnassigned;
+    }
+
+    if (tuple_budget.exceeded) {
+      if (budget_exceeded != nullptr) *budget_exceeded = true;
+      return false;  // Stop; universe is not fully classified.
+    }
 
     if (invalid && !covered_.Test(global_index)) {
       covered_.Set(global_index);
       ++invalid_tuples_;
+      ++covered_bits_;
     }
-
-    // Reset assignment for reuse.
-    for (uint32_t j = 0; j < combo.size(); ++j) {
-      assignment[combo[j]] = model::kUnassigned;
-    }
+    return true;
   });
 }
 
 void CoverageEngine::ExcludeInvalidValues() {
   if (!model::HasInvalidValues(params_)) return;
 
-  ForEachTuple([&](uint32_t global_index, const std::vector<uint32_t>& combo,
+  ForEachTuple([&](uint32_t global_index, const uint32_t* combo,
                    const std::vector<uint32_t>& value_indices) {
     // Check if any decoded value is invalid.
     bool contains_invalid = false;
-    for (size_t j = 0; j < combo.size(); ++j) {
+    for (size_t j = 0; j < strength_; ++j) {
       if (params_[combo[j]].is_invalid(value_indices[j])) {
         contains_invalid = true;
         break;
@@ -336,6 +386,7 @@ void CoverageEngine::ExcludeInvalidValues() {
     if (contains_invalid && !covered_.Test(global_index)) {
       covered_.Set(global_index);
       ++invalid_tuples_;
+      ++covered_bits_;
     }
   });
 }
@@ -343,10 +394,10 @@ void CoverageEngine::ExcludeInvalidValues() {
 void CoverageEngine::ExcludeTuplesOutsideMask(
     const std::vector<std::vector<bool>>& allowed_values) {
   if (allowed_values.size() != params_.size()) return;
-  ForEachTuple([&](uint32_t global_index, const std::vector<uint32_t>& combo,
+  ForEachTuple([&](uint32_t global_index, const uint32_t* combo,
                    const std::vector<uint32_t>& value_indices) {
     bool excluded = false;
-    for (size_t j = 0; j < combo.size(); ++j) {
+    for (size_t j = 0; j < strength_; ++j) {
       uint32_t pi = combo[j];
       uint32_t vi = value_indices[j];
       if (allowed_values[pi].size() != params_[pi].size() || !allowed_values[pi][vi]) {
@@ -357,15 +408,16 @@ void CoverageEngine::ExcludeTuplesOutsideMask(
     if (excluded && !covered_.Test(global_index)) {
       covered_.Set(global_index);
       ++invalid_tuples_;
+      ++covered_bits_;
     }
   });
 }
 
 void CoverageEngine::ExcludeTuplesNotContaining(uint32_t param_index, uint32_t value_index) {
-  ForEachTuple([&](uint32_t global_index, const std::vector<uint32_t>& combo,
+  ForEachTuple([&](uint32_t global_index, const uint32_t* combo,
                    const std::vector<uint32_t>& value_indices) {
     bool contains = false;
-    for (size_t j = 0; j < combo.size(); ++j) {
+    for (size_t j = 0; j < strength_; ++j) {
       if (combo[j] == param_index && value_indices[j] == value_index) {
         contains = true;
         break;
@@ -374,6 +426,7 @@ void CoverageEngine::ExcludeTuplesNotContaining(uint32_t param_index, uint32_t v
     if (!contains && !covered_.Test(global_index)) {
       covered_.Set(global_index);
       ++invalid_tuples_;
+      ++covered_bits_;
     }
   });
 }

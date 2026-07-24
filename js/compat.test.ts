@@ -4,7 +4,7 @@
 /// equivalent results (coverage, stats, test counts, and exact output).
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import { analyzeCoverage, estimateModel, extendTests, generate, init } from './index.js';
+import { analyzeCoverage, Coverwise, estimateModel, extendTests, generate, init } from './index.js';
 import {
   analyzeCoverage as pureAnalyzeCoverage,
   extendTests as pureExtendTests,
@@ -318,8 +318,13 @@ describe('WASM / TS compatibility', () => {
         expect(tsResult.coverage).toBe(wasmResult.coverage);
         expect(tsResult.stats.totalTuples).toBe(wasmResult.stats.totalTuples);
         expect(tsResult.stats.coveredTuples).toBe(wasmResult.stats.coveredTuples);
-        expect(tsResult.uncovered.length).toBe(wasmResult.uncovered.length);
-        expect(tsResult.negativeTests?.length ?? 0).toBe(wasmResult.negativeTests?.length ?? 0);
+        // Exact structural equality, not just length: a divergence in the
+        // uncovered-tuple witnesses or the negative-test suite must fail parity.
+        // Compare the human-readable tuple strings (the stable public contract).
+        expect(tsResult.uncovered.map((u) => u.tuple)).toEqual(
+          wasmResult.uncovered.map((u) => u.tuple),
+        );
+        expect(tsResult.negativeTests ?? []).toEqual(wasmResult.negativeTests ?? []);
         // Both engines share the same RNG, so exact suite equality (including
         // length) is asserted separately in the "exact test output match" test.
       });
@@ -357,7 +362,9 @@ describe('WASM / TS compatibility', () => {
       expect(tsReport.coverageRatio).toBe(wasmReport.coverageRatio);
       expect(tsReport.totalTuples).toBe(wasmReport.totalTuples);
       expect(tsReport.coveredTuples).toBe(wasmReport.coveredTuples);
-      expect(tsReport.uncovered.length).toBe(wasmReport.uncovered.length);
+      expect(tsReport.uncovered.map((u) => u.tuple)).toEqual(
+        wasmReport.uncovered.map((u) => u.tuple),
+      );
     });
 
     it('partial coverage: both engines agree', () => {
@@ -375,7 +382,10 @@ describe('WASM / TS compatibility', () => {
       expect(tsReport.coverageRatio).toBe(wasmReport.coverageRatio);
       expect(tsReport.totalTuples).toBe(wasmReport.totalTuples);
       expect(tsReport.coveredTuples).toBe(wasmReport.coveredTuples);
-      expect(tsReport.uncovered.length).toBe(wasmReport.uncovered.length);
+      // The uncovered witnesses must match exactly, not merely in count.
+      expect(tsReport.uncovered.map((u) => u.tuple)).toEqual(
+        wasmReport.uncovered.map((u) => u.tuple),
+      );
     });
 
     it('empty tests: both engines agree', () => {
@@ -493,7 +503,10 @@ describe('WASM / TS compatibility', () => {
       expect(tsResult.coverage).toBe(wasmResult.coverage);
       expect(tsResult.stats.totalTuples).toBe(wasmResult.stats.totalTuples);
       expect(tsResult.stats.coveredTuples).toBe(wasmResult.stats.coveredTuples);
-      expect(tsResult.tests.length).toBe(wasmResult.tests.length);
+      // Exact suite equality: both engines share the RNG, so the extended
+      // suite must be byte-identical, not merely the same length. The preserved
+      // existing prefix is re-projected by the public API, so compare tests too.
+      expect(tsResult.tests).toEqual(wasmResult.tests);
     });
 
     it('extending complete suite: both engines agree on no change needed', () => {
@@ -743,6 +756,222 @@ describe('WASM / TS compatibility', () => {
         if (t.os === 'mac') {
           expect(t.browser === 'chromium' || t.browser === 'chrome').toBe(false);
         }
+      }
+    });
+  });
+
+  // The class-based Coverwise API must be a thin delegation over the free
+  // functions — every method has to return a result identical to the free
+  // function it wraps. A regression here is exactly the H-4 drift (the class
+  // reimplementing generation) that the length-only compat scenarios missed.
+  describe('class API parity', () => {
+    it('every Coverwise method matches its free-function counterpart exactly', async () => {
+      const cw = await Coverwise.create();
+
+      for (const { name, input } of scenarios) {
+        expect(cw.generate(input), `generate: ${name}`).toEqual(generate(input));
+        expect(cw.estimateModel(input), `estimateModel: ${name}`).toEqual(estimateModel(input));
+      }
+
+      const analyzeParams: Parameter[] = [
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+        { name: 'browser', values: ['chrome', 'firefox'] },
+      ];
+      const analyzeTests: TestCase[] = [
+        { os: 'win', browser: 'chrome' },
+        { os: 'mac', browser: 'firefox' },
+      ];
+      expect(cw.analyzeCoverage(analyzeParams, analyzeTests)).toEqual(
+        analyzeCoverage(analyzeParams, analyzeTests),
+      );
+
+      const extendInput: GenerateInput = {
+        parameters: [
+          { name: 'os', values: ['win', 'mac', 'linux'] },
+          { name: 'browser', values: ['chrome', 'firefox', 'safari'] },
+        ],
+        seed: 42,
+      };
+      const existing: TestCase[] = [{ os: 'win', browser: 'chrome' }];
+      expect(cw.extendTests(existing, extendInput)).toEqual(extendTests(existing, extendInput));
+    });
+
+    it('rejects invalid input through the class API with the same error', async () => {
+      const cw = await Coverwise.create();
+      const bad: GenerateInput = { parameters: [{ name: 'os', values: ['win'] }], seed: -1 };
+      expect(() => cw.generate(bad)).toThrow(/Invalid seed/);
+      expect(() => generate(bad)).toThrow(/Invalid seed/);
+    });
+  });
+
+  // Absolute golden anchor: both the WASM-backed and pure-JS surfaces must emit
+  // this exact suite for a fixed model+seed. The identical `tests` array is
+  // pinned byte-for-byte in the C++ CLI golden test
+  // (CliGenerateTest.GoldenOutputIsByteExactForFixedSeed), so all three
+  // surfaces — CLI (native), WASM, pure-JS — are locked to one value. Unlike a
+  // WASM-vs-pure parity check, this catches cross-drift where both engines
+  // change identically.
+  describe('golden output anchor', () => {
+    const goldenInput: GenerateInput = {
+      parameters: [
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+        { name: 'browser', values: ['chrome', 'firefox', 'safari'] },
+      ],
+      strength: 2,
+      seed: 42,
+    };
+    const goldenTests: TestCase[] = [
+      { os: 'linux', browser: 'firefox' },
+      { os: 'win', browser: 'chrome' },
+      { os: 'win', browser: 'firefox' },
+      { os: 'mac', browser: 'chrome' },
+      { os: 'win', browser: 'safari' },
+      { os: 'mac', browser: 'firefox' },
+      { os: 'mac', browser: 'safari' },
+      { os: 'linux', browser: 'safari' },
+      { os: 'linux', browser: 'chrome' },
+    ];
+
+    it('WASM and pure-JS both match the pinned golden suite', () => {
+      expect(generate(goldenInput).tests).toEqual(goldenTests);
+      expect(pureGenerate(goldenInput).tests).toEqual(goldenTests);
+    });
+  });
+
+  // A constraint that fails to parse must surface the same message shape on
+  // every surface: the offending expression is named via an
+  // `Invalid constraint "<expr>": ...` prefix, identical across WASM generate,
+  // pure generate, and both analyze paths.
+  describe('constraint error message parity', () => {
+    const params: Parameter[] = [
+      { name: 'A', values: ['a0', 'a1'] },
+      { name: 'B', values: ['b0', 'b1'] },
+    ];
+    const badExpr = 'IF nonexistent=x THEN B!=b0';
+    const prefix = `Invalid constraint "${badExpr}":`;
+
+    const grab = (fn: () => unknown): string => {
+      try {
+        fn();
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+      throw new Error('expected a constraint error');
+    };
+
+    it('names the offending expression identically across surfaces', () => {
+      const wasmGen = grab(() => generate({ parameters: params, constraints: [badExpr] }));
+      const pureGen = grab(() => pureGenerate({ parameters: params, constraints: [badExpr] }));
+      const wasmAnalyze = grab(() => analyzeCoverage(params, [], 2, [badExpr]));
+      const pureAnalyze = grab(() => pureAnalyzeCoverage(params, [], 2, [badExpr]));
+
+      for (const message of [wasmGen, pureGen, wasmAnalyze, pureAnalyze]) {
+        expect(message.startsWith(prefix), message).toBe(true);
+      }
+      // The generate paths agree byte-for-byte across engines.
+      expect(pureGen).toBe(wasmGen);
+      // Analyze agrees byte-for-byte across engines.
+      expect(pureAnalyze).toBe(wasmAnalyze);
+    });
+  });
+
+  // A weight keyed by one of a value's aliases must be honored, not silently
+  // dropped to the default. Resolution normalizes alias keys to the value, so an
+  // alias-keyed weight produces exactly the same suite as the primary-keyed one
+  // — and a suite that differs from the unweighted run (proving it took effect).
+  describe('alias-keyed weight parity', () => {
+    const base: GenerateInput = {
+      parameters: [
+        {
+          name: 'browser',
+          values: [{ value: 'chromium', aliases: ['chrome'] }, 'firefox', 'safari'],
+        },
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+      ],
+      strength: 2,
+      seed: 42,
+    };
+    const primaryWeighted: GenerateInput = { ...base, weights: { browser: { chromium: 10 } } };
+    const aliasWeighted: GenerateInput = { ...base, weights: { browser: { chrome: 10 } } };
+
+    for (const [label, gen] of [
+      ['wasm', generate],
+      ['pure', pureGenerate],
+    ] as const) {
+      it(`${label}: alias-keyed weight matches primary-keyed and changes output`, () => {
+        const unweighted = gen(base).tests;
+        const primary = gen(primaryWeighted).tests;
+        const alias = gen(aliasWeighted).tests;
+        // Alias key resolves to the same weight as the primary key.
+        expect(alias).toEqual(primary);
+        // The weight is genuinely applied (not a no-op equal to the default run).
+        expect(primary).not.toEqual(unweighted);
+      });
+    }
+
+    it('primary-keyed weighted suite is identical across WASM and pure', () => {
+      expect(pureGenerate(primaryWeighted).tests).toEqual(generate(primaryWeighted).tests);
+      expect(pureGenerate(aliasWeighted).tests).toEqual(generate(aliasWeighted).tests);
+    });
+  });
+
+  // A constraint written with irregular internal whitespace must parse and
+  // evaluate identically to its canonical single-space form on both engines.
+  describe('irregular-whitespace constraint parity', () => {
+    const spaced: GenerateInput = {
+      parameters: [
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+        { name: 'browser', values: ['chrome', 'firefox', 'ie'] },
+      ],
+      constraints: ['IF   os=mac   THEN   browser  !=  ie'],
+      seed: 42,
+    };
+    const canonical: GenerateInput = {
+      ...spaced,
+      constraints: ['IF os = mac THEN browser != ie'],
+    };
+
+    it('irregular whitespace produces the same suite as canonical spacing', () => {
+      const wasmSpaced = generate(spaced);
+      const wasmCanonical = generate(canonical);
+      const pureSpaced = pureGenerate(spaced);
+
+      // No parse-failure degradation on either surface.
+      expect(wasmSpaced.warnings).toEqual([]);
+      expect(pureSpaced.warnings).toEqual([]);
+      // Whitespace is not semantically significant: identical output either way.
+      expect(wasmSpaced.tests).toEqual(wasmCanonical.tests);
+      expect(pureSpaced.tests).toEqual(wasmSpaced.tests);
+      // The constraint still holds.
+      for (const t of wasmSpaced.tests) {
+        if (t.os === 'mac') {
+          expect(t.browser).not.toBe('ie');
+        }
+      }
+    });
+
+    it('treats the ASCII whitespace class identically across engines', () => {
+      // The tokenizer whitespace class must match byte-for-byte between C++ and
+      // TypeScript. Vertical tab (\v) and form feed (\f) are NOT whitespace on
+      // either surface (C++ previously accepted them via locale-dependent
+      // isspace, diverging from pure-JS). A constraint separated only by \v or \f
+      // therefore fails to parse identically on both engines, with the same
+      // thrown message.
+      const messageFor = (gen: (input: GenerateInput) => unknown, sep: string): string => {
+        try {
+          gen({
+            parameters: spaced.parameters,
+            constraints: [`IF os =${sep}mac THEN browser != ie`],
+            seed: 42,
+          });
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e);
+        }
+        throw new Error(`expected a parse error for separator ${JSON.stringify(sep)}`);
+      };
+
+      for (const sep of ['\v', '\f']) {
+        expect(messageFor(pureGenerate, sep)).toBe(messageFor(generate, sep));
       }
     });
   });

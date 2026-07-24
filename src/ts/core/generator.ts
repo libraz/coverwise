@@ -4,13 +4,12 @@
 import { greedyConstruct, type ScoreFn } from '../algo/greedy.js';
 import { expandBoundaryValues } from '../model/boundary.js';
 import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
-import { parseConstraint } from '../model/constraint-parser.js';
+import { annotateConstraintError, parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode } from '../model/error.js';
 import {
   createModelStats,
   ExtendMode,
   type GenerateOptions,
-  getWeight,
   isWeightConfigEmpty,
   type ModelStats,
   validateGenerateOptions,
@@ -27,7 +26,11 @@ import {
 } from '../model/test-case.js';
 import { Rng } from '../util/rng.js';
 import { annotateClassCoverage } from '../validator/coverage-validator.js';
-import { completeValidAssignment } from './constraint-solver.js';
+import {
+  completeAssignment,
+  completeValidAssignment,
+  createSolveBudget,
+} from './constraint-solver.js';
 import { CoverageEngine } from './coverage-engine.js';
 
 /// Resolve parameter names to sorted indices.
@@ -158,19 +161,24 @@ function generateNegativeTests(
 ): void {
   const kMaxRetries = 50;
 
+  // The combination and lookup tables depend only on (params, strength), which
+  // are identical across every invalid value, so the engine is built once and
+  // its coverage state reset per pass instead of rebuilt.
+  const freshResult = CoverageEngine.create(params, strength);
+  if (freshResult.error.code !== ErrorCode.Ok) {
+    return;
+  }
+  const freshCov = freshResult.engine;
+
   for (let pi = 0; pi < params.length; ++pi) {
     for (let vi = 0; vi < params[pi].size; ++vi) {
       if (!params[pi].isInvalid(vi)) {
         continue;
       }
 
-      // Create a coverage engine for generating tests that pair this invalid
-      // value with valid values of all other parameters.
-      const freshResult = CoverageEngine.create(params, strength);
-      if (freshResult.error.code !== ErrorCode.Ok) {
-        continue;
-      }
-      const freshCov = freshResult.engine;
+      // Reset coverage/exclusion state for this invalid value, reusing the
+      // precomputed tables.
+      freshCov.resetCoverage();
 
       // Build mask: pi can only be vi, others can only be valid.
       const negMask = buildNegativeMask(params, pi, vi);
@@ -232,8 +240,27 @@ function resolveWeights(params: Parameter[], config: WeightConfig): number[][] {
   const resolved: number[][] = new Array(params.length);
   for (let pi = 0; pi < params.length; ++pi) {
     resolved[pi] = new Array<number>(params[pi].size);
+    const paramWeights = config.entries[params[pi].name];
     for (let vi = 0; vi < params[pi].size; ++vi) {
-      resolved[pi][vi] = getWeight(config, params[pi].name, params[pi].values[vi]);
+      // Resolve by key presence (not getWeight's 1.0 sentinel) so an explicit
+      // weight of 1.0 is honored and a weight keyed by one of the value's aliases
+      // is not silently dropped to the default.
+      let w = 1.0;
+      if (paramWeights !== undefined) {
+        let entry = paramWeights[params[pi].values[vi]];
+        if (entry === undefined) {
+          for (const alias of params[pi].aliases(vi)) {
+            if (paramWeights[alias] !== undefined) {
+              entry = paramWeights[alias];
+              break;
+            }
+          }
+        }
+        if (entry !== undefined) {
+          w = entry;
+        }
+      }
+      resolved[pi][vi] = w;
     }
   }
   return resolved;
@@ -365,8 +392,9 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
   for (const expr of options.constraintExpressions) {
     const parseResult = parseConstraint(expr, params);
     if (parseResult.error.code !== ErrorCode.Ok) {
-      result.warnings.push(`${parseResult.error.message}: ${parseResult.error.detail}`);
-      result.error = parseResult.error;
+      const err = annotateConstraintError(expr, parseResult.error);
+      result.warnings.push(`${err.message}: ${err.detail}`);
+      result.error = err;
       return result;
     }
     if (parseResult.constraint == null) {
@@ -381,25 +409,45 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
     constraints.push(parseResult.constraint);
   }
 
-  if (
-    constraints.length > 0 &&
-    completeValidAssignment(params, constraints, {
-      values: new Array(params.length).fill(UNASSIGNED),
-    }) === null
-  ) {
-    result.error = {
-      code: ErrorCode.ConstraintError,
-      message: 'Constraints are unsatisfiable',
-      detail: 'No complete assignment using valid values satisfies all constraints',
-    };
-    result.warnings.push(`${result.error.message}: ${result.error.detail}`);
-    return result;
+  if (constraints.length > 0) {
+    const budget = createSolveBudget();
+    const witness = completeValidAssignment(
+      params,
+      constraints,
+      { values: new Array(params.length).fill(UNASSIGNED) },
+      budget,
+    );
+    if (witness === null) {
+      result.error = budget.exceeded
+        ? {
+            code: ErrorCode.ConstraintError,
+            message: 'Constraint search budget exceeded',
+            detail: 'The constraint model is too complex to solve within the search budget',
+          }
+        : {
+            code: ErrorCode.ConstraintError,
+            message: 'Constraints are unsatisfiable',
+            detail: 'No complete assignment using valid values satisfies all constraints',
+          };
+      result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+      return result;
+    }
   }
 
   // Exclude tuples that are inherently invalid due to constraints.
-  coverage.excludeInvalidTuples(constraints);
+  const excludeBudgetExceeded = { value: false };
+  coverage.excludeInvalidTuples(constraints, [], excludeBudgetExceeded);
   for (const eng of subEngines) {
-    eng.excludeInvalidTuples(constraints);
+    eng.excludeInvalidTuples(constraints, [], excludeBudgetExceeded);
+  }
+  if (excludeBudgetExceeded.value) {
+    result.error = {
+      code: ErrorCode.ConstraintError,
+      message: 'Constraint search budget exceeded',
+      detail: 'Tuple feasibility could not be determined within the search budget',
+    };
+    result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    return result;
   }
 
   // Exclude tuples involving invalid values for positive generation.
@@ -503,16 +551,78 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
     result.tests.push(tc);
   }
 
-  // Warn if generation stopped before reaching full coverage.
+  // Deterministic completion phase. Randomized greedy construction can stall on
+  // hard-to-reach tuples (notably t === parameter count, or tightly constrained
+  // models), abandoning tuples that are in fact coverable and leaving coverage
+  // below 100%. For each remaining uncovered tuple, build a test that covers it
+  // directly by fixing the tuple's values and completing the rest with a
+  // constraint feasibility search. A tuple that cannot be completed is genuinely
+  // infeasible and is excluded from the coverage target so it no longer counts
+  // as a shortfall.
+  let completionBudgetExceeded = false;
+  const completePartial = (partial: number[]): TestCase | null => {
+    const budget = createSolveBudget();
+    const witness = hasInvalid
+      ? completeAssignment(params, constraints, validMask, { values: partial }, budget)
+      : completeValidAssignment(params, constraints, { values: partial }, budget);
+    if (budget.exceeded) {
+      completionBudgetExceeded = true;
+    }
+    return witness;
+  };
+  const pickIncomplete = (): CoverageEngine | null => {
+    if (!coverage.isComplete) {
+      return coverage;
+    }
+    for (const eng of subEngines) {
+      if (!eng.isComplete) {
+        return eng;
+      }
+    }
+    return null;
+  };
+  for (let eng = pickIncomplete(); eng !== null; eng = pickIncomplete()) {
+    if (options.maxTests > 0 && result.tests.length >= options.maxTests) {
+      break;
+    }
+    const ua = eng.firstUncovered();
+    if (ua === null) {
+      break; // Defensive: isComplete disagreed.
+    }
+    const witness = completePartial(ua.assignment);
+    if (completionBudgetExceeded) {
+      break;
+    }
+    if (witness === null) {
+      // Partial-feasible but not extensible to a full satisfying assignment.
+      eng.excludeTuple(ua.index);
+      continue;
+    }
+    coverage.addTestCase(witness);
+    for (const e of subEngines) {
+      e.addTestCase(witness);
+    }
+    result.tests.push(witness);
+  }
+  if (completionBudgetExceeded) {
+    result.error = {
+      code: ErrorCode.ConstraintError,
+      message: 'Constraint search budget exceeded',
+      detail: 'A coverage witness could not be found within the search budget',
+    };
+    result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    return result;
+  }
+
+  // Warn if generation stopped before reaching full coverage. After the
+  // completion phase this can only happen when maxTests bounds the suite.
   if (!allComplete(coverage, subEngines)) {
     if (options.maxTests > 0 && result.tests.length >= options.maxTests) {
       result.warnings.push(
         `Generation stopped at maxTests (${options.maxTests}) before reaching 100% coverage`,
       );
     } else {
-      result.warnings.push(
-        `Generation stopped before reaching 100% coverage after ${kMaxRetries} consecutive zero-score candidates`,
-      );
+      result.warnings.push('Generation stopped before reaching 100% coverage');
     }
   }
 
@@ -551,14 +661,11 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
         break;
       }
       const partial = new Array<number>(params.length).fill(UNASSIGNED);
-      for (const entry of ut.tuple) {
-        for (let pi = 0; pi < params.length; ++pi) {
-          const prefix = `${params[pi].name}=`;
-          if (!entry.startsWith(prefix)) {
-            continue;
-          }
-          partial[pi] = params[pi].findValueIndex(entry.slice(prefix.length));
-          break;
+      // Reconstruct the witness from (param, value) indices rather than parsing
+      // "name=value" strings, which is ambiguous when a name or value holds '='.
+      for (const [pi, vi] of ut.indices ?? []) {
+        if (pi < partial.length) {
+          partial[pi] = vi;
         }
       }
       const witness = completeValidAssignment(params, constraints, { values: partial });

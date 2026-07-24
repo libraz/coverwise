@@ -13,6 +13,8 @@
  * not(allOf(when('os').eq('win'), when('browser').eq('safari')))
  */
 
+import { CoverwiseError } from './types.js';
+
 // --- Value formatting ---
 
 // Wildcards ('*', '?') are intentionally absent so LIKE patterns stay bare when
@@ -207,6 +209,11 @@ class ConditionStartImpl implements ConditionStart {
   }
 
   in(...values: (string | number | boolean)[]): Condition {
+    // Reject an empty set at construction rather than emitting `IN {}`, which
+    // would only fail later when the generator parses the constraint.
+    if (values.length === 0) {
+      throw new CoverwiseError('INVALID_INPUT', 'in() requires at least one value');
+    }
     const formatted = values.map(formatSetValue).join(', ');
     return new ConditionImpl(`${this.param} IN {${formatted}}`);
   }
@@ -283,7 +290,7 @@ export function not(condition: Condition): Condition {
  */
 export function allOf(...conditions: Condition[]): Condition {
   if (conditions.length === 0) {
-    throw new Error('allOf requires at least one condition');
+    throw new CoverwiseError('INVALID_INPUT', 'allOf requires at least one condition');
   }
   if (conditions.length === 1) {
     return conditions[0];
@@ -307,7 +314,7 @@ export function allOf(...conditions: Condition[]): Condition {
  */
 export function anyOf(...conditions: Condition[]): Condition {
   if (conditions.length === 0) {
-    throw new Error('anyOf requires at least one condition');
+    throw new CoverwiseError('INVALID_INPUT', 'anyOf requires at least one condition');
   }
   if (conditions.length === 1) {
     return conditions[0];
