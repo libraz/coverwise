@@ -1,7 +1,13 @@
 # CLI リファレンス
 
-`coverwise` native CLIはnpm packageには含まれません。Linux x64版は
-[GitHub Releases](https://github.com/libraz/coverwise/releases) から取得できます。ソースbuild時の
+Linux x64 または macOS Apple Silicon では、PyPI から `coverwise` native CLI をインストールできます。
+
+```bash
+pip install coverwise
+```
+
+native CLIはnpm packageには含まれません。Linux x64版は
+[GitHub Releases](https://github.com/libraz/coverwise/releases) からも取得できます。ソースbuild時の
 pathは`build/bin/coverwise`で、CMake install後は指定prefix配下の`bin/coverwise`です。
 
 `coverwise` コマンドラインツールは JSON 入力を読み込み、JSON 出力を書き出します。

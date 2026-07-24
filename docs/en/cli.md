@@ -2,9 +2,15 @@
 
 The `coverwise` command-line tool reads JSON input and writes JSON output.
 
-The npm package does not install the native executable. Download the Linux x64 archive from
-[GitHub Releases](https://github.com/libraz/coverwise/releases), or build from source; the build-tree
-path is `build/bin/coverwise`, and CMake installs it to `bin/coverwise` under the selected prefix.
+Install the native CLI from PyPI on Linux x64 or macOS Apple Silicon:
+
+```bash
+pip install coverwise
+```
+
+The npm package does not install the native executable. Linux x64 archives are also available from
+[GitHub Releases](https://github.com/libraz/coverwise/releases); source builds place it at
+`build/bin/coverwise`, and CMake installs it to `bin/coverwise` under the selected prefix.
 
 All command outputs use CLI schema version `1` and include `"schemaVersion": 1`.
 The v1 migration makes empty array fields explicit, represents suggestions as

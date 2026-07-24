@@ -2,8 +2,9 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/libraz/coverwise/ci.yml?branch=main&label=CI)](https://github.com/libraz/coverwise/actions)
 [![npm](https://img.shields.io/npm/v/@libraz/coverwise)](https://www.npmjs.com/package/@libraz/coverwise)
+[![PyPI](https://img.shields.io/pypi/v/coverwise)](https://pypi.org/project/coverwise/)
 [![codecov](https://codecov.io/gh/libraz/coverwise/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/coverwise)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://github.com/libraz/coverwise/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/libraz/coverwise/blob/main/LICENSE)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue?logo=c%2B%2B)](https://en.cppreference.com/w/cpp/17)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20WebAssembly-lightgrey)](https://github.com/libraz/coverwise)
@@ -29,6 +30,7 @@ coverwise はテスト設計ループを構成する3つの操作を提供しま
 - [実例集](docs/ja/examples.md)
 - [制約構文](docs/ja/constraints.md)
 - [JavaScript API](docs/ja/js-api.md)
+- [Python API](docs/ja/python-api.md)
 - [C++ API](docs/ja/cpp-api.md)
 - [CLI リファレンス](docs/ja/cli.md)
 - [用語集](docs/ja/glossary.md)
@@ -115,7 +117,13 @@ const extended = cw.extendTests(existingTests, { parameters });
 
 ## CLI
 
-npm パッケージはネイティブ実行ファイルをインストールしません。Linux x64 バイナリは各 [GitHub Release](https://github.com/libraz/coverwise/releases) に添付されています。ソースからビルドすると `build/bin/coverwise` が生成され、`cmake --install build` で選択したプレフィックス配下の `bin/coverwise` にインストールされます。
+Linux x64 または macOS Apple Silicon では、PyPI から native CLI をインストールできます。
+
+```bash
+pip install coverwise
+```
+
+npm パッケージはネイティブ実行ファイルをインストールしません。Linux x64 アーカイブは各 [GitHub Release](https://github.com/libraz/coverwise/releases) に添付されています。ソースからビルドすると `build/bin/coverwise` が生成され、`cmake --install build` で選択したプレフィックス配下の `bin/coverwise` にインストールされます。
 
 ```bash
 # 既存テストのカバレッジを分析

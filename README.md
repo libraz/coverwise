@@ -2,8 +2,9 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/libraz/coverwise/ci.yml?branch=main&label=CI)](https://github.com/libraz/coverwise/actions)
 [![npm](https://img.shields.io/npm/v/@libraz/coverwise)](https://www.npmjs.com/package/@libraz/coverwise)
+[![PyPI](https://img.shields.io/pypi/v/coverwise)](https://pypi.org/project/coverwise/)
 [![codecov](https://codecov.io/gh/libraz/coverwise/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/coverwise)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://github.com/libraz/coverwise/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/libraz/coverwise/blob/main/LICENSE)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue?logo=c%2B%2B)](https://en.cppreference.com/w/cpp/17)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20WebAssembly-lightgrey)](https://github.com/libraz/coverwise)
@@ -29,6 +30,7 @@ Most combinatorial tools only support `generate`. coverwise treats `analyze` and
 - [Examples](docs/en/examples.md)
 - [Constraint Syntax](docs/en/constraints.md)
 - [JavaScript API](docs/en/js-api.md)
+- [Python API](docs/en/python-api.md)
 - [C++ API](docs/en/cpp-api.md)
 - [CLI Reference](docs/en/cli.md)
 - [Glossary](docs/en/glossary.md)
@@ -115,10 +117,15 @@ const extended = cw.extendTests(existingTests, { parameters });
 
 ## CLI
 
-The npm package does not install a native executable. Linux x64 binaries are attached to each
-[GitHub Release](https://github.com/libraz/coverwise/releases); source builds produce
-`build/bin/coverwise`, and `cmake --install build` installs it to `bin/coverwise` under the chosen
-prefix.
+Install the native CLI from PyPI on Linux x64 or macOS Apple Silicon:
+
+```bash
+pip install coverwise
+```
+
+The npm package does not install a native executable. Linux x64 archives are also attached to each
+[GitHub Release](https://github.com/libraz/coverwise/releases); source builds produce `build/bin/coverwise`,
+and `cmake --install build` installs it to `bin/coverwise` under the chosen prefix.
 
 ```bash
 # Analyze existing test coverage

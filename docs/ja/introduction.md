@@ -4,7 +4,7 @@
 
 coverwise は組み合わせテスト生成エンジンです。リソース上限内の正当かつ充足可能なモデルに対して、コンパクトなテストスイートを生成し、達成した t-wise カバレッジを報告します。制限的な `maxTests` を指定しない場合は、必要なすべてのタプルの網羅を試みます。有効な完全テストケースに含められないタプルは、カバレッジの対象集合から除外されます。
 
-**ブラウザ**、**Node.js**、**ネイティブ C++** で動作し、JavaScript ビルドでは WebAssembly により プラットフォーム固有の依存がゼロです。
+**ブラウザ**、**Node.js**、**ネイティブ C++**、および PyPI で配布する native CLI で動作し、JavaScript ビルドでは WebAssembly によりプラットフォーム固有の依存がゼロです。
 
 ## 課題
 
@@ -78,7 +78,7 @@ coverwise は単なる生成ツールではなく、**テスト設計API** と�
 | Node.js (≥ 18) | `npm install @libraz/coverwise` |
 | ブラウザ | ESM インポート（WASMは自動ロード） |
 | C++ (ネイティブ) | CMake、静的ライブラリ |
-| CLI | `coverwise` バイナリ |
+| CLI | `pip install coverwise`（Linux x64 / macOS Apple Silicon）、release archive、またはソースビルド |
 
 ## パフォーマンス
 
@@ -129,4 +129,5 @@ Apple M シリーズで計測（seed=42）。理論下限は直交配列 (OA) �
 - [実例集](examples.md) — 実践的なユースケース
 - [制約構文](constraints.md) — 制約式の書き方
 - [C++ API](cpp-api.md) — ネイティブライブラリのリファレンス
+- [Python API](python-api.md) — PyPI パッケージと自動化用ヘルパー
 - [CLI リファレンス](cli.md) — JSON を使うコマンドラインインターフェース

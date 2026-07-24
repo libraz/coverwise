@@ -26,7 +26,13 @@ cmake --install build --prefix ./install
 
 For commands, JSON schemas, and exit codes, see the [CLI Reference](cli.md).
 
-Linux x64 archives are available from [GitHub Releases](https://github.com/libraz/coverwise/releases).
+Install the native CLI from PyPI on Linux x64 or macOS Apple Silicon:
+
+```bash
+pip install coverwise
+```
+
+Linux x64 archives are also available from [GitHub Releases](https://github.com/libraz/coverwise/releases).
 The npm package does not install the native CLI. To build it from source:
 
 ```bash
@@ -193,6 +199,7 @@ const result = cw.generate({
 
 - [Examples](examples.md) — Negative testing, mixed strength, boundary values, and more
 - [JavaScript API](js-api.md) — Full API reference
+- [Python API](python-api.md) — PyPI package and automation helper
 - [C++ API](cpp-api.md) — Native library reference
 - [CLI Reference](cli.md) — Command-line commands and JSON schemas
 - [Constraint Syntax](constraints.md) — Complete constraint language reference

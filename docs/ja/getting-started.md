@@ -26,7 +26,13 @@ cmake --install build --prefix ./install
 
 コマンド、JSON スキーマ、終了コードは [CLI リファレンス](cli.md) を参照してください。
 
-Linux x64版は [GitHub Releases](https://github.com/libraz/coverwise/releases) から取得できます。
+Linux x64 または macOS Apple Silicon では、PyPI から native CLI をインストールできます。
+
+```bash
+pip install coverwise
+```
+
+Linux x64版も [GitHub Releases](https://github.com/libraz/coverwise/releases) から取得できます。
 npm packageにはnative CLIは含まれません。ソースからビルドする場合：
 
 ```bash
@@ -193,6 +199,7 @@ const result = cw.generate({
 
 - [実例集](examples.md) — ネガティブテスト、混合強度、境界値など
 - [JavaScript API](js-api.md) — API リファレンス
+- [Python API](python-api.md) — PyPI パッケージと自動化用ヘルパー
 - [C++ API](cpp-api.md) — ネイティブライブラリのリファレンス
 - [CLI リファレンス](cli.md) — コマンドと JSON スキーマ
 - [制約構文](constraints.md) — 制約言語の完全なリファレンス

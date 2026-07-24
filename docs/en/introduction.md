@@ -4,7 +4,7 @@
 
 coverwise is a combinatorial test generation engine. Given a valid, satisfiable model within the resource budget, it generates a compact test suite and reports its achieved t-wise coverage. With no restrictive `maxTests` limit, it attempts to cover every required tuple. Tuples that cannot occur in any valid complete test case are excluded from the coverage universe.
 
-It runs in **browsers**, **Node.js**, and as **native C++**, with zero platform-specific dependencies in the JavaScript build thanks to WebAssembly.
+It runs in **browsers**, **Node.js**, **native C++**, and the native CLI distributed through PyPI. The JavaScript build has zero platform-specific dependencies thanks to WebAssembly.
 
 ## The Problem
 
@@ -78,7 +78,7 @@ coverwise is built as a **test design API**, not just a generation tool:
 | Node.js (≥ 18) | `npm install @libraz/coverwise` |
 | Browser | ESM import (WASM loaded automatically) |
 | C++ (native) | CMake, static library |
-| CLI | `coverwise` binary |
+| CLI | `pip install coverwise` (Linux x64 / macOS Apple Silicon), release archive, or source build |
 
 ## Performance
 
@@ -129,4 +129,5 @@ For pairwise testing (the most common use case), WASM and Pure TS perform equall
 - [Examples](examples.md) — Real-world usage patterns
 - [Constraint Syntax](constraints.md) — Write constraint expressions
 - [C++ API](cpp-api.md) — Native library reference
+- [Python API](python-api.md) — PyPI package and automation helper
 - [CLI Reference](cli.md) — JSON command-line interface
