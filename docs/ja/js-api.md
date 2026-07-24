@@ -32,7 +32,7 @@ async function init(): Promise<void>
 
 ## `generate(input)`
 
-パラメータとオプションから最小カバリング配列を生成します。
+パラメータとオプションからカバリングテストスイートを生成します。
 
 ```typescript
 function generate(input: GenerateInput): GenerateResult
@@ -45,8 +45,8 @@ interface GenerateInput {
   parameters: Parameter[];       // 必須。1つ以上のパラメータ。
   constraints?: string[];        // 制約式。
   strength?: number;             // 相互作用の強度（正の整数）。デフォルト: 2（ペアワイズ）。
-  seed?: number;                 // 決定性のためのRNGシード（有限数値）。デフォルト: 0。
-  maxTests?: number;             // 最大テスト数。0 = 無制限（デフォルト）。
+  seed?: number;                 // 決定性のための RNG シード。uint32 整数 [0, 4294967295]。デフォルト: 0。
+  maxTests?: number;             // uint32 整数 [0, 4294967295]。0 = 無制限（デフォルト）。
   weights?: WeightConfig;        // 値の重み付けヒント。
   seeds?: TestCase[];            // 既存テストケース。
   subModels?: SubModel[];        // 混合強度サブモデル。
@@ -56,14 +56,15 @@ interface GenerateInput {
 ### Parameter
 
 ```typescript
-interface Parameter {
+interface ParameterBase {
   name: string;
   values: (string | number | boolean | ParameterValue)[];
-  // 境界値展開は all-or-nothing: type と range の両方が必要。
-  type?: 'integer' | 'float';  // 境界値展開を有効化。
-  range?: [number, number];    // type 指定時に展開に使う [min, max] 範囲。
-  step?: number;               // float の刻み幅（デフォルト 1.0）。integer は 1 のみ。
 }
+
+type Parameter =
+  | (ParameterBase & { type?: never; range?: never; step?: never })
+  | (ParameterBase & { type: 'integer'; range: [number, number]; step?: 1 })
+  | (ParameterBase & { type: 'float'; range: [number, number]; step?: number });
 
 interface ParameterValue {
   value: string | number | boolean;
@@ -72,6 +73,8 @@ interface ParameterValue {
   class?: string;        // 同値クラス名。
 }
 ```
+
+`Parameter` は判別可能な共用体です。離散パラメータには `type`、`range`、`step` のいずれも指定できません。境界値パラメータでは `type` と `range` の両方が必要です。`range` は両端を含み、float の `step` のデフォルトは `1.0`、integer の `step` は `1` のみです。境界値フィールドの一部だけの指定や不整合な指定は拒否されます。
 
 **シンプルな値:**
 
@@ -154,6 +157,8 @@ interface GenerateResult {
   negativeCoverage?: NegativeCoverage; // 実行可能な単一障害ネガティブタプルのカバレッジ。
   coverage: number;                 // カバレッジ比率（0.0 – 1.0）。
   uncovered: UncoveredTuple[];      // 未カバータプルと理由。
+  uncoveredCount: number;           // 診断情報の件数上限前の未カバータプル総数。
+  omittedUncovered: number;         // 件数上限により `uncovered` から省かれた数。
   stats: GenerateStats;
   suggestions: Suggestion[];        // 改善の提案。
   warnings: string[];               // 警告（例：カバレッジ100%未達、シード数がmaxTestsを超過）。
@@ -211,7 +216,7 @@ function analyzeCoverage(
 ): CoverageReport
 ```
 
-`constraints` を渡すと、制約に違反する tuple は **カバレッジ universe から完全に除外**されます(`totalTuples` / `coveredTuples` / `uncovered` のいずれにも計上されません)。これはジェネレータと同じセマンティクスで、生成済みテスト集合を解析すると常に `coverageRatio === 1.0` になります。
+`constraints` を渡すと、カバレッジの対象には、すべての制約を満たす完全なテストケースへ補完できるタプルだけが含まれます。完全なテストケースへ補完できないタプルは `totalTuples`、`coveredTuples`、`uncovered` から除外されます。これは生成時と同じ意味です。生成済みスイートを解析したときに `coverageRatio === 1.0` となるのは、生成が完全カバレッジで正常に完了した場合だけです。`maxTests` により生成が打ち切られた場合（または生成が不完全カバレッジを報告した場合）は、これより低くなることがあります。
 
 ### CoverageReport
 
@@ -221,6 +226,9 @@ interface CoverageReport {
   coveredTuples: number;
   coverageRatio: number;          // 0.0 – 1.0
   uncovered: UncoveredTuple[];    // 不足している組み合わせ。
+  uncoveredCount: number;         // 診断情報の件数上限前の未カバータプル総数。
+  omittedUncovered: number;       // 件数上限により `uncovered` から省かれた数。
+  invalidTests: Array<{ testIndex: number; reason: string }>; // カバレッジ集計から除外された行。
 }
 ```
 
@@ -248,6 +256,14 @@ function extendTests(
   input: ExtendInput,
 ): GenerateResult
 ```
+
+```typescript
+interface ExtendInput extends GenerateInput {
+  mode?: 'strict'; // デフォルトかつ唯一サポートされるモード。
+}
+```
+
+`strict` は既存テストをすべてそのまま保持し、新しいテストだけを追加します。これ以外の `mode` 値は拒否されます。
 
 返される `result.tests` には既存テスト＋新規テストが含まれます。差分の取得：
 
@@ -290,9 +306,11 @@ interface ModelStats {
 文字列の代わりにプログラマティックに制約を構築：
 
 ```typescript
-import { when, not, allOf, anyOf } from '@libraz/coverwise';
+import { init, generate, when, not, allOf } from '@libraz/coverwise';
 
-const result = cw.generate({
+await init();
+
+const result = generate({
   parameters: [/* ... */],
   constraints: [
     when('os').eq('Windows').then(when('browser').ne('Safari')).toString(),
@@ -311,8 +329,8 @@ const result = cw.generate({
 Pure TypeScript API は入力を検証し、不正な値に対して説明的なエラーをスローします：
 
 - `strength`: 正の整数である必要があります。非整数、負、ゼロは拒否されます。
-- `seed`: 有限な数値である必要があります。`NaN` と `Infinity` は拒否されます。
-- `maxTests`: 指定する場合は非負の整数である必要があります。
+- `seed`: `[0, 4294967295]` の uint32 整数である必要があります。
+- `maxTests`: `[0, 4294967295]` の uint32 整数である必要があります。`0` は無制限です。
 - `parameters`: 空でない配列である必要があります。
 - 公開入力にはリソース上限があります。パラメータは最大 1,024、各値配列は最大 16,384、テスト行は最大 100,000、制約は最大 256、文字列は各 64 KiB、文字列全体では 1 MiB です。
 

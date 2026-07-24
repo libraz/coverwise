@@ -12,6 +12,8 @@ yarn add @libraz/coverwise
 
 ### C++ (ネイティブ)
 
+ヘッダー、リンク方法、完全な API は [C++ API](cpp-api.md) を参照してください。
+
 ```bash
 git clone https://github.com/libraz/coverwise.git
 cd coverwise
@@ -21,6 +23,8 @@ cmake --install build --prefix ./install
 ```
 
 ### CLI
+
+コマンド、JSON スキーマ、終了コードは [CLI リファレンス](cli.md) を参照してください。
 
 Linux x64版は [GitHub Releases](https://github.com/libraz/coverwise/releases) から取得できます。
 npm packageにはnative CLIは含まれません。ソースからビルドする場合：
@@ -110,7 +114,9 @@ coverwise generate input.json > tests.json
 実際のシステムには無効な組み合わせがあります。制約でそれを除外できます：
 
 ```typescript
-import { when } from '@libraz/coverwise';
+import { Coverwise, when } from '@libraz/coverwise';
+
+const cw = await Coverwise.create();
 
 const result = cw.generate({
   parameters: [
@@ -168,7 +174,7 @@ const result = cw.extendTests(existingTests, {
 
 // result.tests には既存テスト＋新規テストが含まれる
 const newTests = result.tests.slice(existingTests.length);
-console.log(`100%カバレッジ達成のため ${newTests.length} テスト追加`);
+console.log(`${newTests.length} 件のテストを追加。カバレッジ: ${result.coverage * 100}%`);
 ```
 
 ## 決定的出力
@@ -187,4 +193,6 @@ const result = cw.generate({
 
 - [実例集](examples.md) — ネガティブテスト、混合強度、境界値など
 - [JavaScript API](js-api.md) — API リファレンス
+- [C++ API](cpp-api.md) — ネイティブライブラリのリファレンス
+- [CLI リファレンス](cli.md) — コマンドと JSON スキーマ
 - [制約構文](constraints.md) — 制約言語の完全なリファレンス

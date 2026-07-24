@@ -5,10 +5,10 @@
 [![codecov](https://codecov.io/gh/libraz/coverwise/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/coverwise)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://github.com/libraz/coverwise/blob/main/LICENSE)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue?logo=c%2B%2B)](https://en.cppreference.com/w/cpp/17)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20WebAssembly-lightgrey)](https://github.com/libraz/coverwise)
 
-組み合わせテストカバレッジエンジン。既存テストのカバレッジギャップを分析し、最小テストスイートを生成し、差分だけを追加拡張します。ブラウザ、Node.js、ネイティブ C++ で動作。
+組み合わせテストカバレッジエンジン。既存テストのカバレッジギャップを分析し、コンパクトなテストスイートを生成し、差分だけを追加拡張します。ブラウザ、Node.js、ネイティブ C++ で動作。
 
 ## 概要
 
@@ -16,11 +16,22 @@ coverwise はテスト設計ループを構成する3つの操作を提供しま
 
 - **`analyze`** — 既存テストスイートの t-wise カバレッジを計測し、未カバーの組み合わせを列挙
 - **`extend`** — カバレッジギャップを埋めるテストだけを生成
-- **`generate`** — ゼロから完全カバレッジの最小テストスイートを作成
+- **`generate`** — 充足可能なモデルに対し、`maxTests` による制限がなければ完全カバレッジのコンパクトなテストスイートをゼロから作成
 
 ![coverwise のワークフロー: generate がゼロからスイートを構築し、analyze がカバレッジを測定し、extend がギャップを埋めてカバレッジが完全になるまでループします。](assets/workflow.svg)
 
 多くの組み合わせテストツールは `generate` のみをサポートしています。coverwise は `analyze` と `extend` を同等の操作として扱います。
+
+## ドキュメント
+
+- [イントロダクション](docs/ja/introduction.md)
+- [はじめに](docs/ja/getting-started.md)
+- [実例集](docs/ja/examples.md)
+- [制約構文](docs/ja/constraints.md)
+- [JavaScript API](docs/ja/js-api.md)
+- [C++ API](docs/ja/cpp-api.md)
+- [CLI リファレンス](docs/ja/cli.md)
+- [用語集](docs/ja/glossary.md)
 
 ## クイックスタート
 

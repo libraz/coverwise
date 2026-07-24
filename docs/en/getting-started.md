@@ -12,6 +12,8 @@ yarn add @libraz/coverwise
 
 ### C++ (Native)
 
+For headers, linking, and the complete API, see the [C++ API](cpp-api.md).
+
 ```bash
 git clone https://github.com/libraz/coverwise.git
 cd coverwise
@@ -21,6 +23,8 @@ cmake --install build --prefix ./install
 ```
 
 ### CLI
+
+For commands, JSON schemas, and exit codes, see the [CLI Reference](cli.md).
 
 Linux x64 archives are available from [GitHub Releases](https://github.com/libraz/coverwise/releases).
 The npm package does not install the native CLI. To build it from source:
@@ -110,7 +114,9 @@ coverwise generate input.json > tests.json
 Real systems have invalid combinations. Add constraints to exclude them:
 
 ```typescript
-import { when } from '@libraz/coverwise';
+import { Coverwise, when } from '@libraz/coverwise';
+
+const cw = await Coverwise.create();
 
 const result = cw.generate({
   parameters: [
@@ -168,7 +174,7 @@ const result = cw.extendTests(existingTests, {
 
 // result.tests includes your existing tests + new ones
 const newTests = result.tests.slice(existingTests.length);
-console.log(`Added ${newTests.length} new tests to reach 100% coverage`);
+console.log(`Added ${newTests.length} new tests; coverage is ${result.coverage * 100}%`);
 ```
 
 ## Deterministic Output
@@ -187,4 +193,6 @@ const result = cw.generate({
 
 - [Examples](examples.md) — Negative testing, mixed strength, boundary values, and more
 - [JavaScript API](js-api.md) — Full API reference
+- [C++ API](cpp-api.md) — Native library reference
+- [CLI Reference](cli.md) — Command-line commands and JSON schemas
 - [Constraint Syntax](constraints.md) — Complete constraint language reference

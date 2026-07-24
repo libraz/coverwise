@@ -32,7 +32,7 @@ async function init(): Promise<void>
 
 ## `generate(input)`
 
-Generate a minimal covering array from parameters and options.
+Generate a covering test suite from parameters and options.
 
 ```typescript
 function generate(input: GenerateInput): GenerateResult
@@ -45,8 +45,8 @@ interface GenerateInput {
   parameters: Parameter[];       // Required. At least 1 parameter.
   constraints?: string[];        // Constraint expressions.
   strength?: number;             // Interaction strength (positive integer). Default: 2 (pairwise).
-  seed?: number;                 // RNG seed for determinism (finite number). Default: 0.
-  maxTests?: number;             // Max test count. 0 = no limit (default).
+  seed?: number;                 // RNG seed: uint32 integer [0, 4294967295]. Default: 0.
+  maxTests?: number;             // uint32 integer [0, 4294967295]. 0 = no limit (default).
   weights?: WeightConfig;        // Value weight hints.
   seeds?: TestCase[];            // Existing test cases to build upon.
   subModels?: SubModel[];        // Mixed-strength sub-models.
@@ -56,14 +56,15 @@ interface GenerateInput {
 ### Parameter
 
 ```typescript
-interface Parameter {
+interface ParameterBase {
   name: string;
   values: (string | number | boolean | ParameterValue)[];
-  // Boundary expansion is all-or-nothing: type and range are both required.
-  type?: 'integer' | 'float';  // Enables boundary value expansion.
-  range?: [number, number];    // Inclusive [min, max] range when type is set.
-  step?: number;               // Float step (default 1.0); integer accepts only 1.
 }
+
+type Parameter =
+  | (ParameterBase & { type?: never; range?: never; step?: never })
+  | (ParameterBase & { type: 'integer'; range: [number, number]; step?: 1 })
+  | (ParameterBase & { type: 'float'; range: [number, number]; step?: number });
 
 interface ParameterValue {
   value: string | number | boolean;
@@ -72,6 +73,8 @@ interface ParameterValue {
   class?: string;        // Equivalence class name.
 }
 ```
+
+`Parameter` is a discriminated union. A discrete parameter has none of `type`, `range`, or `step`; a boundary parameter must specify both `type` and `range`. `range` is inclusive, float `step` defaults to `1.0`, and integer `step` may only be `1`. Partial or mismatched boundary fields are rejected.
 
 **Simple values:**
 
@@ -154,6 +157,8 @@ interface GenerateResult {
   negativeCoverage?: NegativeCoverage; // Feasible single-fault negative-tuple coverage.
   coverage: number;                 // Coverage ratio (0.0 – 1.0).
   uncovered: UncoveredTuple[];      // Uncovered tuples with reasons.
+  uncoveredCount: number;           // Total uncovered tuples before diagnostic truncation.
+  omittedUncovered: number;         // Number omitted from `uncovered` by that truncation.
   stats: GenerateStats;
   suggestions: Suggestion[];        // Actionable suggestions.
   warnings: string[];               // Warnings (e.g., coverage < 100%, seed count exceeds maxTests).
@@ -211,7 +216,7 @@ function analyzeCoverage(
 ): CoverageReport
 ```
 
-When `constraints` is supplied, tuples that violate any constraint are **removed from the coverage universe entirely** — they do not count toward `totalTuples`, `coveredTuples`, or `uncovered`. This matches the generator's semantics, so analyzing a generated suite always yields `coverageRatio === 1.0`.
+When `constraints` is supplied, the coverage universe contains only tuples that can be completed into a full test case satisfying every constraint. Tuples that cannot be fully completed are excluded from `totalTuples`, `coveredTuples`, and `uncovered`. This matches generation semantics. Analyzing a generated suite yields `coverageRatio === 1.0` only when generation completed successfully with full coverage; it can be lower when `maxTests` caps generation (or generation otherwise reports incomplete coverage).
 
 ### CoverageReport
 
@@ -221,6 +226,9 @@ interface CoverageReport {
   coveredTuples: number;
   coverageRatio: number;          // 0.0 – 1.0
   uncovered: UncoveredTuple[];    // What's missing.
+  uncoveredCount: number;         // Total uncovered tuples before diagnostic truncation.
+  omittedUncovered: number;       // Number omitted from `uncovered` by that truncation.
+  invalidTests: Array<{ testIndex: number; reason: string }>; // Rows excluded from coverage accounting.
 }
 ```
 
@@ -248,6 +256,14 @@ function extendTests(
   input: ExtendInput,
 ): GenerateResult
 ```
+
+```typescript
+interface ExtendInput extends GenerateInput {
+  mode?: 'strict'; // Default and only supported mode.
+}
+```
+
+`strict` keeps every existing test exactly as-is and appends only new tests. Any other `mode` value is rejected.
 
 The returned `result.tests` contains the existing tests followed by new tests. The delta:
 
@@ -290,9 +306,11 @@ interface ModelStats {
 Build constraints programmatically instead of writing strings:
 
 ```typescript
-import { when, not, allOf, anyOf } from '@libraz/coverwise';
+import { init, generate, when, not, allOf } from '@libraz/coverwise';
 
-const result = cw.generate({
+await init();
+
+const result = generate({
   parameters: [/* ... */],
   constraints: [
     when('os').eq('Windows').then(when('browser').ne('Safari')).toString(),
@@ -311,8 +329,8 @@ See [Constraint Syntax](constraints.md) for the full builder API reference.
 The Pure TypeScript API validates inputs and throws descriptive errors for:
 
 - `strength`: Must be a positive integer. Non-integer, negative, or zero values are rejected.
-- `seed`: Must be a finite number. `NaN` and `Infinity` are rejected.
-- `maxTests`: Must be a non-negative integer when provided.
+- `seed`: Must be a uint32 integer in `[0, 4294967295]`.
+- `maxTests`: Must be a uint32 integer in `[0, 4294967295]`; `0` means no limit.
 - `parameters`: Must be a non-empty array.
 - Resource limits apply to public input: at most 1,024 parameters, 16,384 values per parameter, 100,000 test rows, 256 constraints, 64 KiB per string, and 1 MiB of aggregate string data.
 

@@ -10,7 +10,7 @@
 
 ### `coverwise::core::Generate`
 
-最小カバリング配列を生成します。
+指定したモデルのカバリングテストスイートを生成します。
 
 ```cpp
 namespace coverwise::core {
@@ -74,6 +74,34 @@ namespace coverwise::validator {
 
 ## データ型
 
+### `model::ParseConstraint` と `model::ParseOptions`
+
+検証で使うため、制約 DSL を `Constraint` AST にパースします。名前解決はデフォルトで
+大文字小文字を区別しません。完全一致を必須にするには `case_sensitive` を設定します。
+
+```cpp
+struct ParseResult {
+  Constraint constraint;  // パース失敗時は nullptr。
+  Error error;
+};
+
+struct ParseOptions {
+  bool case_sensitive = false;
+};
+
+ParseResult ParseConstraint(
+  const std::string& expression,
+  const std::vector<Parameter>& parameters,
+  const ParseOptions& options = {}
+);
+
+Error AnnotateConstraintError(const std::string& expression, Error error);
+```
+
+`Constraint` は `ConstraintNode` を所有するムーブ専用ポインタです。パーサーは
+`IF`/`THEN`/`ELSE`、`IMPLIES`、`AND`、`OR`、`NOT`、`IN`、`LIKE`、`=`、`!=`、数値比較、
+パラメータ間比較をサポートします。
+
 ### `model::GenerateOptions`
 
 ```cpp
@@ -97,6 +125,7 @@ struct Parameter {
   std::string name;
   std::vector<std::string> values;
 
+  Parameter() = default;
   Parameter(std::string name, std::vector<std::string> values);
   Parameter(std::string name, std::vector<std::string> values,
             std::vector<bool> invalid);
@@ -109,6 +138,7 @@ struct Parameter {
   bool is_invalid(uint32_t index) const;
   uint32_t valid_count() const;
   uint32_t invalid_count() const;
+  bool has_invalid_values() const;
 
   // エイリアス。
   void set_aliases(std::vector<std::vector<std::string>> aliases);
@@ -130,7 +160,35 @@ struct Parameter {
     bool case_sensitive = true
   ) const;  // 見つからない場合はUINT32_MAX。
 };
+
+bool HasInvalidValues(const std::vector<Parameter>& parameters);
+Error ValidateParameters(const std::vector<Parameter>& parameters);
 ```
+
+`invalid`、エイリアス、同値クラスのベクタは値ごとのメタデータです。存在する場合は
+`values` と同じ長さでなければなりません。`find_value_index` はエイリアスも検索します。
+`ValidateParameters` は空または重複したパラメータ名、値を持たないパラメータ、同一
+パラメータ内の重複値、不正なメタデータを拒否します。
+
+### `model::BoundaryConfig`
+
+```cpp
+struct BoundaryConfig {
+  enum class Type { kInteger, kFloat };
+  Type type = Type::kInteger;
+  double min_value = 0;
+  double max_value = 0;
+  double step = 1.0;
+};
+
+Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&);
+Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&, Error* error);
+```
+
+境界値展開は、元の値に対して整数では `min-1`、`min`、`min+1`、`max-1`、`max`、`max+1`
+を、浮動小数点では `1` の代わりに `step` を使って追加し、重複を除去して数値順に並べます。
+生成結果は展開後のパラメータを返すため、`TestCase` の値インデックスは
+`GenerateResult::parameters` を基準に表示してください。
 
 ### `model::TestCase`
 
@@ -165,6 +223,24 @@ struct GenerateStats {
   uint32_t test_count = 0;
 };
 
+struct NegativeCoverage {
+  uint64_t total_tuples = 0;
+  uint64_t covered_tuples = 0;
+  uint64_t omitted_tuples = 0;
+  double coverage_ratio = 1.0;
+};
+
+struct ClassCoverage {
+  uint64_t total_class_tuples = 0;
+  uint64_t covered_class_tuples = 0;
+  double class_coverage_ratio = 0.0;
+};
+
+struct Suggestion {
+  std::string description;
+  TestCase test_case;
+};
+
 struct UncoveredTuple {
   std::vector<std::string> tuple;
   std::vector<std::string> params;
@@ -173,6 +249,14 @@ struct UncoveredTuple {
   std::string ToString() const;
 };
 ```
+
+`tests` にはポジティブな行だけが入り、`negative_tests` には無効値をちょうど1つ含む行が
+入ります。無効値が設定されている場合、`negative_coverage` は実行可能な単一障害タプルを
+数えます。`max_tests` はポジティブとネガティブを合わせたスイートに適用されるため、ネガ
+ティブカバレッジは未完了になることがあります。その場合は `omitted_tuples` と警告を確認
+してください。サブモデルがある場合、`coverage` はグローバルおよび各サブモデルエンジン
+の最小比率であり、合否判定に使う値です。`warnings` は致命的でない診断、`error` は早期
+失敗時だけ非 OK になります。
 
 ### `model::SubModel`
 
@@ -193,6 +277,30 @@ struct WeightConfig {
 };
 ```
 
+### `model::ModelStats`
+
+```cpp
+struct ModelStats {
+  uint32_t parameter_count = 0;
+  uint32_t total_values = 0;
+  uint32_t strength = 0;
+  uint64_t total_tuples = 0;
+  uint32_t estimated_tests = 0;
+  uint32_t sub_model_count = 0;
+  uint32_t constraint_count = 0;
+  struct ParamDetail {
+    std::string name;
+    uint32_t value_count = 0;
+    uint32_t invalid_count = 0;
+  };
+  std::vector<ParamDetail> parameters;
+  Error error;
+};
+```
+
+`total_tuples` は制約除外前の、グローバルとサブモデルを合わせた生の上限です。
+`EstimateModel` は推定を返す前に制約と参照を検証します。
+
 ### `validator::CoverageReport`
 
 ```cpp
@@ -208,6 +316,29 @@ struct CoverageReport {
   model::Error error;
 };
 ```
+
+### `validator::ClassCoverageReport`
+
+```cpp
+struct ClassCoverageReport {
+  uint64_t total_class_tuples = 0;
+  uint64_t covered_class_tuples = 0;
+  double coverage_ratio = 0.0;
+  model::Error error;
+};
+
+ClassCoverageReport ComputeClassCoverage(
+  const std::vector<model::Parameter>& parameters,
+  const std::vector<model::TestCase>& tests,
+  uint32_t strength,
+  const std::vector<model::Constraint>& constraints = {}
+);
+```
+
+値レベルでもクラスレベルでも、無効値を含むタプルは除外されます。制約がある場合、部分
+タプルが除外されるのは、すべての制約を満たす有効値の完全な割り当てへ補完できない場合
+だけです。部分タプル単体の評価が `false` かどうかだけでは判定しません。これにより、
+相互に作用する制約でも到達不能なタプルを正しく除外できます。
 
 ## 使用例
 

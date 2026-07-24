@@ -14,7 +14,7 @@ statsの名称を`subModelCount`、`constraintCount`、`parameters`へ統一し�
 
 ### `generate`
 
-JSON 仕様から最小カバリング配列を生成します。
+JSON 仕様からカバリングテストスイートを生成します。
 
 ```bash
 coverwise generate <input.json> [> output.json]
@@ -30,18 +30,8 @@ coverwise generate <input.json> [> output.json]
   ],
   "strength": 2,
   "seed": 42,
-  "maxTests": 0,
   "constraints": [
     "IF os = Windows THEN browser != Safari"
-  ],
-  "weights": {
-    "os": { "Windows": 2.0 }
-  },
-  "seeds": [
-    { "os": "Windows", "browser": "Chrome" }
-  ],
-  "subModels": [
-    { "parameters": ["os", "browser"], "strength": 2 }
   ]
 }
 ```
@@ -54,7 +44,13 @@ coverwise generate <input.json> [> output.json]
 {
   "schemaVersion": 1,
   "tests": [
+    { "os": "Linux", "browser": "Firefox" },
     { "os": "Windows", "browser": "Chrome" },
+    { "os": "Windows", "browser": "Firefox" },
+    { "os": "macOS", "browser": "Chrome" },
+    { "os": "macOS", "browser": "Safari" },
+    { "os": "Linux", "browser": "Safari" },
+    { "os": "Linux", "browser": "Chrome" },
     { "os": "macOS", "browser": "Firefox" }
   ],
   "negativeTests": [],
@@ -63,15 +59,27 @@ coverwise generate <input.json> [> output.json]
   "uncoveredCount": 0,
   "omittedUncovered": 0,
   "stats": {
-    "totalTuples": 9,
-    "coveredTuples": 9,
-    "testCount": 6
+    "totalTuples": 8,
+    "coveredTuples": 8,
+    "testCount": 8
   },
   "suggestions": [],
   "warnings": [],
   "strength": 2
 }
 ```
+
+これは、同梱ジェネレータで上記の入力を実行した正確な結果です。制約により
+`os=Windows, browser=Safari` は実行不能となるため、要求強度のペアは8個残ります。
+固定した入力とシードに対する出力順は決定的ですが、バージョンをまたぐ順序の契約として
+利用しないでください。
+
+`"invalid": true` とした値はポジティブカバレッジから除外され、別のネガティブテストとして
+処理されます。無効値がある場合、出力には `negativeCoverage`（`totalTuples`、
+`coveredTuples`、`omittedTuples`、`coverageRatio`）も含まれます。`maxTests` はポジティブと
+ネガティブを合わせたスイートに制限をかけるため、ネガティブ生成は未完了になることがあり
+ます。すべてのネガティブタプルが出力されたと決めつけず、`negativeCoverage` と `warnings`
+を確認してください。
 
 ### `analyze`
 
@@ -84,7 +92,7 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
 - `--params` — パラメータ定義の JSON ファイル
 - `--tests` — テストケースの JSON ファイル
 - `--strength` — 相互作用の強度（デフォルト: 2）
-- `--constraints` — 制約文字列の JSON ファイル（任意）。制約に違反するタプルはカバレッジの分母から除外されるため、制約付きで完全にカバーされたスイートは 100% と報告されます。
+- `--constraints` — 制約文字列の JSON ファイル（任意）。タプルがカバレッジの対象から除外されるのは、すべての制約を満たす有効値の完全な割り当てへ補完できない場合だけです。部分的な制約評価だけを違反とみなすことなく、制約付きで完全にカバーされたスイートは 100% と報告されます。
 
 `--tests` と `--existing` は、テスト配列そのものに加え `generate` が出力する schema-v1 エンベロープも受け付けます。したがって `coverwise generate input.json > tests.json` の出力をそのまま後続コマンドへ渡せます。
 

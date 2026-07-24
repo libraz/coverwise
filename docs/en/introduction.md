@@ -2,7 +2,7 @@
 
 ## What Is coverwise?
 
-coverwise is a combinatorial test generation engine. Given a valid, satisfiable model within the resource budget, it produces a compact set of test cases that covers every required t-wise combination when no restrictive `maxTests` limit is set. Constraint-unreachable tuples are excluded from the required coverage universe.
+coverwise is a combinatorial test generation engine. Given a valid, satisfiable model within the resource budget, it generates a compact test suite and reports its achieved t-wise coverage. With no restrictive `maxTests` limit, it attempts to cover every required tuple. Tuples that cannot occur in any valid complete test case are excluded from the coverage universe.
 
 It runs in **browsers**, **Node.js**, and as **native C++**, with zero platform-specific dependencies in the JavaScript build thanks to WebAssembly.
 
@@ -45,7 +45,7 @@ A **parameter** is a dimension of variation in your system under test. Each para
 
 - **t = 2** (pairwise): Every pair of parameter values appears together in at least one test
 - **t = 3** (3-wise): Every triple of parameter values appears in at least one test
-- Higher strength = more tests, stronger guarantees
+- Higher strength usually means more tests and covers interactions among more parameters
 
 ### Constraints
 
@@ -59,7 +59,7 @@ No invalid combination will ever appear in the output.
 
 ### Coverage
 
-**Coverage** measures the fraction of required t-wise tuples that appear in your test suite. coverwise always targets 100% coverage, and reports exactly which combinations are missing if it can't reach that (e.g., due to a `maxTests` limit).
+**Coverage** measures the fraction of required t-wise tuples that appear in your test suite. coverwise targets 100% coverage and reports the remaining required tuples when it stops short (for example, because of a `maxTests` limit).
 
 ## Design Philosophy
 
@@ -128,3 +128,5 @@ For pairwise testing (the most common use case), WASM and Pure TS perform equall
 - [Getting Started](getting-started.md) — Install and generate your first test suite
 - [Examples](examples.md) — Real-world usage patterns
 - [Constraint Syntax](constraints.md) — Write constraint expressions
+- [C++ API](cpp-api.md) — Native library reference
+- [CLI Reference](cli.md) — JSON command-line interface

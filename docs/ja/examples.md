@@ -2,17 +2,17 @@
 
 よくあるテストシナリオの実践的なレシピ集です。
 
-以下のスニペットはクラスベース API を使います。実行前に `cw` を一度だけ初期化してください：
+以下のレシピは、クラスベース API を使う TypeScript の断片です。同じモジュールに次の準備コードを置き、その後で各レシピを実行してください：
 
 ```typescript
-import { Coverwise } from '@libraz/coverwise';
+import { Coverwise, when, allOf } from '@libraz/coverwise';
 
 const cw = await Coverwise.create();
 ```
 
 ## 基本的なペアワイズ生成
 
-最も一般的なケース — すべてのパラメータペアを網羅する最小テストセットを生成：
+最も一般的なケース — すべてのパラメータペアの網羅を目標に、コンパクトなテストセットを生成：
 
 ```typescript
 const result = cw.generate({
@@ -32,8 +32,6 @@ console.log(`${result.tests.length} テストで全 ${result.stats.totalTuples} 
 テストに不可能な組み合わせが含まれないようにします：
 
 ```typescript
-import { when, allOf } from '@libraz/coverwise';
-
 const result = cw.generate({
   parameters: [
     { name: 'os',      values: ['Windows', 'macOS', 'iOS', 'Android'] },
@@ -136,7 +134,7 @@ if (result.classCoverage) {
 
 ## 重み付けヒント
 
-複数の候補が同等のカバレッジを提供する場合に値の選択を制御：
+複数の候補が同等のカバレッジを提供する場合に値の選択へ影響を与えます。重みは頻度を保証するものではなく、選好として扱われます：
 
 ```typescript
 const result = cw.generate({
@@ -149,7 +147,7 @@ const result = cw.generate({
     browser: { Chrome: 2.0 },
   },
 });
-// Windows と Chrome が出力により頻繁に出現します。
+// カバレッジが同等なら、重みの高い値が優先されます。
 ```
 
 ## シードテスト：既存テストの活用
@@ -181,12 +179,14 @@ const result = cw.generate({
   "parameters": [
     {
       "name": "port",
+      "values": [],
       "type": "integer",
       "range": [1, 65535],
       "step": 1
     },
     {
       "name": "timeout",
+      "values": [],
       "type": "float",
       "range": [0.1, 30.0],
       "step": 0.1

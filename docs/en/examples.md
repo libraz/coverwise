@@ -2,18 +2,18 @@
 
 Practical recipes for common testing scenarios.
 
-The snippets below use the class-based API. Initialize `cw` once before running
-them:
+The recipes below are TypeScript fragments that use the class-based API. Put the
+following setup in the same module, then run a recipe after it:
 
 ```typescript
-import { Coverwise } from '@libraz/coverwise';
+import { Coverwise, when, allOf } from '@libraz/coverwise';
 
 const cw = await Coverwise.create();
 ```
 
 ## Basic Pairwise Generation
 
-The most common case — generate a minimal test set covering all parameter pairs:
+The most common case — generate a compact test set that targets all parameter pairs:
 
 ```typescript
 const result = cw.generate({
@@ -33,8 +33,6 @@ console.log(`${result.tests.length} tests cover all ${result.stats.totalTuples} 
 Prevent impossible combinations from appearing in tests:
 
 ```typescript
-import { when, allOf } from '@libraz/coverwise';
-
 const result = cw.generate({
   parameters: [
     { name: 'os',      values: ['Windows', 'macOS', 'iOS', 'Android'] },
@@ -137,7 +135,8 @@ if (result.classCoverage) {
 
 ## Weight Hints
 
-Influence value selection when multiple candidates offer equal coverage:
+Influence value selection when multiple candidates offer equal coverage. Weights are
+preferences, not a frequency guarantee:
 
 ```typescript
 const result = cw.generate({
@@ -150,7 +149,7 @@ const result = cw.generate({
     browser: { Chrome: 2.0 },
   },
 });
-// Windows and Chrome will appear more frequently in the output.
+// Higher-weight values are preferred when coverage is otherwise equivalent.
 ```
 
 ## Seed Tests: Building on Existing Tests
@@ -182,12 +181,14 @@ Auto-expand numeric ranges into edge and near-edge values:
   "parameters": [
     {
       "name": "port",
+      "values": [],
       "type": "integer",
       "range": [1, 65535],
       "step": 1
     },
     {
       "name": "timeout",
+      "values": [],
       "type": "float",
       "range": [0.1, 30.0],
       "step": 0.1

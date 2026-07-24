@@ -20,11 +20,14 @@ Generalization of pairwise testing. **t** (the strength) is the number of parame
 
 The number of parameters in each coverage unit. For strength t, every possible combination of values from any t parameters must appear in the test suite.
 
-| Strength | Coverage | Typical Test Count |
-|----------|----------|-------------------|
-| 2 | All pairs | Grows logarithmically |
-| 3 | All triples | Grows faster |
-| t | All t-tuples | Grows as O(v^t · log n) |
+| Strength | Coverage | Test-count implication |
+|----------|----------|------------------------|
+| 2 | All pairs | Usually much smaller than exhaustive testing |
+| 3 | All triples | Usually requires more rows than pairwise coverage |
+| t | All t-tuples | Depends on parameter domains, constraints, and the generator |
+
+There is no general test-count formula for a concrete constrained model. Treat
+`stats` as an estimate and generated coverage as the result to verify.
 
 ### Parameter
 
@@ -54,13 +57,19 @@ A required t-wise combination that does not appear in any test case. coverwise r
 
 ### Total Tuples
 
-The total number of t-wise combinations that need to be covered, after excluding constraint-violating combinations.
+The number of required t-wise combinations after exclusions. Tuples containing a
+value marked invalid are excluded from positive coverage. With constraints, a
+tuple is excluded only if no full assignment of valid values can complete it
+while satisfying every constraint.
 
 ## Constraints
 
 ### Constraint
 
-A boolean expression that defines invalid parameter combinations. Test cases violating constraints are never generated.
+A boolean expression that defines invalid parameter combinations. Positive test
+cases violating constraints are never generated. For coverage accounting, a
+partial tuple is removed only when no valid full completion can satisfy all
+constraints.
 
 ### Constraint Pruning
 
@@ -78,7 +87,14 @@ An existing test case provided as input. The generator preserves seed tests and 
 
 ### Negative Test
 
-A test case containing exactly one invalid value. Used to verify that the system correctly rejects bad input. coverwise generates these automatically from values marked as `invalid`.
+A test case containing exactly one invalid value. Used to verify that the system
+correctly rejects bad input. coverwise generates these separately from values
+marked as `invalid`; invalid values never count toward positive coverage.
+
+Negative generation targets feasible requested-strength tuples containing one
+invalid value. A `maxTests` limit applies to both positive and negative rows, so
+negative generation can be incomplete. Check `negativeCoverage` and `warnings`
+for the covered and omitted negative tuples.
 
 ### Equivalence Class
 

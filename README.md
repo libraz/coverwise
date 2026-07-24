@@ -8,7 +8,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20WebAssembly-lightgrey)](https://github.com/libraz/coverwise)
 
-Combinatorial test coverage engine. Analyzes existing tests for coverage gaps, generates minimal test suites, and extends tests incrementally — in browsers, Node.js, and native C++.
+Combinatorial test coverage engine. Analyzes existing tests for coverage gaps, generates compact test suites, and extends tests incrementally — in browsers, Node.js, and native C++.
 
 ## Overview
 
@@ -16,11 +16,22 @@ coverwise provides three operations that form a test design loop:
 
 - **`analyze`** — Measure an existing test suite's t-wise coverage and list uncovered combinations
 - **`extend`** — Generate only the tests needed to close coverage gaps
-- **`generate`** — Create a minimal test suite from scratch with full coverage
+- **`generate`** — Create a compact test suite from scratch with full coverage when the model is satisfiable and no `maxTests` limit prevents it
 
 ![coverwise workflow: generate builds a suite from scratch; analyze measures coverage; extend closes the gaps and loops back until coverage is complete.](assets/workflow.svg)
 
 Most combinatorial tools only support `generate`. coverwise treats `analyze` and `extend` as first-class operations.
+
+## Documentation
+
+- [Introduction](docs/en/introduction.md)
+- [Getting Started](docs/en/getting-started.md)
+- [Examples](docs/en/examples.md)
+- [Constraint Syntax](docs/en/constraints.md)
+- [JavaScript API](docs/en/js-api.md)
+- [C++ API](docs/en/cpp-api.md)
+- [CLI Reference](docs/en/cli.md)
+- [Glossary](docs/en/glossary.md)
 
 ## Quick Start
 

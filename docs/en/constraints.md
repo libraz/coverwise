@@ -1,6 +1,15 @@
 # Constraint Syntax
 
-Constraints define invalid parameter combinations that must never appear in generated tests. coverwise evaluates constraints during generation and prunes violating candidates.
+Constraints define invalid parameter combinations that coverwise excludes during generation. The same constraint strings are available in JavaScript, the C++ API, and CLI JSON input; the fluent builder below is JavaScript-only.
+
+All TypeScript samples below are fragments. In a runnable module, use this setup
+first; expression-only samples belong in a `constraints` array.
+
+```typescript
+import { Coverwise, when, not, allOf, anyOf } from '@libraz/coverwise';
+
+const cw = await Coverwise.create();
+```
 
 ## Basic Syntax
 
@@ -82,7 +91,7 @@ IF input_format != output_format THEN convert = true
 Pass multiple constraints as an array. All constraints must be satisfied simultaneously:
 
 ```typescript
-generate({
+cw.generate({
   parameters: [/* ... */],
   constraints: [
     'IF os = Windows THEN browser != Safari',
@@ -135,19 +144,15 @@ IF (os = iOS OR os = Android) AND screen_size < 7 THEN device = phone
 
 If constraints make certain tuples impossible, coverwise handles this gracefully:
 
-- Constraint-violating combinations are excluded from the coverage target
-- The generator never produces constraint-violating test cases
-- Uncovered tuples report whether they were excluded by constraints
+- Tuples that cannot occur in any valid complete test case are excluded from the coverage universe
+- Constraint-violating tuples therefore do not appear in `uncovered`
+- If a `maxTests` limit prevents full coverage, `uncovered` contains only remaining required tuples
 
 If constraints are contradictory (no valid combination exists), generation returns an error with code `CONSTRAINT_ERROR`.
 
 ## Constraint Builder (JavaScript)
 
 Build constraints programmatically with the fluent API. Builder objects produce valid constraint strings via `toString()`.
-
-```typescript
-import { when, not, allOf, anyOf } from '@libraz/coverwise';
-```
 
 ### Basic Comparisons
 
@@ -207,8 +212,6 @@ not(allOf(when('os').eq('win'), when('browser').eq('safari')))
 Builder objects must be converted to strings with `.toString()`:
 
 ```typescript
-const cw = await Coverwise.create();
-
 cw.generate({
   parameters: [/* ... */],
   constraints: [

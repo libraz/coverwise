@@ -10,7 +10,7 @@ All public APIs are in the `coverwise` namespace. Include `coverwise.h` for the 
 
 ### `coverwise::core::Generate`
 
-Generate a minimal covering array.
+Generate a covering test suite for the requested model.
 
 ```cpp
 namespace coverwise::core {
@@ -74,6 +74,35 @@ namespace coverwise::validator {
 
 ## Data Types
 
+### `model::ParseConstraint` and `model::ParseOptions`
+
+Parse the constraint DSL into a `Constraint` AST for use with validation. Name
+resolution is case-insensitive by default; set `case_sensitive` to require exact
+parameter and value names.
+
+```cpp
+struct ParseResult {
+  Constraint constraint;  // nullptr when parsing fails.
+  Error error;
+};
+
+struct ParseOptions {
+  bool case_sensitive = false;
+};
+
+ParseResult ParseConstraint(
+  const std::string& expression,
+  const std::vector<Parameter>& parameters,
+  const ParseOptions& options = {}
+);
+
+Error AnnotateConstraintError(const std::string& expression, Error error);
+```
+
+`Constraint` is an owning pointer to a `ConstraintNode`; it is move-only. The
+parser supports `IF`/`THEN`/`ELSE`, `IMPLIES`, `AND`, `OR`, `NOT`, `IN`, `LIKE`,
+`=`, `!=`, numeric comparisons, and parameter-to-parameter comparisons.
+
 ### `model::GenerateOptions`
 
 ```cpp
@@ -97,6 +126,7 @@ struct Parameter {
   std::string name;
   std::vector<std::string> values;
 
+  Parameter() = default;
   Parameter(std::string name, std::vector<std::string> values);
   Parameter(std::string name, std::vector<std::string> values,
             std::vector<bool> invalid);
@@ -109,6 +139,7 @@ struct Parameter {
   bool is_invalid(uint32_t index) const;
   uint32_t valid_count() const;
   uint32_t invalid_count() const;
+  bool has_invalid_values() const;
 
   // Aliases.
   void set_aliases(std::vector<std::vector<std::string>> aliases);
@@ -130,7 +161,36 @@ struct Parameter {
     bool case_sensitive = true
   ) const;  // UINT32_MAX when not found.
 };
+
+bool HasInvalidValues(const std::vector<Parameter>& parameters);
+Error ValidateParameters(const std::vector<Parameter>& parameters);
 ```
+
+The `invalid`, alias, and equivalence-class vectors are per-value metadata:
+when present, each must have the same length as `values`. `find_value_index`
+also searches aliases. `ValidateParameters` rejects empty or duplicate parameter
+names, parameters with no values, duplicate values within a parameter, and
+malformed metadata.
+
+### `model::BoundaryConfig`
+
+```cpp
+struct BoundaryConfig {
+  enum class Type { kInteger, kFloat };
+  Type type = Type::kInteger;
+  double min_value = 0;
+  double max_value = 0;
+  double step = 1.0;
+};
+
+Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&);
+Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&, Error* error);
+```
+
+Boundary expansion merges, de-duplicates, and numerically sorts the original
+values with `min-1`, `min`, `min+1`, `max-1`, `max`, and `max+1` for integers;
+for floats it uses `step` in place of `1`. Generation returns the expanded
+parameters, so render `TestCase` value indices against `GenerateResult::parameters`.
 
 ### `model::TestCase`
 
@@ -165,6 +225,24 @@ struct GenerateStats {
   uint32_t test_count = 0;
 };
 
+struct NegativeCoverage {
+  uint64_t total_tuples = 0;
+  uint64_t covered_tuples = 0;
+  uint64_t omitted_tuples = 0;
+  double coverage_ratio = 1.0;
+};
+
+struct ClassCoverage {
+  uint64_t total_class_tuples = 0;
+  uint64_t covered_class_tuples = 0;
+  double class_coverage_ratio = 0.0;
+};
+
+struct Suggestion {
+  std::string description;
+  TestCase test_case;
+};
+
 struct UncoveredTuple {
   std::vector<std::string> tuple;
   std::vector<std::string> params;
@@ -173,6 +251,15 @@ struct UncoveredTuple {
   std::string ToString() const;
 };
 ```
+
+`tests` contains only positive rows; `negative_tests` contains rows with exactly
+one invalid value. When invalid values are configured, `negative_coverage`
+counts feasible single-fault tuples. A `max_tests` limit applies to the combined
+positive and negative suite, so negative coverage can be incomplete and the
+result records `omitted_tuples` and warnings. `coverage` is the minimum ratio
+across the global and any sub-model engines; it is the pass/fail metric when
+sub-models are in use. `warnings` carries non-fatal diagnostics, while `error`
+is non-OK only for an early failure.
 
 ### `model::SubModel`
 
@@ -193,6 +280,31 @@ struct WeightConfig {
 };
 ```
 
+### `model::ModelStats`
+
+```cpp
+struct ModelStats {
+  uint32_t parameter_count = 0;
+  uint32_t total_values = 0;
+  uint32_t strength = 0;
+  uint64_t total_tuples = 0;
+  uint32_t estimated_tests = 0;
+  uint32_t sub_model_count = 0;
+  uint32_t constraint_count = 0;
+  struct ParamDetail {
+    std::string name;
+    uint32_t value_count = 0;
+    uint32_t invalid_count = 0;
+  };
+  std::vector<ParamDetail> parameters;
+  Error error;
+};
+```
+
+`total_tuples` is a raw global-plus-sub-model upper bound before constraint
+exclusion. `EstimateModel` validates constraints and references before returning
+the estimate.
+
 ### `validator::CoverageReport`
 
 ```cpp
@@ -208,6 +320,30 @@ struct CoverageReport {
   model::Error error;
 };
 ```
+
+### `validator::ClassCoverageReport`
+
+```cpp
+struct ClassCoverageReport {
+  uint64_t total_class_tuples = 0;
+  uint64_t covered_class_tuples = 0;
+  double coverage_ratio = 0.0;
+  model::Error error;
+};
+
+ClassCoverageReport ComputeClassCoverage(
+  const std::vector<model::Parameter>& parameters,
+  const std::vector<model::TestCase>& tests,
+  uint32_t strength,
+  const std::vector<model::Constraint>& constraints = {}
+);
+```
+
+For either value or class coverage, a tuple containing an invalid value is
+excluded. With constraints, a partial tuple is excluded only when it has no
+completion to a full assignment of valid values satisfying every constraint;
+it is not enough to test whether the partial tuple itself currently evaluates
+to false. This lets interacting constraints correctly remove unreachable tuples.
 
 ## Example
 

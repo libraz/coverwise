@@ -1,6 +1,14 @@
 # 制約構文
 
-制約は、生成テストに含めてはならない無効なパラメータの組み合わせを定義します。coverwise は生成中に制約を評価し、違反する候補を剪定します。
+制約は、coverwise が生成時に除外する無効なパラメータの組み合わせを定義します。同じ制約文字列は JavaScript、C++ API、CLI の JSON 入力で使えます。下記の fluent builder は JavaScript 専用です。
+
+以下の TypeScript サンプルはすべて断片です。実行可能なモジュールでは、まず次の準備コードを置いてください。式だけを示すサンプルは、`constraints` 配列に入れます。
+
+```typescript
+import { Coverwise, when, not, allOf, anyOf } from '@libraz/coverwise';
+
+const cw = await Coverwise.create();
+```
 
 ## 基本構文
 
@@ -82,7 +90,7 @@ IF input_format != output_format THEN convert = true
 複数の制約を配列で渡します。すべての制約が同時に満たされる必要があります：
 
 ```typescript
-generate({
+cw.generate({
   parameters: [/* ... */],
   constraints: [
     'IF os = Windows THEN browser != Safari',
@@ -135,19 +143,15 @@ IF (os = iOS OR os = Android) AND screen_size < 7 THEN device = phone
 
 制約によって特定のタプルが不可能になった場合、coverwise は適切に処理します：
 
-- 制約違反の組み合わせはカバレッジ対象から除外
-- ジェネレータは制約違反テストケースを生成しない
-- 未カバータプルは制約による除外かどうかを報告
+- 有効な完全テストケースに含められないタプルは、カバレッジの対象集合から除外されます
+- 制約違反のタプルは、そのため `uncovered` には現れません
+- `maxTests` の制限で完全に網羅できない場合、`uncovered` には残った必要タプルだけが入ります
 
 制約が矛盾する場合（有効な組み合わせが存在しない場合）、生成はエラーコード `CONSTRAINT_ERROR` を返します。
 
 ## 制約ビルダー（JavaScript）
 
-fluent API でプログラマティックに制約を構築します。ビルダーオブジェクトは `toString()` で有効な制約文字列を生成します。
-
-```typescript
-import { when, not, allOf, anyOf } from '@libraz/coverwise';
-```
+fluent API を使ってプログラムから制約を組み立てます。ビルダーオブジェクトは `toString()` で有効な制約文字列を生成します。
 
 ### 基本比較
 
@@ -207,8 +211,6 @@ not(allOf(when('os').eq('win'), when('browser').eq('safari')))
 ビルダーオブジェクトは `.toString()` で文字列に変換して使用します：
 
 ```typescript
-const cw = await Coverwise.create();
-
 cw.generate({
   parameters: [/* ... */],
   constraints: [

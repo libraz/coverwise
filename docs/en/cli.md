@@ -15,7 +15,7 @@ The v1 migration makes empty array fields explicit, represents suggestions as
 
 ### `generate`
 
-Generate a minimal covering array from a JSON specification.
+Generate a covering test suite from a JSON specification.
 
 ```bash
 coverwise generate <input.json> [> output.json]
@@ -31,18 +31,8 @@ coverwise generate <input.json> [> output.json]
   ],
   "strength": 2,
   "seed": 42,
-  "maxTests": 0,
   "constraints": [
     "IF os = Windows THEN browser != Safari"
-  ],
-  "weights": {
-    "os": { "Windows": 2.0 }
-  },
-  "seeds": [
-    { "os": "Windows", "browser": "Chrome" }
-  ],
-  "subModels": [
-    { "parameters": ["os", "browser"], "strength": 2 }
   ]
 }
 ```
@@ -55,7 +45,13 @@ Only `parameters` is required. All other fields are optional.
 {
   "schemaVersion": 1,
   "tests": [
+    { "os": "Linux", "browser": "Firefox" },
     { "os": "Windows", "browser": "Chrome" },
+    { "os": "Windows", "browser": "Firefox" },
+    { "os": "macOS", "browser": "Chrome" },
+    { "os": "macOS", "browser": "Safari" },
+    { "os": "Linux", "browser": "Safari" },
+    { "os": "Linux", "browser": "Chrome" },
     { "os": "macOS", "browser": "Firefox" }
   ],
   "negativeTests": [],
@@ -64,15 +60,27 @@ Only `parameters` is required. All other fields are optional.
   "uncoveredCount": 0,
   "omittedUncovered": 0,
   "stats": {
-    "totalTuples": 9,
-    "coveredTuples": 9,
-    "testCount": 6
+    "totalTuples": 8,
+    "coveredTuples": 8,
+    "testCount": 8
   },
   "suggestions": [],
   "warnings": [],
   "strength": 2
 }
 ```
+
+This is the exact result of the shown input with the bundled generator. The
+constraint makes `os=Windows, browser=Safari` infeasible, leaving eight
+requested-strength pairs. Output ordering is deterministic for a fixed input
+and seed, but should not be used as a cross-version ordering contract.
+
+Values marked `"invalid": true` are excluded from positive coverage and are
+handled as separate negative tests. When invalid values are present, output also
+includes `negativeCoverage` (`totalTuples`, `coveredTuples`, `omittedTuples`,
+and `coverageRatio`). `maxTests` limits the combined positive and negative
+suite, so negative generation can be incomplete; inspect `negativeCoverage` and
+`warnings` rather than assuming every negative tuple was emitted.
 
 ### `analyze`
 
@@ -85,7 +93,7 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
 - `--params` — JSON file with parameter definitions
 - `--tests` — JSON file with test cases
 - `--strength` — Interaction strength (default: 2)
-- `--constraints` — JSON file with constraint strings (optional). Constraint-invalid tuples are excluded from the coverage denominator, so a fully covered constrained suite reports 100%.
+- `--constraints` — JSON file with constraint strings (optional). A tuple is excluded from the coverage universe only when it has no completion to a full assignment of valid values satisfying all constraints. Thus a fully covered constrained suite reports 100% without treating a merely partial constraint evaluation as a violation.
 
 `--tests` and `--existing` accept either a bare test array or the schema-v1 envelope emitted by `generate`, so `coverwise generate input.json > tests.json` can be passed to the downstream commands unchanged.
 
