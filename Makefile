@@ -1,4 +1,5 @@
-.PHONY: all build release test clean rebuild format format-check wasm coverage coverage-build coverage-clean
+.PHONY: all build release test clean rebuild format format-check wasm coverage coverage-build coverage-clean \
+	python-wheel test-python check-version
 
 BUILD_DIR := build
 
@@ -16,7 +17,7 @@ wasm:
 	emcmake cmake -B build-wasm -DBUILD_WASM=ON -DCMAKE_BUILD_TYPE=Release
 	cmake --build build-wasm -j
 
-test: build
+test: build test-python
 	ctest --test-dir $(BUILD_DIR) --output-on-failure
 
 clean:
@@ -28,10 +29,26 @@ format:
 	find src tests -name '*.cpp' -o -name '*.h' | xargs clang-format -i
 	# TS/WASM fix (note: package.json's lint:fix covers js/ tests/wasm/ only, not src/ts/)
 	yarn lint:fix
+	rye sync --pyproject bindings/python/pyproject.toml
+	rye run --pyproject bindings/python/pyproject.toml ruff format bindings/python/src bindings/python/tests
+	rye run --pyproject bindings/python/pyproject.toml ruff check --fix bindings/python/src bindings/python/tests
 
 format-check:
 	find src tests -name '*.cpp' -o -name '*.h' | xargs clang-format --dry-run --Werror
 	yarn lint
+	rye sync --pyproject bindings/python/pyproject.toml
+	rye run --pyproject bindings/python/pyproject.toml ruff format --check bindings/python/src bindings/python/tests
+	rye run --pyproject bindings/python/pyproject.toml ruff check bindings/python/src bindings/python/tests
+
+python-wheel:
+	rye sync --pyproject bindings/python/pyproject.toml
+	PYTHON="$$(rye run --pyproject bindings/python/pyproject.toml python -c 'import sys; print(sys.executable)')" bindings/python/scripts/build_wheel.sh
+
+test-python: python-wheel
+	rye run --pyproject bindings/python/pyproject.toml python -m pytest bindings/python/tests -v
+
+check-version:
+	python3 bindings/python/scripts/check_version.py
 
 coverage-build:
 	cmake -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON

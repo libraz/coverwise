@@ -10,35 +10,54 @@ permissions:
   id-token: write
 
 jobs:
-  publish:
+  verify-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
-      - name: Verify tag, package, and CMake versions
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.23.1'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Verify tag and manifest versions
         shell: bash
         run: |
           set -euo pipefail
           tag_version="${GITHUB_REF_NAME#v}"
           package_version="$(node -p "require('./package.json').version")"
+          python_version="$(python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path("bindings/python/pyproject.toml").read_text()
+          match = re.search(r'^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"$', text, re.MULTILINE)
+          if match is None:
+              raise SystemExit("No Python package version found")
+          print(match.group(1))
+          PY
+          )"
+          python3 bindings/python/scripts/check_version.py
           cmake -S . -B build-version-check -DBUILD_TESTING=OFF -DBUILD_CLI=OFF
           cmake_version="$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' build-version-check/CMakeCache.txt)"
-          if [[ "$GITHUB_REF_NAME" != "v$package_version" || "$tag_version" != "$cmake_version" ]]; then
-            echo "Version mismatch: tag=$GITHUB_REF_NAME package=$package_version cmake=$cmake_version" >&2
+          if [[ "$GITHUB_REF_NAME" != "v$package_version" || "$tag_version" != "$cmake_version" || "$tag_version" != "$python_version" ]]; then
+            echo "Version mismatch: tag=$GITHUB_REF_NAME npm=$package_version cmake=$cmake_version pypi=$python_version" >&2
             exit 1
           fi
 
+  publish-npm:
+    needs: verify-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
       - uses: mymindstorm/setup-emsdk@v16
-
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.1'
           registry-url: 'https://registry.npmjs.org'
-
       - run: npm install -g npm@11
       - run: corepack enable
       - run: corepack prepare yarn@4.12.0 --activate
-
       - uses: actions/cache@v6
         with:
           path: |
@@ -47,13 +66,11 @@ jobs:
           key: ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock') }}
           restore-keys: |
             ${{ runner.os }}-yarn-
-
       - name: Build and test C++
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
           cmake --build build --parallel
           ctest --test-dir build --output-on-failure
-
       - name: Build and verify native Linux distribution
         shell: bash
         run: |
@@ -64,7 +81,6 @@ jobs:
           cmake --install build-release --prefix "$RUNNER_TEMP/$archive"
           "$RUNNER_TEMP/$archive/bin/coverwise" --help
           tar -C "$RUNNER_TEMP" -czf "$GITHUB_WORKSPACE/$archive.tar.gz" "$archive"
-
       - run: yarn install --immutable
       - run: yarn build
       - run: yarn lint
@@ -87,9 +103,16 @@ jobs:
             throw new Error('Packed public export smoke test failed');
           }
           NODE
-
-      - run: npm publish --access public --provenance
-
+      - name: Publish to npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if npm view "@libraz/coverwise@$version" version >/dev/null 2>&1; then
+            echo "@libraz/coverwise@$version already exists; skipping"
+          else
+            npm publish --access public --provenance
+          fi
       - name: Verify published package
         shell: bash
         run: |
@@ -102,13 +125,101 @@ jobs:
           done
           echo "Published package @libraz/coverwise@$version was not visible in the registry" >&2
           exit 1
+      - uses: actions/upload-artifact@v6
+        with:
+          name: native-linux-x64
+          path: coverwise-${{ github.ref_name }}-linux-x64.tar.gz
 
+  python-linux-wheel:
+    needs: verify-release
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and repair manylinux wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnf install -y cmake
+          python_bin=/opt/python/cp312-cp312/bin/python
+          "$python_bin" -m pip install --upgrade build wheel auditwheel pytest
+          PYTHON="$python_bin" COVERWISE_WHEEL_PLATFORM_TAG=manylinux_2_28_x86_64 \
+            bindings/python/scripts/build_wheel.sh
+          "$python_bin" -m auditwheel repair bindings/python/dist/*.whl \
+            --plat manylinux_2_28_x86_64 --wheel-dir bindings/python/wheelhouse
+      - name: Test installed wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_bin=/opt/python/cp312-cp312/bin/python
+          "$python_bin" -m venv /tmp/coverwise-wheel-test
+          /tmp/coverwise-wheel-test/bin/python -m pip install bindings/python/wheelhouse/*.whl pytest
+          /tmp/coverwise-wheel-test/bin/python -m pytest bindings/python/tests -v
+      - uses: actions/upload-artifact@v6
+        with:
+          name: python-wheel-manylinux-x86_64
+          path: bindings/python/wheelhouse/*.whl
+
+  python-macos-wheel:
+    needs: verify-release
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Build macOS wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade build wheel pytest
+          COVERWISE_WHEEL_PLATFORM_TAG=macosx_11_0_arm64 bindings/python/scripts/build_wheel.sh
+      - name: Test installed wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/coverwise-wheel-test
+          /tmp/coverwise-wheel-test/bin/python -m pip install bindings/python/dist/*.whl pytest
+          /tmp/coverwise-wheel-test/bin/python -m pytest bindings/python/tests -v
+      - uses: actions/upload-artifact@v6
+        with:
+          name: python-wheel-macos-arm64
+          path: bindings/python/dist/*.whl
+
+  publish-pypi:
+    needs: [publish-npm, python-linux-wheel, python-macos-wheel]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/coverwise
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: python-wheel-*
+          path: dist/
+          merge-multiple: true
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  create-github-release:
+    needs: [publish-npm, publish-pypi]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: native-linux-x64
+          path: dist/
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           name: Release ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: coverwise-${{ github.ref_name }}-linux-x64.tar.gz
+          files: dist/coverwise-${{ github.ref_name }}-linux-x64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

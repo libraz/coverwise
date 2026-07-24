@@ -7,6 +7,8 @@ dist/
 *.a
 *.so
 *.dylib
+bindings/python/src/coverwise/_bin/coverwise
+bindings/python/wheelhouse/
 
 # CMake
 CMakeCache.txt
