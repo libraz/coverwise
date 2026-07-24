@@ -67,9 +67,9 @@
     "node": ">=18.0.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.4",
+    "@biomejs/biome": "^2.5.5",
     "@vitest/coverage-v8": "4.1.10",
-    "lint-staged": "^17.0.8",
+    "lint-staged": "^17.2.0",
     "simple-git-hooks": "^2.13.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
