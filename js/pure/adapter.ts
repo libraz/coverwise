@@ -242,13 +242,17 @@ export function toInternalOptions(
  * CLI's canonical shape so every surface expands the same value set.
  */
 function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
-  if (p.type === undefined) {
+  // Public TypeScript callers can only construct the union in `types.ts`, but
+  // JavaScript callers may still pass arbitrary objects at runtime.
+  const raw = p as PublicParameter & { type?: unknown; range?: unknown; step?: unknown };
+  const type = raw.type;
+  if (type === undefined) {
     return null;
   }
-  if (p.type !== 'integer' && p.type !== 'float') {
+  if (type !== 'integer' && type !== 'float') {
     throw new CoverwiseError('INVALID_INPUT', `Invalid boundary type for parameter '${p.name}'`);
   }
-  const range = p.range;
+  const range = raw.range;
   if (
     !Array.isArray(range) ||
     range.length !== 2 ||
@@ -263,7 +267,7 @@ function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
       `Boundary range must be a finite ordered [min, max] pair for parameter '${p.name}'`,
     );
   }
-  if (p.type === 'integer') {
+  if (type === 'integer') {
     if (
       !Number.isSafeInteger(range[0]) ||
       !Number.isSafeInteger(range[1]) ||
@@ -277,7 +281,7 @@ function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
     }
     return { type: BoundaryType.Integer, minValue: range[0], maxValue: range[1], step: 1.0 };
   }
-  const step = p.step ?? 1.0;
+  const step = raw.step ?? 1.0;
   if (typeof step !== 'number' || !Number.isFinite(step) || step <= 0) {
     throw new CoverwiseError(
       'INVALID_INPUT',
@@ -319,6 +323,7 @@ function toPublicUncoveredTuple(ut: InternalUncoveredTuple): PublicUncoveredTupl
   return {
     tuple: ut.tuple,
     params: ut.params,
+    indices: ut.indices ?? [],
     reason: ut.reason,
     display: internalUncoveredToString(ut),
   };
@@ -357,6 +362,15 @@ export function toPublicResult(
     warnings: result.warnings,
     strength,
   };
+
+  if (result.negativeCoverage) {
+    pubResult.negativeCoverage = {
+      totalTuples: result.negativeCoverage.totalTuples,
+      coveredTuples: result.negativeCoverage.coveredTuples,
+      omittedTuples: result.negativeCoverage.omittedTuples,
+      coverageRatio: result.negativeCoverage.coverageRatio,
+    };
+  }
 
   if (result.classCoverage) {
     pubResult.classCoverage = {

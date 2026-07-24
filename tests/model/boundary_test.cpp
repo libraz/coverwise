@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <clocale>
 #include <limits>
 #include <set>
 #include <string>
@@ -128,6 +129,20 @@ TEST(BoundaryTest, PreservesOriginalSpellingAndMetadataByValueIdentity) {
   EXPECT_TRUE(result.equivalence_class(generated).empty());
 }
 
+TEST(BoundaryTest, RejectsPartialMetadataWithoutOutOfBoundsAccess) {
+  Parameter param("score", {"1", "2"});
+  param.set_aliases({{"one"}});
+  BoundaryConfig config{BoundaryConfig::Type::kInteger, 0, 2, 1.0};
+  coverwise::model::Error error;
+
+  auto result = ExpandBoundaryValues(param, config, &error);
+
+  EXPECT_EQ(error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_EQ(error.message, "Invalid metadata length for parameter 'score': aliases");
+  EXPECT_EQ(result.values, param.values);
+  EXPECT_EQ(result.all_aliases(), param.all_aliases());
+}
+
 TEST(BoundaryTest, MergeWithExplicitNonNumericValues) {
   // Mix of numeric and non-numeric explicit values.
   Parameter param("level", {"low", "50", "high"});
@@ -229,6 +244,32 @@ TEST(BoundaryTest, SeedIndicesAreRemappedByValueIdentity) {
   ASSERT_NE(remapped, UINT32_MAX);
   EXPECT_EQ(result.tests[0].values[0], remapped);
   EXPECT_EQ(result.parameters[0].values[result.tests[0].values[0]], "50");
+}
+
+TEST(BoundaryTest, ExpansionAndSeedRemapIgnoreNumericLocale) {
+  const char* previous = std::setlocale(LC_NUMERIC, nullptr);
+  ASSERT_NE(previous, nullptr);
+  const std::string saved_locale(previous);
+  if (std::setlocale(LC_NUMERIC, "de_DE.UTF-8") == nullptr) {
+    GTEST_SKIP() << "de_DE.UTF-8 locale is unavailable";
+  }
+
+  coverwise::model::GenerateOptions opts;
+  opts.parameters = {
+      {"score", {"1.5", "0.5"}},
+      {"status", {"pass", "fail"}},
+  };
+  opts.boundary_configs["score"] = {BoundaryConfig::Type::kFloat, 0.5, 1.5, 0.5};
+  opts.strength = 2;
+  opts.seeds = {{{0, 0}}};
+  auto result = coverwise::core::Generate(opts);
+
+  EXPECT_NE(std::setlocale(LC_NUMERIC, saved_locale.c_str()), nullptr);
+  ASSERT_TRUE(result.error.ok());
+  ASSERT_FALSE(result.tests.empty());
+  const uint32_t remapped = result.parameters[0].find_value_index("1.5");
+  ASSERT_NE(remapped, UINT32_MAX);
+  EXPECT_EQ(result.tests[0].values[0], remapped);
 }
 
 TEST(BoundaryTest, InvalidBoundaryConfigurationReturnsStructuredError) {

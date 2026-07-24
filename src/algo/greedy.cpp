@@ -25,17 +25,22 @@ uint32_t BreakTieWithWeights(const std::vector<uint32_t>& best_values,
     return best_values[0];
   }
   if (!weights.empty()) {
-    // Weighted random selection: probability proportional to weight.
+    // Normalize by the largest weight first so finite inputs cannot overflow
+    // their sum (e.g. two DBL_MAX weights).
+    double max_weight = 0.0;
+    for (uint32_t vi : best_values) max_weight = std::max(max_weight, weights[pi][vi]);
     double total_weight = 0.0;
-    for (uint32_t vi : best_values) {
-      total_weight += weights[pi][vi];
+    if (max_weight > 0.0) {
+      for (uint32_t vi : best_values) {
+        total_weight += weights[pi][vi] / max_weight;
+      }
     }
     if (total_weight > 0.0) {
       // Generate a random value in [0, total_weight).
       double r = static_cast<double>(rng.NextUint32(1000000)) / 1000000.0 * total_weight;
       double cumulative = 0.0;
       for (uint32_t vi : best_values) {
-        cumulative += weights[pi][vi];
+        cumulative += weights[pi][vi] / max_weight;
         if (r < cumulative) {
           return vi;
         }

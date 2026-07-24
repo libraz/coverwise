@@ -1,10 +1,8 @@
 #include "model/constraint_parser.h"
 
 #include <algorithm>
-#include <cctype>
-#include <cerrno>
+#include <charconv>
 #include <cmath>
-#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
@@ -61,15 +59,21 @@ std::string ToUpper(const std::string& s) {
   std::string result = s;
   for (auto& c : result) {
     auto uc = static_cast<unsigned char>(c);
-    if (uc < 0x80) {
-      c = static_cast<char>(std::toupper(uc));
+    if (uc >= static_cast<unsigned char>('a') && uc <= static_cast<unsigned char>('z')) {
+      c = static_cast<char>(uc - ('a' - 'A'));
     }
   }
   return result;
 }
 
+bool IsAsciiDigit(char c) { return c >= '0' && c <= '9'; }
+
+bool IsAsciiAlphaNumeric(char c) {
+  return IsAsciiDigit(c) || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
 bool IsIdentChar(char c) {
-  return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' ||
+  return IsAsciiAlphaNumeric(c) || c == '_' || c == '-' || c == '.' ||
          (static_cast<unsigned char>(c) >= 0x80);
 }
 
@@ -102,13 +106,13 @@ size_t ScanDecimal(const std::string& value, size_t start, bool allow_sign_or_le
   }
 
   size_t digits = 0;
-  while (i < value.size() && std::isdigit(static_cast<unsigned char>(value[i]))) {
+  while (i < value.size() && IsAsciiDigit(value[i])) {
     ++digits;
     ++i;
   }
   if (i < value.size() && value[i] == '.') {
     ++i;
-    while (i < value.size() && std::isdigit(static_cast<unsigned char>(value[i]))) {
+    while (i < value.size() && IsAsciiDigit(value[i])) {
       ++digits;
       ++i;
     }
@@ -120,7 +124,7 @@ size_t ScanDecimal(const std::string& value, size_t start, bool allow_sign_or_le
     ++i;
     if (i < value.size() && (value[i] == '+' || value[i] == '-')) ++i;
     const size_t exponent_digits_start = i;
-    while (i < value.size() && std::isdigit(static_cast<unsigned char>(value[i]))) ++i;
+    while (i < value.size() && IsAsciiDigit(value[i])) ++i;
     if (i == exponent_digits_start) return exponent_start;
   }
   return i;
@@ -128,12 +132,12 @@ size_t ScanDecimal(const std::string& value, size_t start, bool allow_sign_or_le
 
 bool ParseFiniteDecimal(const std::string& value, double* result) {
   if (!util::IsNumeric(value)) return false;
-  errno = 0;
-  char* end = nullptr;
-  const double parsed = std::strtod(value.c_str(), &end);
-  if (errno == ERANGE || end != value.c_str() + value.size() || !std::isfinite(parsed)) {
-    return false;
-  }
+  const char* begin = value.data();
+  const char* end = begin + value.size();
+  if (*begin == '+') ++begin;
+  double parsed = 0.0;
+  const auto parse = std::from_chars(begin, end, parsed, std::chars_format::general);
+  if (parse.ec != std::errc{} || parse.ptr != end || !std::isfinite(parsed)) return false;
   *result = parsed;
   return true;
 }
@@ -272,10 +276,9 @@ TokenizeResult Tokenize(const std::string& expr) {
     // preserving string values such as "-1" inside IN sets as identifiers.
     const bool after_comparison = !tokens.empty() && IsComparisonToken(tokens.back().type);
     const bool numeric_start =
-        std::isdigit(static_cast<unsigned char>(expr[i])) ||
+        IsAsciiDigit(expr[i]) ||
         (after_comparison && ((expr[i] == '+' || expr[i] == '-') ||
-                              (expr[i] == '.' && i + 1 < len &&
-                               std::isdigit(static_cast<unsigned char>(expr[i + 1])))));
+                              (expr[i] == '.' && i + 1 < len && IsAsciiDigit(expr[i + 1]))));
     if (numeric_start) {
       size_t j = ScanDecimal(expr, i, after_comparison);
       // If followed by identifier chars, it's actually an identifier (e.g., "3d")
@@ -512,7 +515,11 @@ class Parser {
  public:
   Parser(std::vector<Token> tokens, const std::vector<Parameter>& params,
          const ParseOptions& options)
-      : tokens_(std::move(tokens)), params_(params), options_(options), pos_(0) {}
+      : tokens_(std::move(tokens)),
+        params_(params),
+        options_(options),
+        numeric_caches_(params.size()),
+        pos_(0) {}
 
   ParseResult Parse() {
     auto result = ParseExpression();
@@ -530,6 +537,12 @@ class Parser {
   }
 
  private:
+  NumericValueCachePtr NumericCacheFor(uint32_t param_index) {
+    auto& cache = numeric_caches_[param_index];
+    if (!cache) cache = BuildNumericValueCache(params_[param_index].values);
+    return cache;
+  }
+
   const Token& Current() const { return tokens_[pos_]; }
 
   const Token& Advance() {
@@ -932,7 +945,7 @@ class Parser {
                  "Relational literals must be finite, representable decimal numbers"}};
       }
       return MakeNode(
-          std::make_unique<RelationalNode>(left_param, op, literal, params_[left_param].values));
+          std::make_unique<RelationalNode>(left_param, op, literal, NumericCacheFor(left_param)));
     }
 
     if (Current().type == TokenType::kIdentifier) {
@@ -944,8 +957,8 @@ class Parser {
           return {nullptr, rp2.error};
         }
         return MakeNode(std::make_unique<RelationalNode>(left_param, op, rp2.param_index,
-                                                         params_[left_param].values,
-                                                         params_[rp2.param_index].values));
+                                                         NumericCacheFor(left_param),
+                                                         NumericCacheFor(rp2.param_index)));
       }
       // Try parsing as a number (identifiers that look like numbers)
       if (IsNumeric(rhs_tok.text)) {
@@ -958,7 +971,7 @@ class Parser {
                    "Relational literals must be finite, representable decimal numbers"}};
         }
         return MakeNode(
-            std::make_unique<RelationalNode>(left_param, op, literal, params_[left_param].values));
+            std::make_unique<RelationalNode>(left_param, op, literal, NumericCacheFor(left_param)));
       }
       return {nullptr,
               {Error::Code::kConstraintError,
@@ -978,6 +991,7 @@ class Parser {
   std::vector<Token> tokens_;
   const std::vector<Parameter>& params_;
   ParseOptions options_;
+  std::vector<NumericValueCachePtr> numeric_caches_;
   size_t pos_;
   size_t node_count_ = 0;
   size_t not_depth_ = 0;  ///< Current prefix-NOT recursion depth (bounds the stack).

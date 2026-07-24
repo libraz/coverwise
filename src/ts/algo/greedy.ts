@@ -33,17 +33,23 @@ function breakTieWithWeights(
     return bestValues[0];
   }
   if (weights.length > 0) {
-    // Weighted random selection: probability proportional to weight.
-    let totalWeight = 0.0;
+    // Normalize first so a finite sum cannot overflow to Infinity.
+    let maxWeight = 0.0;
     for (const vi of bestValues) {
-      totalWeight += weights[pi][vi];
+      maxWeight = Math.max(maxWeight, weights[pi][vi]);
+    }
+    let totalWeight = 0.0;
+    if (maxWeight > 0.0) {
+      for (const vi of bestValues) {
+        totalWeight += weights[pi][vi] / maxWeight;
+      }
     }
     if (totalWeight > 0.0) {
       // Generate a random value in [0, totalWeight).
       const r = (rng.nextUint32(1000000) / 1000000.0) * totalWeight;
       let cumulative = 0.0;
       for (const vi of bestValues) {
-        cumulative += weights[pi][vi];
+        cumulative += weights[pi][vi] / maxWeight;
         if (r < cumulative) {
           return vi;
         }

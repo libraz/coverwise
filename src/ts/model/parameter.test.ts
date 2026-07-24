@@ -262,6 +262,19 @@ describe('hasInvalidValues (utility function)', () => {
 });
 
 describe('validateParameters', () => {
+  it('rejects a parameter with no valid values', () => {
+    const allInvalid = new Parameter('os', ['win', 'mac'], [true, true]);
+    expect(validateParameters([allInvalid])).toBe(
+      "Parameter 'os' must have at least one valid value",
+    );
+  });
+
+  it('rejects parameter names differing only by ASCII case', () => {
+    expect(validateParameters([new Parameter('OS', ['win']), new Parameter('os', ['linux'])])).toBe(
+      "Parameter names must not differ only by ASCII case: 'os'",
+    );
+  });
+
   it('rejects alias-primary and case-only collisions', () => {
     const aliasCollision = new Parameter('browser', ['chrome', 'safari']);
     aliasCollision.setAliases([['safari'], []]);

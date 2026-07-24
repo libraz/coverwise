@@ -4,6 +4,7 @@
 
 #include <limits>
 
+#include "model/constraint_ast.h"
 #include "model/parameter.h"
 
 using coverwise::core::CoverageEngine;
@@ -284,4 +285,23 @@ TEST(CoverageEngineTest, SingleParamStrengthOne) {
   engine.AddTestCase(TestCase{{1}});
   engine.AddTestCase(TestCase{{2}});
   EXPECT_TRUE(engine.IsComplete());
+}
+
+TEST(CoverageEngineTest, ConstraintClassificationScalesAcrossManyParameters) {
+  constexpr uint32_t kParameterCount = 1500;
+  std::vector<Parameter> params;
+  params.reserve(kParameterCount);
+  for (uint32_t index = 0; index < kParameterCount; ++index) {
+    params.push_back({"P" + std::to_string(index), {"v"}, {}});
+  }
+  auto [engine, err] = CoverageEngine::Create(params, 1);
+  ASSERT_TRUE(err.ok()) << err.message;
+  std::vector<coverwise::model::Constraint> constraints;
+  constraints.push_back(std::make_unique<coverwise::model::EqualsNode>(0, 0));
+  bool budget_exceeded = false;
+
+  engine.ExcludeInvalidTuples(constraints, {}, &budget_exceeded);
+
+  EXPECT_FALSE(budget_exceeded);
+  EXPECT_EQ(engine.TotalTuples(), kParameterCount);
 }

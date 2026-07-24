@@ -19,6 +19,7 @@ import { hasInvalidValues, Parameter } from '../model/parameter.js';
 import {
   createGenerateResult,
   type GenerateResult,
+  type NegativeCoverage,
   type Suggestion,
   type TestCase,
   UNASSIGNED,
@@ -146,29 +147,18 @@ function buildNegativeMask(
   return mask;
 }
 
-/// Generate negative tests for parameters with invalid values.
-///
-/// For each invalid value of each parameter, generates test cases that pair
-/// the invalid value with valid values of all other parameters using pairwise
-/// coverage. Each negative test case contains exactly one invalid value.
+/** Generate deterministic single-fault negative coverage using a reused engine. */
 function generateNegativeTests(
   params: Parameter[],
-  strength: number,
   constraints: ConstraintNode[],
-  rng: Rng,
+  freshCov: CoverageEngine,
+  maxTests: number,
+  positiveTestCount: number,
   negativeTests: TestCase[],
+  metrics: NegativeCoverage,
   warnings: string[],
-): void {
-  const kMaxRetries = 50;
-
-  // The combination and lookup tables depend only on (params, strength), which
-  // are identical across every invalid value, so the engine is built once and
-  // its coverage state reset per pass instead of rebuilt.
-  const freshResult = CoverageEngine.create(params, strength);
-  if (freshResult.error.code !== ErrorCode.Ok) {
-    return;
-  }
-  const freshCov = freshResult.engine;
+): { budgetExceeded: boolean } {
+  let stoppedAtMaxTests = false;
 
   for (let pi = 0; pi < params.length; ++pi) {
     for (let vi = 0; vi < params[pi].size; ++vi) {
@@ -184,50 +174,61 @@ function generateNegativeTests(
       const negMask = buildNegativeMask(params, pi, vi);
       freshCov.excludeTuplesOutsideMask(negMask);
       freshCov.excludeTuplesNotContaining(pi, vi);
-      freshCov.excludeInvalidTuples(constraints, negMask);
+      const exclusionBudget = { value: false };
+      freshCov.excludeInvalidTuples(constraints, negMask, exclusionBudget);
+      if (exclusionBudget.value) {
+        return { budgetExceeded: true };
+      }
+      const noFeasibleTarget = freshCov.totalTuples === 0;
 
-      // Cover every requested-strength tuple containing the fixed invalid value.
-      let retries = 0;
-      const startSize = negativeTests.length;
+      // Use the same FirstUncovered + deterministic completion path as
+      // positive generation, rather than a retry-limited random greedy pass.
       while (!freshCov.isComplete) {
-        const negScoreFn: ScoreFn = (partial, paramIdx, valIdx) => {
-          return freshCov.scoreValue(partial, paramIdx, valIdx);
-        };
-        const tc = greedyConstruct(params, negScoreFn, constraints, rng, negMask);
-        if (tc === null) {
-          if (++retries >= kMaxRetries) {
-            break;
+        if (maxTests > 0 && positiveTestCount + negativeTests.length >= maxTests) {
+          stoppedAtMaxTests = true;
+          break;
+        }
+        const uncovered = freshCov.firstUncovered();
+        if (uncovered === null) {
+          break;
+        }
+        const budget = createSolveBudget();
+        const witness = completeAssignment(
+          params,
+          constraints,
+          negMask,
+          { values: uncovered.assignment },
+          budget,
+        );
+        if (witness === null) {
+          if (budget.exceeded) {
+            return { budgetExceeded: true };
           }
+          freshCov.excludeTuple(uncovered.index);
           continue;
         }
-        const score = freshCov.scoreCandidate(tc);
-        if (score === 0) {
-          if (++retries >= kMaxRetries) {
-            break;
-          }
-          continue;
-        }
-        retries = 0;
-        freshCov.addTestCase(tc);
-        negativeTests.push(tc);
+        freshCov.addTestCase(witness);
+        negativeTests.push(witness);
       }
 
-      if (negativeTests.length === startSize) {
-        const negScoreFn: ScoreFn = (partial, paramIdx, valIdx) =>
-          freshCov.scoreValue(partial, paramIdx, valIdx);
-        const tc = greedyConstruct(params, negScoreFn, constraints, rng, negMask);
-        if (tc !== null) {
-          negativeTests.push(tc);
-        }
-      }
-
-      if (!freshCov.isComplete || negativeTests.length === startSize) {
+      metrics.totalTuples += freshCov.totalTuples;
+      metrics.coveredTuples += freshCov.coveredCount;
+      if (!freshCov.isComplete || noFeasibleTarget) {
         warnings.push(
           `Negative coverage incomplete for ${params[pi].name}=${params[pi].values[vi]}`,
         );
       }
     }
   }
+  metrics.omittedTuples = metrics.totalTuples - metrics.coveredTuples;
+  metrics.coverageRatio =
+    metrics.totalTuples === 0 ? 1 : metrics.coveredTuples / metrics.totalTuples;
+  if (stoppedAtMaxTests) {
+    warnings.push(
+      `Negative generation stopped at maxTests (${maxTests}) before reaching full coverage`,
+    );
+  }
+  return { budgetExceeded: false };
 }
 
 /// Resolve string-based WeightConfig to index-based weight vectors.
@@ -626,18 +627,6 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
     }
   }
 
-  // Generate negative tests if any parameter has invalid values.
-  if (hasInvalid) {
-    generateNegativeTests(
-      params,
-      options.strength,
-      constraints,
-      rng,
-      result.negativeTests,
-      result.warnings,
-    );
-  }
-
   // Collect uncovered tuples from all engines.
   if (!allComplete(coverage, subEngines)) {
     result.uncoveredCount = coverage.totalTuples - coverage.coveredCount;
@@ -698,6 +687,40 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
   // Use the exact parsed constraints and effective parameters so all wrappers
   // expose identical class-coverage semantics for generate and extend.
   annotateClassCoverage(result, params, options.strength, constraints);
+  if (result.error.code !== ErrorCode.Ok) {
+    return result;
+  }
+
+  // Positive coverage no longer needs the global engine after this point, so
+  // reuse its bitmap for negative coverage instead of allocating a second one.
+  if (hasInvalid) {
+    const negativeCoverage: NegativeCoverage = {
+      totalTuples: 0,
+      coveredTuples: 0,
+      omittedTuples: 0,
+      coverageRatio: 1,
+    };
+    const negativeOutcome = generateNegativeTests(
+      params,
+      constraints,
+      coverage,
+      options.maxTests,
+      result.tests.length,
+      result.negativeTests,
+      negativeCoverage,
+      result.warnings,
+    );
+    result.negativeCoverage = negativeCoverage;
+    result.stats.testCount = result.tests.length + result.negativeTests.length;
+    if (negativeOutcome.budgetExceeded) {
+      result.error = {
+        code: ErrorCode.ConstraintError,
+        message: 'Constraint search budget exceeded',
+        detail: 'A negative coverage witness could not be found within the search budget',
+      };
+      result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    }
+  }
 
   return result;
 }
@@ -751,6 +774,16 @@ export function estimateModel(options: GenerateOptions): ModelStats {
 
   // Apply boundary expansion for estimation.
   const params = applyBoundaryExpansion(options).params;
+
+  // Keep tuple counts raw, while matching generate's constraint syntax and
+  // reference validation contract.
+  for (const expression of options.constraintExpressions) {
+    const parsed = parseConstraint(expression, params);
+    if (parsed.error.code !== ErrorCode.Ok) {
+      stats.error = annotateConstraintError(expression, parsed.error);
+      return stats;
+    }
+  }
 
   stats.parameterCount = params.length;
   stats.strength = options.strength;

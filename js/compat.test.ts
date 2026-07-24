@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { analyzeCoverage, Coverwise, estimateModel, extendTests, generate, init } from './index.js';
 import {
   analyzeCoverage as pureAnalyzeCoverage,
+  estimateModel as pureEstimateModel,
   extendTests as pureExtendTests,
   generate as pureGenerate,
 } from './pure/index.js';
@@ -309,6 +310,58 @@ const scenarios: Array<{ name: string; input: GenerateInput }> = [
 ];
 
 describe('WASM / TS compatibility', () => {
+  describe('shipped public facade parity', () => {
+    for (const { name, input } of scenarios) {
+      it(`${name}: generate returns an identical whole public result`, () => {
+        expect(pureGenerate(input)).toEqual(generate(input));
+      });
+
+      it(`${name}: estimateModel returns an identical public result`, () => {
+        expect(pureEstimateModel(input)).toEqual(estimateModel(input));
+      });
+    }
+
+    it('analyzeCoverage returns an identical whole public result', () => {
+      const parameters: Parameter[] = [
+        { name: 'os', values: ['win', 'mac'] },
+        { name: 'browser', values: ['chrome', 'safari'] },
+      ];
+      const tests: TestCase[] = [{ os: 'win', browser: 'chrome' }];
+      expect(pureAnalyzeCoverage(parameters, tests)).toEqual(analyzeCoverage(parameters, tests));
+    });
+
+    it('extendTests returns an identical whole public result', () => {
+      const input: GenerateInput = {
+        parameters: [
+          { name: 'os', values: ['win', 'mac'] },
+          { name: 'browser', values: ['chrome', 'safari'] },
+        ],
+        seed: 17,
+      };
+      const existing: TestCase[] = [{ os: 'win', browser: 'chrome' }];
+      expect(pureExtendTests(existing, input)).toEqual(extendTests(existing, input));
+    });
+
+    it('reports code, message, and detail identically', () => {
+      const input = {
+        parameters: [{ name: 'A', values: ['a0'] }],
+        constraints: ['missing = value'],
+      } as GenerateInput;
+      const capture = (fn: () => unknown) => {
+        try {
+          fn();
+        } catch (error) {
+          const typed = error as { code?: unknown; message?: unknown; detail?: unknown };
+          return { code: typed.code, message: typed.message, detail: typed.detail };
+        }
+        throw new Error('expected an error');
+      };
+      expect(capture(() => pureGenerate(input))).toEqual(capture(() => generate(input)));
+    });
+  });
+
+  // Internal engine parity remains useful as a lower-level diagnostic, but the
+  // public facade tests above are the release contract.
   describe('generate()', () => {
     for (const { name, input } of scenarios) {
       it(`${name}: coverage and stats match`, () => {
@@ -913,6 +966,49 @@ describe('WASM / TS compatibility', () => {
       expect(pureGenerate(primaryWeighted).tests).toEqual(generate(primaryWeighted).tests);
       expect(pureGenerate(aliasWeighted).tests).toEqual(generate(aliasWeighted).tests);
     });
+  });
+
+  describe('prototype-like weight key parity', () => {
+    it('preserves a JSON __proto__ parameter key on both surfaces', () => {
+      const input = JSON.parse(`{
+        "parameters":[
+          {"name":"__proto__","values":["a","b"]},
+          {"name":"mode","values":["x","y"]}
+        ],
+        "strength":2,
+        "seed":42,
+        "weights":{"__proto__":{"a":10}}
+      }`) as GenerateInput;
+      expect(pureGenerate(input).tests).toEqual(generate(input).tests);
+    });
+
+    it('rejects an unknown prototype-like weight key on both surfaces', () => {
+      const input = JSON.parse(`{
+        "parameters":[{"name":"mode","values":["x","y"]}],
+        "strength":1,
+        "weights":{"__proto__":{"a":10}}
+      }`) as GenerateInput;
+      expect(() => pureGenerate(input)).toThrow(/Unknown parameter in weights: __proto__/);
+      expect(() => generate(input)).toThrow(/Unknown parameter in weights: __proto__/);
+    });
+  });
+
+  it('uses canonical aliases for suggestion text and test cases on both surfaces', () => {
+    const input: GenerateInput = {
+      parameters: [
+        { name: 'os', values: [{ value: 'windows', aliases: ['win'] }, 'mac'] },
+        { name: 'browser', values: ['chrome', 'firefox'] },
+      ],
+      strength: 2,
+      maxTests: 1,
+      seed: 42,
+    };
+    const wasm = generate(input);
+    const pure = pureGenerate(input);
+    expect(wasm.suggestions).toEqual(pure.suggestions);
+    for (const suggestion of wasm.suggestions) {
+      expect(suggestion.description).toContain(`os=${suggestion.testCase.os}`);
+    }
   });
 
   // A constraint written with irregular internal whitespace must parse and

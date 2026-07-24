@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
 import { parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode } from '../model/error.js';
 import { Parameter } from '../model/parameter.js';
 import type { GenerateResult, TestCase } from '../model/test-case.js';
-import { createGenerateResult } from '../model/test-case.js';
+import { createGenerateResult, UNASSIGNED } from '../model/test-case.js';
 import {
   annotateClassCoverage,
   computeClassCoverage,
@@ -31,6 +32,33 @@ describe('validateCoverage', () => {
     expect(report.uncovered).toHaveLength(0);
   });
 
+  it('returns an error for contradictory constraints instead of full coverage', () => {
+    const constraints = ['os=win', 'os!=win'].map((expression) => {
+      const parsed = parseConstraint(expression, params2x2);
+      expect(parsed.constraint).toBeDefined();
+      return parsed.constraint;
+    });
+    const report = validateCoverage(
+      params2x2,
+      [],
+      2,
+      constraints.filter((constraint) => constraint !== undefined),
+    );
+    expect(report.error.code).toBe(ErrorCode.ConstraintError);
+    expect(report.error.message).toBe('Constraints are unsatisfiable');
+    expect(report.coverageRatio).not.toBe(1);
+  });
+
+  it('returns invalid input when a parameter has no valid values', () => {
+    const report = validateCoverage(
+      [new Parameter('A', ['0', '1'], [true, true]), new Parameter('B', ['0', '1'])],
+      [],
+      2,
+    );
+    expect(report.error.code).toBe(ErrorCode.InvalidInput);
+    expect(report.coverageRatio).not.toBe(1);
+  });
+
   it('partial coverage: 2x2 with only 2 of 4 combinations', () => {
     const tests: TestCase[] = [
       { values: [0, 0] }, // win, chrome
@@ -46,6 +74,21 @@ describe('validateCoverage', () => {
     const uncoveredStrings = report.uncovered.map((u) => u.tuple.join(', '));
     expect(uncoveredStrings).toContain('os=win, browser=safari');
     expect(uncoveredStrings).toContain('os=mac, browser=chrome');
+    for (const uncovered of report.uncovered) {
+      expect(uncovered.indices).toHaveLength(2);
+      expect(uncovered.indices?.every(([pi, vi]) => pi >= 0 && vi >= 0)).toBe(true);
+    }
+  });
+
+  it('preserves exact indices when names and values contain equals signs', () => {
+    const params = [new Parameter('A=B', ['x=y']), new Parameter('C', ['z'])];
+    const report = validateCoverage(params, [], 2);
+    expect(report.uncovered).toHaveLength(1);
+    expect(report.uncovered[0].tuple).toEqual(['A=B=x=y', 'C=z']);
+    expect(report.uncovered[0].indices).toEqual([
+      [0, 0],
+      [1, 0],
+    ]);
   });
 
   it('3 params x 2 values pairwise: totalTuples = 12', () => {
@@ -385,6 +428,86 @@ describe('annotateClassCoverage', () => {
     annotateClassCoverage(result, params, 2);
 
     expect(result.classCoverage).toBeUndefined();
+  });
+});
+
+class LateClassWitnessConstraint implements ConstraintNode {
+  evaluate(assignment: number[]): ConstraintResult {
+    if (assignment.some((value) => value === UNASSIGNED)) {
+      return ConstraintResult.Unknown;
+    }
+    if (assignment[assignment.length - 1] === 0) {
+      return ConstraintResult.True;
+    }
+    return assignment.slice(0, -1).every((value) => value === 1)
+      ? ConstraintResult.True
+      : ConstraintResult.False;
+  }
+
+  toString(): string {
+    return 'late-class-witness';
+  }
+}
+
+describe('class coverage search budget', () => {
+  it('propagates budget exhaustion instead of reporting false full coverage', () => {
+    const params = Array.from({ length: 22 }, (_, index) => {
+      const parameter = new Parameter(`P${index}`, ['0', '1']);
+      if (index === 21) {
+        parameter.setEquivalenceClasses(['', 'hard']);
+      }
+      return parameter;
+    });
+    const result = createGenerateResult();
+
+    annotateClassCoverage(result, params, 1, [new LateClassWitnessConstraint()]);
+
+    expect(result.error.code).toBe(ErrorCode.ConstraintError);
+    expect(result.error.message).toBe('Constraint search budget exceeded');
+    expect(result.classCoverage).toBeUndefined();
+  });
+});
+
+describe('class coverage scaling', () => {
+  it('projects a one-million-tuple class universe without per-tuple value scans', () => {
+    const classCount = 1000;
+    const left = new Parameter(
+      'left',
+      Array.from({ length: classCount }, (_, index) => `l${index}`),
+    );
+    const right = new Parameter(
+      'right',
+      Array.from({ length: classCount }, (_, index) => `r${index}`),
+    );
+    left.setEquivalenceClasses(Array.from({ length: classCount }, (_, index) => `lc${index}`));
+    right.setEquivalenceClasses(Array.from({ length: classCount }, (_, index) => `rc${index}`));
+
+    const report = computeClassCoverage([left, right], [{ values: [0, 0] }], 2);
+
+    expect(report.error.code).toBe(ErrorCode.Ok);
+    expect(report.totalClassTuples).toBe(1_000_000);
+    expect(report.coveredClassTuples).toBe(1);
+  });
+
+  it('preflights the class universe rather than the raw value universe', () => {
+    const valueCount = 4001;
+    const left = new Parameter(
+      'left',
+      Array.from({ length: valueCount }, (_, index) => `l${index}`),
+    );
+    const right = new Parameter(
+      'right',
+      Array.from({ length: valueCount }, (_, index) => `r${index}`),
+    );
+    left.setEquivalenceClasses(new Array<string>(valueCount).fill('one'));
+    right.setEquivalenceClasses(new Array<string>(valueCount).fill('one'));
+
+    const report = computeClassCoverage([left, right], [{ values: [0, 0] }], 2);
+
+    expect(report.error.code).toBe(ErrorCode.Ok);
+    expect(report.totalClassTuples).toBe(1);
+    expect(report.coveredClassTuples).toBe(1);
+    expect(report.coverageRatio).toBe(1);
   });
 });
 

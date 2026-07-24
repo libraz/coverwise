@@ -2,7 +2,7 @@
 
 import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
 import { ErrorCode, type ErrorInfo, okError } from '../model/error.js';
-import type { Parameter } from '../model/parameter.js';
+import { type Parameter, validateParameters } from '../model/parameter.js';
 import {
   type GenerateResult,
   type TestCase,
@@ -129,6 +129,34 @@ function hasSatisfyingCompletion(
   return validatorSearch(params, constraints, partial.slice(), 0, b);
 }
 
+function validateSatisfiableModel(params: Parameter[], constraints: ConstraintNode[]): ErrorInfo {
+  if (constraints.length === 0) {
+    return okError();
+  }
+  const budget: SearchBudget = { remaining: MAX_SEARCH_NODES, exceeded: false };
+  if (
+    hasSatisfyingCompletion(
+      params,
+      constraints,
+      new Array<number>(params.length).fill(UNASSIGNED),
+      budget,
+    )
+  ) {
+    return okError();
+  }
+  return budget.exceeded
+    ? {
+        code: ErrorCode.ConstraintError,
+        message: 'Constraint search budget exceeded',
+        detail: 'The constraint model is too complex to solve within the search budget',
+      }
+    : {
+        code: ErrorCode.ConstraintError,
+        message: 'Constraints are unsatisfiable',
+        detail: 'No complete assignment using valid values satisfies all constraints',
+      };
+}
+
 function validatePositiveTest(
   test: TestCase,
   params: Parameter[],
@@ -249,6 +277,21 @@ export function validateCoverage(
     return report;
   }
 
+  const parameterError = validateParameters(params);
+  if (parameterError.length > 0) {
+    report.error = {
+      code: ErrorCode.InvalidInput,
+      message: parameterError,
+      detail: '',
+    };
+    return report;
+  }
+
+  report.error = validateSatisfiableModel(params, constraints);
+  if (report.error.code !== ErrorCode.Ok) {
+    return report;
+  }
+
   report.error = preflightEnumeration(params, strength);
   if (report.error.code !== ErrorCode.Ok) {
     return report;
@@ -360,15 +403,18 @@ export function validateCoverage(
         // Build the UncoveredTuple with human-readable strings.
         const tuple: string[] = [];
         const paramNames: string[] = [];
+        const indices: Array<[number, number]> = [];
         for (let i = 0; i < strength; ++i) {
           const pi = combo[i];
           const vi = valueIndices[i];
           paramNames.push(params[pi].name);
           tuple.push(`${params[pi].name}=${params[pi].values[vi]}`);
+          indices.push([pi, vi]);
         }
         report.uncovered.push({
           tuple,
           params: paramNames,
+          indices,
           reason: 'never covered',
         });
       }
@@ -397,52 +443,116 @@ export function validateCoverage(
  * with no satisfiable representative are excluded from the coverage universe
  * (mirroring the value-level invalid/constraint exclusion).
  */
+enum ClassTupleFeasibility {
+  Feasible,
+  Infeasible,
+  BudgetExceeded,
+}
+
+interface ClassDomain {
+  names: string[];
+  validValueIndices: number[][];
+  indexByName: Map<string, number>;
+}
+
+function buildClassDomain(parameter: Parameter): ClassDomain {
+  const domain: ClassDomain = {
+    names: [],
+    validValueIndices: [],
+    indexByName: new Map<string, number>(),
+  };
+  for (let vi = 0; vi < parameter.size; ++vi) {
+    if (parameter.isInvalid(vi)) {
+      continue;
+    }
+    const className = parameter.equivalenceClass(vi);
+    if (className.length === 0) {
+      continue;
+    }
+    let classIndex = domain.indexByName.get(className);
+    if (classIndex === undefined) {
+      classIndex = domain.names.length;
+      domain.indexByName.set(className, classIndex);
+      domain.names.push(className);
+      domain.validValueIndices.push([]);
+    }
+    domain.validValueIndices[classIndex].push(vi);
+  }
+  return domain;
+}
+
+function preflightClassEnumeration(domains: ClassDomain[], strength: number): ErrorInfo {
+  const n = domains.length;
+  if (checkedBinomial(n, strength, MAX_COMBINATIONS) === null) {
+    return {
+      code: ErrorCode.TupleExplosion,
+      message: 'class combination metadata exceeds safety limit',
+      detail: `Combinations exceed limit: ${MAX_COMBINATIONS}`,
+    };
+  }
+  const combo = Array.from({ length: strength }, (_, index) => index);
+  let total = 0;
+  for (;;) {
+    let product = 1;
+    for (const index of combo) {
+      product *= domains[index].names.length;
+      if (!Number.isSafeInteger(product) || product > MAX_TUPLES) {
+        return {
+          code: ErrorCode.TupleExplosion,
+          message: 'equivalence-class tuple count exceeds safety limit',
+          detail: `Total class tuples exceed limit: ${MAX_TUPLES}`,
+        };
+      }
+    }
+    total += product;
+    if (!Number.isSafeInteger(total) || total > MAX_TUPLES) {
+      return {
+        code: ErrorCode.TupleExplosion,
+        message: 'equivalence-class tuple count exceeds safety limit',
+        detail: `Total class tuples exceed limit: ${MAX_TUPLES}`,
+      };
+    }
+
+    let pos = strength - 1;
+    while (pos >= 0 && combo[pos] === n - strength + pos) {
+      --pos;
+    }
+    if (pos < 0) {
+      break;
+    }
+    ++combo[pos];
+    for (let index = pos + 1; index < strength; ++index) {
+      combo[index] = combo[index - 1] + 1;
+    }
+  }
+  return okError();
+}
+
 function classTupleHasValidRepresentative(
   params: Parameter[],
   comboParamIndices: number[],
-  requiredClasses: string[],
+  candidates: readonly (readonly number[])[],
   constraints: ConstraintNode[],
-): boolean {
+  assignment: number[],
+  choice: number[],
+): ClassTupleFeasibility {
   const k = comboParamIndices.length;
-
-  // For each parameter, collect value indices whose class matches and which are
-  // not invalid. If any parameter has no such value, no representative exists.
-  const candidates: number[][] = [];
-  for (let i = 0; i < k; ++i) {
-    const p = params[comboParamIndices[i]];
-    const matching: number[] = [];
-    for (let v = 0; v < p.size; ++v) {
-      if (p.isInvalid(v)) {
-        continue;
-      }
-      if (p.equivalenceClass(v) === requiredClasses[i]) {
-        matching.push(v);
-      }
-    }
-    if (matching.length === 0) {
-      return false;
-    }
-    candidates.push(matching);
-  }
-
-  if (constraints.length === 0) {
-    return true;
-  }
-
-  // Search the cartesian product of candidate values for a constraint-satisfying
-  // assignment. The candidate space is bounded by the values-per-class.
-  const assignment = new Array<number>(params.length).fill(UNASSIGNED);
-  const choice = new Array<number>(k).fill(0);
+  choice.length = k;
+  choice.fill(0);
   for (;;) {
     for (let i = 0; i < k; ++i) {
       assignment[comboParamIndices[i]] = candidates[i][choice[i]];
     }
-    const violated = !hasSatisfyingCompletion(params, constraints, assignment);
+    const budget: SearchBudget = { remaining: MAX_SEARCH_NODES, exceeded: false };
+    const violated = !hasSatisfyingCompletion(params, constraints, assignment, budget);
     for (let i = 0; i < k; ++i) {
       assignment[comboParamIndices[i]] = UNASSIGNED;
     }
+    if (budget.exceeded) {
+      return ClassTupleFeasibility.BudgetExceeded;
+    }
     if (!violated) {
-      return true;
+      return ClassTupleFeasibility.Feasible;
     }
 
     // Advance the mixed-radix choice vector.
@@ -458,7 +568,7 @@ function classTupleHasValidRepresentative(
       break;
     }
   }
-  return false;
+  return ClassTupleFeasibility.Infeasible;
 }
 
 /**
@@ -498,16 +608,28 @@ export function computeClassCoverage(
     return report;
   }
 
-  report.error = preflightEnumeration(params, strength);
+  const parameterError = validateParameters(params);
+  if (parameterError.length > 0) {
+    report.error = {
+      code: ErrorCode.InvalidInput,
+      message: parameterError,
+      detail: '',
+    };
+    return report;
+  }
+
+  report.error = validateSatisfiableModel(params, constraints);
   if (report.error.code !== ErrorCode.Ok) {
     return report;
   }
 
   // Identify parameters that have equivalence classes.
   const classParams: number[] = [];
+  const classDomains: ClassDomain[] = [];
   for (let i = 0; i < n; ++i) {
     if (params[i].hasEquivalenceClasses) {
       classParams.push(i);
+      classDomains.push(buildClassDomain(params[i]));
     }
   }
 
@@ -521,81 +643,98 @@ export function computeClassCoverage(
   const classN = classParams.length;
   const effectiveStrength = Math.min(strength, classN);
 
+  report.error = preflightClassEnumeration(classDomains, effectiveStrength);
+  if (report.error.code !== ErrorCode.Ok) {
+    return report;
+  }
+
   // Generate all C(classN, effectiveStrength) combinations of class-enabled parameters.
   const combinations = generateCombinations(classN, effectiveStrength);
   const validTests = tests.filter(
     (test) => validatePositiveTest(test, params, constraints).length === 0,
   );
 
-  // For each combination, enumerate all class tuples (cartesian product of unique classes).
-  for (const combo of combinations) {
-    // Get the unique classes for each parameter in this combination.
-    const classesPerParam: string[][] = [];
-    for (const idx of combo) {
-      classesPerParam.push(params[classParams[idx]].uniqueClasses());
-    }
+  const classIndices = new Array<number>(effectiveStrength);
+  const comboParamIndices = new Array<number>(effectiveStrength);
+  const requiredCandidates = new Array<readonly number[]>(effectiveStrength);
+  const assignment = new Array<number>(params.length).fill(UNASSIGNED);
+  const choice: number[] = [];
+  let coveredFlags = new Uint8Array(0);
 
+  // For each combination, enumerate all class tuples.
+  for (const combo of combinations) {
     // Resolve the global parameter indices for this class combination once.
-    const comboParamIndices: number[] = [];
     for (let k = 0; k < effectiveStrength; ++k) {
-      comboParamIndices.push(classParams[combo[k]]);
+      comboParamIndices[k] = classParams[combo[k]];
     }
 
     // Compute the number of class tuples for this combination.
     let numTuples = 1;
-    for (const cls of classesPerParam) {
-      numTuples *= cls.length;
+    for (const index of combo) {
+      numTuples *= classDomains[index].names.length;
+    }
+
+    if (coveredFlags.length < numTuples) {
+      coveredFlags = new Uint8Array(numTuples);
+    } else {
+      coveredFlags.fill(0, 0, numTuples);
+    }
+    for (const test of validTests) {
+      let projected = 0;
+      let inDomain = true;
+      for (let k = 0; k < effectiveStrength; ++k) {
+        const domainIndex = combo[k];
+        const pi = classParams[domainIndex];
+        const className = params[pi].equivalenceClass(test.values[pi]);
+        const classIndex = classDomains[domainIndex].indexByName.get(className);
+        if (classIndex === undefined) {
+          inDomain = false;
+          break;
+        }
+        projected = projected * classDomains[domainIndex].names.length + classIndex;
+      }
+      if (inDomain) {
+        coveredFlags[projected] = 1;
+      }
     }
 
     // Enumerate all class tuples and check coverage.
     for (let flat = 0; flat < numTuples; ++flat) {
       // Decode flat index into class indices.
-      const classIndices = new Array<number>(effectiveStrength);
       let remainder = flat;
       for (let i = effectiveStrength - 1; i >= 0; --i) {
-        const radix = classesPerParam[i].length;
+        const radix = classDomains[combo[i]].validValueIndices.length;
         classIndices[i] = remainder % radix;
         remainder = Math.trunc(remainder / radix);
       }
 
-      // Exclude class tuples with no valid, constraint-satisfiable representative
-      // from the universe entirely (they do not count toward totalClassTuples).
-      const requiredClasses = new Array<string>(effectiveStrength);
-      for (let k = 0; k < effectiveStrength; ++k) {
-        requiredClasses[k] = classesPerParam[k][classIndices[k]];
-      }
-      if (
-        !classTupleHasValidRepresentative(params, comboParamIndices, requiredClasses, constraints)
-      ) {
-        continue;
+      if (constraints.length > 0) {
+        for (let k = 0; k < effectiveStrength; ++k) {
+          requiredCandidates[k] = classDomains[combo[k]].validValueIndices[classIndices[k]];
+        }
+        const feasibility = classTupleHasValidRepresentative(
+          params,
+          comboParamIndices,
+          requiredCandidates,
+          constraints,
+          assignment,
+          choice,
+        );
+        if (feasibility === ClassTupleFeasibility.BudgetExceeded) {
+          report.error = {
+            code: ErrorCode.ConstraintError,
+            message: 'Constraint search budget exceeded',
+            detail: 'Class-tuple feasibility could not be determined within the search budget',
+          };
+          return report;
+        }
+        if (feasibility === ClassTupleFeasibility.Infeasible) {
+          continue;
+        }
       }
 
       ++report.totalClassTuples;
-
-      // Check if any test case covers this class tuple.
-      let covered = false;
-      for (const test of validTests) {
-        let matches = true;
-        for (let k = 0; k < effectiveStrength; ++k) {
-          const pi = classParams[combo[k]];
-          if (pi >= test.values.length) {
-            matches = false;
-            break;
-          }
-          const vi = test.values[pi];
-          const testClass = params[pi].equivalenceClass(vi);
-          if (testClass !== classesPerParam[k][classIndices[k]]) {
-            matches = false;
-            break;
-          }
-        }
-        if (matches) {
-          covered = true;
-          break;
-        }
-      }
-
-      if (covered) {
+      if (coveredFlags[flat]) {
         ++report.coveredClassTuples;
       }
     }
@@ -638,6 +777,13 @@ export function annotateClassCoverage(
   }
 
   const classReport = computeClassCoverage(params, result.tests, strength, constraints);
+  if (classReport.error.code !== ErrorCode.Ok) {
+    if (result.error.code === ErrorCode.Ok) {
+      result.error = classReport.error;
+    }
+    result.warnings.push(`${classReport.error.message}: ${classReport.error.detail}`);
+    return;
+  }
   result.classCoverage = {
     totalClassTuples: classReport.totalClassTuples,
     coveredClassTuples: classReport.coveredClassTuples,

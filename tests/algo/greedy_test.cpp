@@ -85,6 +85,23 @@ TEST(GreedyConstructTest, SingleParameter) {
   EXPECT_LT(tc.values[0], 3u);
 }
 
+TEST(GreedyConstructTest, HandlesFiniteExtremeTieWeightsWithoutOverflow) {
+  std::vector<Parameter> params = {{"A", {"a0", "a1"}, {}}};
+  auto [engine, err] = CoverageEngine::Create(params, 1);
+  ASSERT_TRUE(err.ok());
+
+  const double max = std::numeric_limits<double>::max();
+  std::vector<bool> selected(2, false);
+  for (uint64_t seed = 0; seed < 32; ++seed) {
+    Rng rng(seed);
+    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), {}, rng, {}, {{max, max}}));
+    ASSERT_EQ(tc.values.size(), 1u);
+    selected[tc.values[0]] = true;
+  }
+  EXPECT_TRUE(selected[0]);
+  EXPECT_TRUE(selected[1]);
+}
+
 // ---------------------------------------------------------------------------
 // Coverage maximization
 // ---------------------------------------------------------------------------

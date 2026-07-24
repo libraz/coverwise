@@ -31,6 +31,16 @@ struct SolveBudget {
   bool exceeded = false;
 };
 
+/// Parameter order for a feasibility search, sorted by ascending allowed-domain
+/// size. Reusing one order across many partial assignments avoids rescanning
+/// every domain at every recursion level.
+using SolveParameterOrder = std::vector<uint32_t>;
+
+SolveParameterOrder BuildValidSolveParameterOrder(const std::vector<model::Parameter>& params);
+SolveParameterOrder BuildAllowedSolveParameterOrder(
+    const std::vector<model::Parameter>& params,
+    const std::vector<std::vector<bool>>& allowed_values);
+
 /// Complete a partial assignment using the caller-provided allowed-value mask.
 ///
 /// The search is bounded (see SolveBudget). If @p budget is provided and the
@@ -39,7 +49,8 @@ struct SolveBudget {
 bool CompleteAssignment(const std::vector<model::Parameter>& params,
                         const std::vector<model::Constraint>& constraints,
                         const std::vector<std::vector<bool>>& allowed_values,
-                        model::TestCase& assignment, SolveBudget* budget = nullptr);
+                        model::TestCase& assignment, SolveBudget* budget = nullptr,
+                        const SolveParameterOrder* parameter_order = nullptr);
 
 /// Complete a partial assignment using valid parameter values.
 ///
@@ -49,7 +60,8 @@ bool CompleteAssignment(const std::vector<model::Parameter>& params,
 /// CompleteAssignment for the @p budget semantics.
 bool CompleteValidAssignment(const std::vector<model::Parameter>& params,
                              const std::vector<model::Constraint>& constraints,
-                             model::TestCase& assignment, SolveBudget* budget = nullptr);
+                             model::TestCase& assignment, SolveBudget* budget = nullptr,
+                             const SolveParameterOrder* parameter_order = nullptr);
 
 }  // namespace core
 }  // namespace coverwise

@@ -124,29 +124,15 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
 
 void CoverageEngine::InitCombinations() {
   uint32_t n = static_cast<uint32_t>(params_.size());
-  auto combos = util::GenerateCombinations(n, strength_);
-  num_combinations_ = static_cast<uint32_t>(combos.size());
-  param_combinations_.resize(static_cast<size_t>(num_combinations_) * strength_);
-  for (uint32_t ci = 0; ci < num_combinations_; ++ci) {
-    for (uint32_t i = 0; i < strength_; ++i) {
-      param_combinations_[static_cast<size_t>(ci) * strength_ + i] = combos[ci][i];
-    }
-  }
+  param_combinations_ = util::GenerateCombinationsFlat(n, strength_);
+  num_combinations_ = static_cast<uint32_t>(param_combinations_.size() / strength_);
 }
 
 void CoverageEngine::InitCombinationsFromSubset() {
   uint32_t n = static_cast<uint32_t>(param_subset_.size());
-  auto local_combos = util::GenerateCombinations(n, strength_);
-
-  // Map local indices to global param indices, stored flat.
-  num_combinations_ = static_cast<uint32_t>(local_combos.size());
-  param_combinations_.resize(static_cast<size_t>(num_combinations_) * strength_);
-  for (uint32_t ci = 0; ci < num_combinations_; ++ci) {
-    for (uint32_t i = 0; i < strength_; ++i) {
-      param_combinations_[static_cast<size_t>(ci) * strength_ + i] =
-          param_subset_[local_combos[ci][i]];
-    }
-  }
+  param_combinations_ = util::GenerateCombinationsFlat(n, strength_);
+  for (uint32_t& local_index : param_combinations_) local_index = param_subset_[local_index];
+  num_combinations_ = static_cast<uint32_t>(param_combinations_.size() / strength_);
 }
 
 void CoverageEngine::BuildLookupTables() {
@@ -329,13 +315,17 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
   if (constraints.empty()) return;
 
   uint32_t num_params = static_cast<uint32_t>(params_.size());
-  std::vector<uint32_t> assignment(num_params, model::kUnassigned);
+  model::TestCase witness;
+  witness.values.assign(num_params, model::kUnassigned);
+  auto parameter_order = allowed_values.empty()
+                             ? BuildValidSolveParameterOrder(params_)
+                             : BuildAllowedSolveParameterOrder(params_, allowed_values);
 
   ForEachTupleUntil([&](uint32_t global_index, const uint32_t* combo,
                         const std::vector<uint32_t>& value_indices) {
     // Build partial assignment with only this tuple's parameters set.
     for (uint32_t j = 0; j < strength_; ++j) {
-      assignment[combo[j]] = value_indices[j];
+      witness.values[combo[j]] = value_indices[j];
     }
 
     // A tuple belongs to the coverage universe only when it can be extended to
@@ -343,17 +333,15 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
     // alone is insufficient for interacting implications. Each per-tuple search
     // is bounded; an exhausted budget stops exclusion so the caller can error
     // out rather than proceed on a partially classified universe.
-    model::TestCase witness{assignment};
     SolveBudget tuple_budget;
-    bool invalid =
-        allowed_values.empty()
-            ? !CompleteValidAssignment(params_, constraints, witness, &tuple_budget)
-            : !CompleteAssignment(params_, constraints, allowed_values, witness, &tuple_budget);
+    bool invalid = allowed_values.empty()
+                       ? !CompleteValidAssignment(params_, constraints, witness, &tuple_budget,
+                                                  &parameter_order)
+                       : !CompleteAssignment(params_, constraints, allowed_values, witness,
+                                             &tuple_budget, &parameter_order);
 
     // Reset assignment for reuse.
-    for (uint32_t j = 0; j < strength_; ++j) {
-      assignment[combo[j]] = model::kUnassigned;
-    }
+    std::fill(witness.values.begin(), witness.values.end(), model::kUnassigned);
 
     if (tuple_budget.exceeded) {
       if (budget_exceeded != nullptr) *budget_exceeded = true;

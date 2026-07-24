@@ -6,8 +6,10 @@ import { ErrorCode, type ErrorInfo, okError } from '../model/error.js';
 import { hasInvalidValues, type Parameter, UNASSIGNED } from '../model/parameter.js';
 import type { TestCase, UncoveredTuple } from '../model/test-case.js';
 import { DynamicBitset } from '../util/bitset.js';
-import { checkedBinomial, decodeMixedRadix, generateCombinations } from '../util/combinatorics.js';
+import { checkedBinomial, generateCombinationsFlat } from '../util/combinatorics.js';
 import {
+  buildAllowedSolveParameterOrder,
+  buildValidSolveParameterOrder,
   completeAssignment,
   completeValidAssignment,
   createSolveBudget,
@@ -225,13 +227,14 @@ export class CoverageEngine {
     }
 
     const numParams = this.params_.length;
+    const parameterOrder =
+      allowedValues.length === 0
+        ? buildValidSolveParameterOrder(this.params_)
+        : buildAllowedSolveParameterOrder(this.params_, allowedValues);
+    const assignment = new Array<number>(numParams).fill(UNASSIGNED);
 
     this.forEachTuple((ci, vi, combo, valueIndices) => {
       // Build partial assignment with only this tuple's parameters set.
-      const assignment = new Array<number>(numParams);
-      for (let i = 0; i < numParams; i++) {
-        assignment[i] = UNASSIGNED;
-      }
       for (let j = 0; j < combo.length; ++j) {
         assignment[combo[j]] = valueIndices[j];
       }
@@ -243,14 +246,22 @@ export class CoverageEngine {
       const tupleBudget = createSolveBudget();
       const witness =
         allowedValues.length === 0
-          ? completeValidAssignment(this.params_, constraints, { values: assignment }, tupleBudget)
+          ? completeValidAssignment(
+              this.params_,
+              constraints,
+              { values: assignment },
+              tupleBudget,
+              parameterOrder,
+            )
           : completeAssignment(
               this.params_,
               constraints,
               allowedValues,
               { values: assignment },
               tupleBudget,
+              parameterOrder,
             );
+      assignment.fill(UNASSIGNED);
       if (tupleBudget.exceeded) {
         if (budgetExceeded !== undefined) {
           budgetExceeded.value = true;
@@ -431,17 +442,16 @@ export class CoverageEngine {
   private forEachTuple(
     fn: (ci: number, vi: number, combo: number[], valueIndices: number[]) => boolean | undefined,
   ): void {
-    // Reused per-combination buffer so callbacks keep receiving a number[] of
-    // length strength_, materialized from the flat storage.
+    // Reused buffers so tuple iteration does not allocate per tuple.
     const combo: number[] = new Array(this.strength_);
+    const radixes: number[] = new Array(this.strength_);
+    const valueIndices: number[] = new Array(this.strength_);
     for (let ci = 0; ci < this.numCombinations_; ++ci) {
       const cbase = ci * this.strength_;
       for (let j = 0; j < this.strength_; ++j) {
         combo[j] = this.paramCombinations_[cbase + j];
       }
 
-      // Pre-allocate radixes array once per combination.
-      const radixes: number[] = new Array(this.strength_);
       for (let j = 0; j < this.strength_; ++j) {
         radixes[j] = this.params_[combo[j]].size;
       }
@@ -459,7 +469,11 @@ export class CoverageEngine {
           continue;
         }
 
-        const valueIndices = decodeMixedRadix(vi, radixes);
+        let remainder = vi;
+        for (let index = radixes.length - 1; index >= 0; --index) {
+          valueIndices[index] = remainder % radixes[index];
+          remainder = Math.floor(remainder / radixes[index]);
+        }
         if (fn(ci, vi, combo, valueIndices) === false) {
           return;
         }
@@ -469,30 +483,17 @@ export class CoverageEngine {
 
   private initCombinations(): void {
     const n = this.params_.length;
-    const combos = generateCombinations(n, this.strength_);
-    this.numCombinations_ = combos.length;
-    this.paramCombinations_ = new Array(this.numCombinations_ * this.strength_);
-    for (let ci = 0; ci < this.numCombinations_; ++ci) {
-      const base = ci * this.strength_;
-      for (let i = 0; i < this.strength_; ++i) {
-        this.paramCombinations_[base + i] = combos[ci][i];
-      }
-    }
+    this.paramCombinations_ = generateCombinationsFlat(n, this.strength_);
+    this.numCombinations_ = this.paramCombinations_.length / this.strength_;
   }
 
   private initCombinationsFromSubset(): void {
     const n = this.paramSubset_.length;
-    const localCombos = generateCombinations(n, this.strength_);
-
-    // Map local indices to global param indices, stored flat.
-    this.numCombinations_ = localCombos.length;
-    this.paramCombinations_ = new Array(this.numCombinations_ * this.strength_);
-    for (let ci = 0; ci < this.numCombinations_; ++ci) {
-      const base = ci * this.strength_;
-      for (let i = 0; i < this.strength_; ++i) {
-        this.paramCombinations_[base + i] = this.paramSubset_[localCombos[ci][i]];
-      }
+    this.paramCombinations_ = generateCombinationsFlat(n, this.strength_);
+    for (let i = 0; i < this.paramCombinations_.length; ++i) {
+      this.paramCombinations_[i] = this.paramSubset_[this.paramCombinations_[i]];
     }
+    this.numCombinations_ = this.paramCombinations_.length / this.strength_;
   }
 
   private buildLookupTables(): void {

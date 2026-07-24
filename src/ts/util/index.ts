@@ -6,6 +6,7 @@ export {
   decodeMixedRadix,
   encodeMixedRadix,
   generateCombinations,
+  generateCombinationsFlat,
 } from './combinatorics.js';
 export { Rng } from './rng.js';
 export {

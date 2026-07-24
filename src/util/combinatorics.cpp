@@ -39,6 +39,30 @@ std::vector<std::vector<uint32_t>> GenerateCombinations(uint32_t n, uint32_t k) 
   return result;
 }
 
+std::vector<uint32_t> GenerateCombinationsFlat(uint32_t n, uint32_t k) {
+  std::vector<uint32_t> result;
+  if (k == 0 || k > n) return result;
+
+  uint64_t count = 0;
+  if (CheckedBinomial(n, k, std::numeric_limits<uint32_t>::max(), count)) {
+    result.reserve(static_cast<size_t>(count) * k);
+  }
+  std::vector<uint32_t> indices(k);
+  for (uint32_t i = 0; i < k; ++i) indices[i] = i;
+
+  while (true) {
+    result.insert(result.end(), indices.begin(), indices.end());
+    int pos = static_cast<int>(k) - 1;
+    while (pos >= 0 && indices[pos] == n - k + static_cast<uint32_t>(pos)) --pos;
+    if (pos < 0) break;
+    ++indices[pos];
+    for (uint32_t j = static_cast<uint32_t>(pos) + 1; j < k; ++j) {
+      indices[j] = indices[j - 1] + 1;
+    }
+  }
+  return result;
+}
+
 bool CheckedBinomial(uint32_t n, uint32_t k, uint64_t limit, uint64_t& result) {
   if (k > n) {
     result = 0;

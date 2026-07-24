@@ -15,6 +15,7 @@ import {
   LikeNode,
   NotEqualsNode,
   NotNode,
+  type NumericValueCache,
   OrNode,
   ParamEqualsNode,
   ParamNotEqualsNode,
@@ -626,6 +627,7 @@ function isValueOfParam(
 class Parser {
   private pos: number;
   private nodeCount = 0;
+  private readonly numericCaches: Array<NumericValueCache | undefined>;
   /** Current prefix-NOT recursion depth (bounds the stack). */
   private notDepth = 0;
 
@@ -635,6 +637,16 @@ class Parser {
     private readonly options: ParseOptions,
   ) {
     this.pos = 0;
+    this.numericCaches = new Array(params.length);
+  }
+
+  private numericCacheFor(paramIndex: number): NumericValueCache {
+    let cache = this.numericCaches[paramIndex];
+    if (cache === undefined) {
+      cache = RelationalNode.createNumericCache(this.params[paramIndex].values);
+      this.numericCaches[paramIndex] = cache;
+    }
+    return cache;
   }
 
   parse(): ParseResult {
@@ -1163,7 +1175,13 @@ class Parser {
         };
       }
       return this.makeNode(
-        RelationalNode.fromLiteral(leftParam, op, literal, this.params[leftParam].values),
+        RelationalNode.fromLiteral(
+          leftParam,
+          op,
+          literal,
+          this.params[leftParam].values,
+          this.numericCacheFor(leftParam),
+        ),
       );
     }
 
@@ -1182,6 +1200,8 @@ class Parser {
             rp2.paramIndex,
             this.params[leftParam].values,
             this.params[rp2.paramIndex].values,
+            this.numericCacheFor(leftParam),
+            this.numericCacheFor(rp2.paramIndex),
           ),
         );
       }
@@ -1199,7 +1219,13 @@ class Parser {
           };
         }
         return this.makeNode(
-          RelationalNode.fromLiteral(leftParam, op, literal, this.params[leftParam].values),
+          RelationalNode.fromLiteral(
+            leftParam,
+            op,
+            literal,
+            this.params[leftParam].values,
+            this.numericCacheFor(leftParam),
+          ),
         );
       }
       return {

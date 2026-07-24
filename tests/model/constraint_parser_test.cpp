@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <clocale>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -260,6 +261,23 @@ TEST(ConstraintParserTest, RelationalGreaterThan) {
   EXPECT_EQ(result.constraint->Evaluate({0}), ConstraintResult::kFalse);
 }
 
+TEST(ConstraintParserTest, RelationalParsingIgnoresNumericLocale) {
+  const char* previous = std::setlocale(LC_NUMERIC, nullptr);
+  ASSERT_NE(previous, nullptr);
+  const std::string saved_locale(previous);
+  if (std::setlocale(LC_NUMERIC, "de_DE.UTF-8") == nullptr) {
+    GTEST_SKIP() << "de_DE.UTF-8 locale is unavailable";
+  }
+
+  std::vector<Parameter> params = {{"priority", {"1.4", "1.6"}, {}}};
+  auto result = ParseConstraint("priority > 1.5", params);
+
+  EXPECT_NE(std::setlocale(LC_NUMERIC, saved_locale.c_str()), nullptr);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_EQ(result.constraint->Evaluate({0}), ConstraintResult::kFalse);
+  EXPECT_EQ(result.constraint->Evaluate({1}), ConstraintResult::kTrue);
+}
+
 TEST(ConstraintParserTest, RelationalGreaterEqual) {
   std::vector<Parameter> params = {{"priority", {"1", "2", "3", "4", "5"}, {}}};
 
@@ -445,6 +463,43 @@ TEST(ConstraintParserTest, QuotedRhsCollidingWithParamNameIsNotParamToParam) {
   // The unquoted form is still a valid param-to-param comparison.
   auto unquoted = ParseConstraint("speed != mode", params);
   EXPECT_TRUE(unquoted.error.ok()) << unquoted.error.message;
+}
+
+TEST(ConstraintParserTest, BuilderStyleQuotedValuesRoundTrip) {
+  const std::vector<std::pair<std::string, std::string>> cases = {
+      {"", "value = \"\""},       {"C:\\Users", "value = \"C:\\\\Users\""},
+      {"a*b", "value = \"a*b\""}, {"a/b", "value = \"a/b\""},
+      {"a@b", "value = \"a@b\""}, {"a'b", "value = \"a'b\""},
+  };
+
+  for (const auto& [value, expression] : cases) {
+    std::vector<Parameter> params = {{"value", {value, "other"}, {}}};
+    auto result = ParseConstraint(expression, params);
+    ASSERT_TRUE(result.error.ok()) << expression << ": " << result.error.message;
+    EXPECT_EQ(result.constraint->Evaluate({0}), ConstraintResult::kTrue) << expression;
+    EXPECT_EQ(result.constraint->Evaluate({1}), ConstraintResult::kFalse) << expression;
+  }
+
+  std::string nul_value{"a\0b", 3};
+  std::vector<Parameter> nul_params = {{"value", {nul_value, "other"}, {}}};
+  std::string nul_expression = "value = \"" + nul_value + "\"";
+  auto nul_result = ParseConstraint(nul_expression, nul_params);
+  ASSERT_TRUE(nul_result.error.ok()) << nul_result.error.message;
+  EXPECT_EQ(nul_result.constraint->Evaluate({0}), ConstraintResult::kTrue);
+  EXPECT_EQ(nul_result.constraint->Evaluate({1}), ConstraintResult::kFalse);
+}
+
+TEST(ConstraintParserTest, QuotedParenthesisDoesNotChangeBooleanGrouping) {
+  std::vector<Parameter> params = {
+      {"a", {"(", "other"}, {}},
+      {"b", {"2", "other"}, {}},
+      {"c", {"3", "other"}, {}},
+  };
+
+  auto result = ParseConstraint("(a = \"(\" OR b = 2) AND c = 3", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_EQ(result.constraint->Evaluate({0, 1, 1}), ConstraintResult::kFalse);
+  EXPECT_EQ(result.constraint->Evaluate({0, 1, 0}), ConstraintResult::kTrue);
 }
 
 TEST(ConstraintParserTest, ParamToParamNotEquals) {

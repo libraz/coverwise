@@ -17,11 +17,32 @@ import { CoverwiseError } from './types.js';
 
 // --- Value formatting ---
 
-// Wildcards ('*', '?') are intentionally absent so LIKE patterns stay bare when
-// they hold only wildcards; when a pattern also contains one of these chars it
-// is quoted, and the tokenizer preserves the wildcards inside the quotes.
-const NEEDS_QUOTE_RE = /[\s=!<>(),{}]/;
 const KEYWORDS = new Set(['IF', 'THEN', 'ELSE', 'IMPLIES', 'AND', 'OR', 'NOT', 'IN', 'LIKE']);
+
+function isBareIdentifierCharacter(character: string): boolean {
+  const codepoint = character.codePointAt(0) ?? 0;
+  return (
+    (codepoint >= 0x30 && codepoint <= 0x39) ||
+    (codepoint >= 0x41 && codepoint <= 0x5a) ||
+    (codepoint >= 0x61 && codepoint <= 0x7a) ||
+    character === '_' ||
+    character === '-' ||
+    character === '.' ||
+    codepoint >= 0x80
+  );
+}
+
+function canEmitBare(value: string, allowGlob: boolean): boolean {
+  return (
+    value.length > 0 &&
+    !KEYWORDS.has(value.toUpperCase()) &&
+    Array.from(value).every(
+      (character) =>
+        isBareIdentifierCharacter(character) ||
+        (allowGlob && (character === '*' || character === '?')),
+    )
+  );
+}
 
 /**
  * Wrap a value in double quotes, escaping backslashes and embedded double
@@ -32,17 +53,21 @@ function quote(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
+function formatNumber(value: number): string {
+  if (!Number.isFinite(value)) {
+    throw new CoverwiseError('INVALID_INPUT', 'Constraint numbers must be finite');
+  }
+  return String(value);
+}
+
 function formatValue(value: string | number | boolean): string {
   if (typeof value === 'boolean') {
     return String(value);
   }
   if (typeof value === 'number') {
-    return String(value);
+    return formatNumber(value);
   }
-  if (NEEDS_QUOTE_RE.test(value) || value.includes('"') || KEYWORDS.has(value.toUpperCase())) {
-    return quote(value);
-  }
-  return value;
+  return canEmitBare(value, false) ? value : quote(value);
 }
 
 /**
@@ -53,12 +78,9 @@ function formatValue(value: string | number | boolean): string {
  */
 function formatNumericOrParam(value: number | string): string {
   if (typeof value === 'number') {
-    return String(value);
+    return formatNumber(value);
   }
-  if (NEEDS_QUOTE_RE.test(value) || value.includes('"') || KEYWORDS.has(value.toUpperCase())) {
-    return quote(value);
-  }
-  return value;
+  return canEmitBare(value, false) ? value : quote(value);
 }
 
 function formatSetValue(value: string | number | boolean): string {
@@ -66,12 +88,9 @@ function formatSetValue(value: string | number | boolean): string {
     return String(value);
   }
   if (typeof value === 'number') {
-    return String(value);
+    return formatNumber(value);
   }
-  if (NEEDS_QUOTE_RE.test(value) || value.includes('"') || KEYWORDS.has(value.toUpperCase())) {
-    return quote(value);
-  }
-  return value;
+  return canEmitBare(value, false) ? value : quote(value);
 }
 
 /**
@@ -81,14 +100,7 @@ function formatSetValue(value: string | number | boolean): string {
  * within a quoted pattern.
  */
 function formatPattern(pattern: string): string {
-  if (
-    NEEDS_QUOTE_RE.test(pattern) ||
-    pattern.includes('"') ||
-    KEYWORDS.has(pattern.toUpperCase())
-  ) {
-    return quote(pattern);
-  }
-  return pattern;
+  return canEmitBare(pattern, true) ? pattern : quote(pattern);
 }
 
 // --- Interfaces ---
@@ -120,42 +132,86 @@ export interface ConditionStart {
   like(pattern: string): Condition;
 }
 
+// --- Internal representation ---
+
+type ConditionNode =
+  | { kind: 'atom'; expression: string }
+  | { kind: 'and'; left: ConditionNode; right: ConditionNode }
+  | { kind: 'or'; left: ConditionNode; right: ConditionNode }
+  | { kind: 'not'; operand: ConditionNode }
+  | { kind: 'opaque'; expression: string };
+
+function nodeFromCondition(condition: Condition): ConditionNode {
+  if (condition instanceof ConditionImpl) {
+    return condition.node;
+  }
+  // Condition is a public interface, so callers may provide their own
+  // implementation. Keep it usable without attempting to parse its text.
+  return { kind: 'opaque', expression: condition.toString() };
+}
+
+function renderCondition(node: ConditionNode, parentPrecedence = 0): string {
+  let expression: string;
+  let precedence: number;
+
+  switch (node.kind) {
+    case 'atom':
+      expression = node.expression;
+      precedence = 4;
+      break;
+    case 'not':
+      expression = `NOT (${renderCondition(node.operand)})`;
+      precedence = 3;
+      break;
+    case 'and':
+      expression = `${renderCondition(node.left, 2)} AND ${renderCondition(node.right, 2)}`;
+      precedence = 2;
+      break;
+    case 'or':
+      expression = `${renderCondition(node.left, 1)} OR ${renderCondition(node.right, 1)}`;
+      precedence = 1;
+      break;
+    case 'opaque':
+      expression = node.expression;
+      precedence = 0;
+      break;
+  }
+
+  return precedence < parentPrecedence ? `(${expression})` : expression;
+}
+
 // --- Internal classes ---
 
 class ConditionImpl implements Condition {
-  private readonly expr: string;
+  readonly node: ConditionNode;
 
-  constructor(expr: string) {
-    this.expr = expr;
+  constructor(node: ConditionNode) {
+    this.node = node;
   }
 
   and(other: Condition): Condition {
-    return new ConditionImpl(`${this.wrap()} AND ${wrapCondition(other)}`);
+    return new ConditionImpl({ kind: 'and', left: this.node, right: nodeFromCondition(other) });
   }
 
   or(other: Condition): Condition {
-    return new ConditionImpl(`${this.expr} OR ${wrapCondition(other)}`);
+    return new ConditionImpl({ kind: 'or', left: this.node, right: nodeFromCondition(other) });
   }
 
   // biome-ignore lint/suspicious/noThenProperty: fluent API requires .then() for IF...THEN syntax
   then(consequence: Condition): Constraint {
-    return new ConstraintImpl(`IF ${this.expr} THEN ${consequence.toString()}`);
+    return new ConstraintImpl(
+      `IF ${renderCondition(this.node)} THEN ${renderCondition(nodeFromCondition(consequence))}`,
+    );
   }
 
   implies(consequence: Condition): Constraint {
-    return new ConstraintImpl(`${this.expr} IMPLIES ${consequence.toString()}`);
+    return new ConstraintImpl(
+      `${renderCondition(this.node)} IMPLIES ${renderCondition(nodeFromCondition(consequence))}`,
+    );
   }
 
   toString(): string {
-    return this.expr;
-  }
-
-  private wrap(): string {
-    // Wrap in parens if the expression contains OR (for correct AND precedence)
-    if (needsParensForAnd(this.expr)) {
-      return `(${this.expr})`;
-    }
-    return this.expr;
+    return renderCondition(this.node);
   }
 }
 
@@ -185,27 +241,42 @@ class ConditionStartImpl implements ConditionStart {
   }
 
   eq(value: string | number | boolean): Condition {
-    return new ConditionImpl(`${this.param} = ${formatValue(value)}`);
+    return new ConditionImpl({ kind: 'atom', expression: `${this.param} = ${formatValue(value)}` });
   }
 
   ne(value: string | number | boolean): Condition {
-    return new ConditionImpl(`${this.param} != ${formatValue(value)}`);
+    return new ConditionImpl({
+      kind: 'atom',
+      expression: `${this.param} != ${formatValue(value)}`,
+    });
   }
 
   gt(value: number | string): Condition {
-    return new ConditionImpl(`${this.param} > ${formatNumericOrParam(value)}`);
+    return new ConditionImpl({
+      kind: 'atom',
+      expression: `${this.param} > ${formatNumericOrParam(value)}`,
+    });
   }
 
   gte(value: number | string): Condition {
-    return new ConditionImpl(`${this.param} >= ${formatNumericOrParam(value)}`);
+    return new ConditionImpl({
+      kind: 'atom',
+      expression: `${this.param} >= ${formatNumericOrParam(value)}`,
+    });
   }
 
   lt(value: number | string): Condition {
-    return new ConditionImpl(`${this.param} < ${formatNumericOrParam(value)}`);
+    return new ConditionImpl({
+      kind: 'atom',
+      expression: `${this.param} < ${formatNumericOrParam(value)}`,
+    });
   }
 
   lte(value: number | string): Condition {
-    return new ConditionImpl(`${this.param} <= ${formatNumericOrParam(value)}`);
+    return new ConditionImpl({
+      kind: 'atom',
+      expression: `${this.param} <= ${formatNumericOrParam(value)}`,
+    });
   }
 
   in(...values: (string | number | boolean)[]): Condition {
@@ -215,39 +286,18 @@ class ConditionStartImpl implements ConditionStart {
       throw new CoverwiseError('INVALID_INPUT', 'in() requires at least one value');
     }
     const formatted = values.map(formatSetValue).join(', ');
-    return new ConditionImpl(`${this.param} IN {${formatted}}`);
+    return new ConditionImpl({
+      kind: 'atom',
+      expression: `${this.param} IN {${formatted}}`,
+    });
   }
 
   like(pattern: string): Condition {
-    return new ConditionImpl(`${this.param} LIKE ${formatPattern(pattern)}`);
+    return new ConditionImpl({
+      kind: 'atom',
+      expression: `${this.param} LIKE ${formatPattern(pattern)}`,
+    });
   }
-}
-
-// --- Helpers ---
-
-/** Check if an expression string contains a bare OR (not inside parens). */
-function needsParensForAnd(expr: string): boolean {
-  let depth = 0;
-  const upper = expr.toUpperCase();
-  for (let i = 0; i < upper.length; i++) {
-    if (upper[i] === '(') {
-      depth++;
-    } else if (upper[i] === ')') {
-      depth--;
-    } else if (depth === 0 && upper[i] === ' ' && upper.substring(i, i + 4) === ' OR ') {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** Wrap a condition for use as an operand, adding parens if it contains AND or OR at top level. */
-function wrapCondition(cond: Condition): string {
-  const s = cond.toString();
-  if (needsParensForAnd(s)) {
-    return `(${s})`;
-  }
-  return s;
 }
 
 // --- Public API ---
@@ -278,7 +328,7 @@ export function when(param: string): ConditionStart {
  * // NOT (os = win AND browser = safari)
  */
 export function not(condition: Condition): Condition {
-  return new ConditionImpl(`NOT (${condition.toString()})`);
+  return new ConditionImpl({ kind: 'not', operand: nodeFromCondition(condition) });
 }
 
 /**
@@ -295,14 +345,9 @@ export function allOf(...conditions: Condition[]): Condition {
   if (conditions.length === 1) {
     return conditions[0];
   }
-  const parts = conditions.map((c) => {
-    const s = c.toString();
-    if (needsParensForAnd(s)) {
-      return `(${s})`;
-    }
-    return s;
-  });
-  return new ConditionImpl(parts.join(' AND '));
+  return conditions
+    .slice(1)
+    .reduce((combined, condition) => combined.and(condition), conditions[0]);
 }
 
 /**
@@ -319,6 +364,5 @@ export function anyOf(...conditions: Condition[]): Condition {
   if (conditions.length === 1) {
     return conditions[0];
   }
-  const parts = conditions.map((c) => c.toString());
-  return new ConditionImpl(parts.join(' OR '));
+  return conditions.slice(1).reduce((combined, condition) => combined.or(condition), conditions[0]);
 }

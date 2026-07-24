@@ -6,6 +6,7 @@
 #include <set>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include "util/combinatorics.h"
@@ -76,6 +77,20 @@ bool HasSatisfyingCompletion(const std::vector<model::Parameter>& params,
   bool result = ValidatorSearch(params, constraints, assignment, 0, budget);
   if (exceeded != nullptr) *exceeded = budget.exceeded;
   return result;
+}
+
+model::Error ValidateSatisfiableModel(const std::vector<model::Parameter>& params,
+                                      const std::vector<model::Constraint>& constraints) {
+  if (constraints.empty()) return {};
+  std::vector<uint32_t> assignment(params.size(), model::kUnassigned);
+  bool exceeded = false;
+  if (HasSatisfyingCompletion(params, constraints, assignment, &exceeded)) return {};
+  if (exceeded) {
+    return {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
+            "The constraint model is too complex to solve within the search budget"};
+  }
+  return {model::Error::Code::kConstraintError, "Constraints are unsatisfiable",
+          "No complete assignment using valid values satisfies all constraints"};
 }
 
 std::string ValidatePositiveTest(const model::TestCase& test,
@@ -165,6 +180,12 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
                     "strength=" + std::to_string(strength) + ", parameters=" + std::to_string(n)};
     return report;
   }
+
+  report.error = model::ValidateParameters(params);
+  if (!report.error.ok()) return report;
+
+  report.error = ValidateSatisfiableModel(params, constraints);
+  if (!report.error.ok()) return report;
 
   report.error = PreflightEnumeration(params, strength);
   if (!report.error.ok()) return report;
@@ -277,6 +298,7 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
           uint32_t vi = value_indices[i];
           uncovered.params.push_back(params[pi].name);
           uncovered.tuple.push_back(params[pi].name + "=" + params[pi].values[vi]);
+          uncovered.indices.push_back({pi, vi});
         }
         report.uncovered.push_back(std::move(uncovered));
       }
@@ -306,55 +328,100 @@ namespace {
 /// representatives uses no invalid value and violates no constraint. Class
 /// tuples with no satisfiable representative are excluded from the coverage
 /// universe (mirroring the value-level invalid/constraint exclusion).
-bool ClassTupleHasValidRepresentative(const std::vector<model::Parameter>& params,
-                                      const std::vector<uint32_t>& class_param_indices,
-                                      const std::vector<std::string>& required_classes,
-                                      const std::vector<model::Constraint>& constraints) {
-  uint32_t k = static_cast<uint32_t>(class_param_indices.size());
+enum class ClassTupleFeasibility { kFeasible, kInfeasible, kBudgetExceeded };
 
-  // For each parameter, collect the value indices whose class matches and which
-  // are not invalid. If any parameter has no such value, no representative exists.
-  std::vector<std::vector<uint32_t>> candidates(k);
-  for (uint32_t i = 0; i < k; ++i) {
-    uint32_t pi = class_param_indices[i];
-    const auto& p = params[pi];
-    for (uint32_t v = 0; v < p.size(); ++v) {
-      if (p.is_invalid(v)) continue;
-      if (p.equivalence_class(v) == required_classes[i]) {
-        candidates[i].push_back(v);
-      }
+struct ClassDomain {
+  std::vector<std::string> names;
+  std::vector<std::vector<uint32_t>> valid_value_indices;
+  std::unordered_map<std::string, uint32_t> index_by_name;
+};
+
+ClassDomain BuildClassDomain(const model::Parameter& parameter) {
+  ClassDomain domain;
+  for (uint32_t vi = 0; vi < parameter.size(); ++vi) {
+    if (parameter.is_invalid(vi)) continue;
+    const std::string& class_name = parameter.equivalence_class(vi);
+    if (class_name.empty()) continue;
+    auto [it, inserted] =
+        domain.index_by_name.emplace(class_name, static_cast<uint32_t>(domain.names.size()));
+    if (inserted) {
+      domain.names.push_back(class_name);
+      domain.valid_value_indices.emplace_back();
     }
-    if (candidates[i].empty()) return false;
+    domain.valid_value_indices[it->second].push_back(vi);
+  }
+  return domain;
+}
+
+model::Error PreflightClassEnumeration(const std::vector<ClassDomain>& domains, uint32_t strength) {
+  uint32_t n = static_cast<uint32_t>(domains.size());
+  uint64_t combinations = 0;
+  if (!util::CheckedBinomial(n, strength, kMaxCombinations, combinations)) {
+    return {model::Error::Code::kTupleExplosion, "class combination metadata exceeds safety limit",
+            "Combinations exceed limit: " + std::to_string(kMaxCombinations)};
   }
 
-  if (constraints.empty()) {
-    return true;
-  }
+  std::vector<uint32_t> combo(strength);
+  for (uint32_t i = 0; i < strength; ++i) combo[i] = i;
+  uint64_t total = 0;
+  for (;;) {
+    uint64_t product = 1;
+    for (uint32_t index : combo) {
+      uint64_t radix = domains[index].names.size();
+      if (radix != 0 && product > kMaxTuples / radix) {
+        return {model::Error::Code::kTupleExplosion,
+                "equivalence-class tuple count exceeds safety limit",
+                "Total class tuples exceed limit: " + std::to_string(kMaxTuples)};
+      }
+      product *= radix;
+    }
+    if (total > kMaxTuples - product) {
+      return {model::Error::Code::kTupleExplosion,
+              "equivalence-class tuple count exceeds safety limit",
+              "Total class tuples exceed limit: " + std::to_string(kMaxTuples)};
+    }
+    total += product;
 
-  // Search the cartesian product of candidate values for a constraint-satisfying
-  // assignment. The candidate space is bounded by the values-per-class.
-  std::vector<uint32_t> assignment(params.size(), model::kUnassigned);
-  std::vector<uint32_t> choice(k, 0);
+    int pos = static_cast<int>(strength) - 1;
+    while (pos >= 0 && combo[pos] == n - strength + static_cast<uint32_t>(pos)) --pos;
+    if (pos < 0) break;
+    ++combo[pos];
+    for (uint32_t i = static_cast<uint32_t>(pos) + 1; i < strength; ++i) {
+      combo[i] = combo[i - 1] + 1;
+    }
+  }
+  return {};
+}
+
+ClassTupleFeasibility ClassTupleHasValidRepresentative(
+    const std::vector<model::Parameter>& params, const std::vector<uint32_t>& class_param_indices,
+    const std::vector<const std::vector<uint32_t>*>& candidates,
+    const std::vector<model::Constraint>& constraints, std::vector<uint32_t>& assignment,
+    std::vector<uint32_t>& choice) {
+  uint32_t k = static_cast<uint32_t>(class_param_indices.size());
+  choice.assign(k, 0);
   for (;;) {
     for (uint32_t i = 0; i < k; ++i) {
-      assignment[class_param_indices[i]] = candidates[i][choice[i]];
+      assignment[class_param_indices[i]] = (*candidates[i])[choice[i]];
     }
-    bool violated = !HasSatisfyingCompletion(params, constraints, assignment);
+    bool exceeded = false;
+    bool violated = !HasSatisfyingCompletion(params, constraints, assignment, &exceeded);
     for (uint32_t i = 0; i < k; ++i) {
       assignment[class_param_indices[i]] = model::kUnassigned;
     }
-    if (!violated) return true;
+    if (exceeded) return ClassTupleFeasibility::kBudgetExceeded;
+    if (!violated) return ClassTupleFeasibility::kFeasible;
 
     // Advance the mixed-radix choice vector.
     int pos = static_cast<int>(k) - 1;
     while (pos >= 0) {
-      if (++choice[pos] < candidates[pos].size()) break;
+      if (++choice[pos] < candidates[pos]->size()) break;
       choice[pos] = 0;
       --pos;
     }
     if (pos < 0) break;
   }
-  return false;
+  return ClassTupleFeasibility::kInfeasible;
 }
 
 }  // namespace
@@ -374,14 +441,19 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
     return report;
   }
 
-  report.error = PreflightEnumeration(params, strength);
+  report.error = model::ValidateParameters(params);
+  if (!report.error.ok()) return report;
+
+  report.error = ValidateSatisfiableModel(params, constraints);
   if (!report.error.ok()) return report;
 
   // Identify parameters that have equivalence classes.
   std::vector<uint32_t> class_params;
+  std::vector<ClassDomain> class_domains;
   for (uint32_t i = 0; i < n; ++i) {
     if (params[i].has_equivalence_classes()) {
       class_params.push_back(i);
+      class_domains.push_back(BuildClassDomain(params[i]));
     }
   }
 
@@ -395,6 +467,9 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
   uint32_t class_n = static_cast<uint32_t>(class_params.size());
   uint32_t effective_strength = std::min(strength, class_n);
 
+  report.error = PreflightClassEnumeration(class_domains, effective_strength);
+  if (!report.error.ok()) return report;
+
   // Generate all C(class_n, effective_strength) combinations of class-enabled parameters.
   auto combinations = util::GenerateCombinations(class_n, effective_strength);
   std::vector<const model::TestCase*> valid_tests;
@@ -403,17 +478,16 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
     if (ValidatePositiveTest(test, params, constraints).empty()) valid_tests.push_back(&test);
   }
 
-  // For each combination, enumerate all class tuples (cartesian product of unique classes).
-  // Use a set of string tuples to track covered class combinations.
-  for (const auto& combo : combinations) {
-    // Get the unique classes for each parameter in this combination.
-    std::vector<std::vector<std::string>> classes_per_param;
-    for (uint32_t idx : combo) {
-      classes_per_param.push_back(params[class_params[idx]].unique_classes());
-    }
+  std::vector<uint32_t> class_indices(effective_strength);
+  std::vector<uint32_t> combo_param_indices(effective_strength);
+  std::vector<const std::vector<uint32_t>*> required_candidates(effective_strength);
+  std::vector<uint32_t> assignment(params.size(), model::kUnassigned);
+  std::vector<uint32_t> choice;
+  std::vector<char> covered_flags;
 
+  // For each combination, enumerate all class tuples.
+  for (const auto& combo : combinations) {
     // Resolve the global parameter indices for this class combination once.
-    std::vector<uint32_t> combo_param_indices(effective_strength);
     for (uint32_t k = 0; k < effective_strength; ++k) {
       combo_param_indices[k] = class_params[combo[k]];
     }
@@ -421,56 +495,57 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
     // Compute the number of class tuples for this combination. Accumulate in
     // 64-bit so a large class product cannot silently wrap.
     uint64_t num_tuples = 1;
-    for (const auto& cls : classes_per_param) {
-      num_tuples *= cls.size();
+    for (uint32_t index : combo) {
+      num_tuples *= class_domains[index].names.size();
+    }
+
+    // Project every valid test to one class-tuple flag once, instead of
+    // rescanning the full test suite for every class tuple.
+    covered_flags.assign(static_cast<size_t>(num_tuples), 0);
+    for (const auto* test : valid_tests) {
+      uint64_t projected = 0;
+      bool in_domain = true;
+      for (uint32_t k = 0; k < effective_strength; ++k) {
+        uint32_t domain_index = combo[k];
+        uint32_t pi = class_params[domain_index];
+        const std::string& class_name = params[pi].equivalence_class(test->values[pi]);
+        auto it = class_domains[domain_index].index_by_name.find(class_name);
+        if (it == class_domains[domain_index].index_by_name.end()) {
+          in_domain = false;
+          break;
+        }
+        projected = projected * class_domains[domain_index].names.size() + it->second;
+      }
+      if (in_domain) covered_flags[static_cast<size_t>(projected)] = 1;
     }
 
     // Enumerate all class tuples and check coverage.
     for (uint64_t flat = 0; flat < num_tuples; ++flat) {
       // Decode flat index into class indices.
-      std::vector<uint32_t> class_indices(effective_strength);
       uint64_t remainder = flat;
       for (int i = static_cast<int>(effective_strength) - 1; i >= 0; --i) {
-        uint32_t radix = static_cast<uint32_t>(classes_per_param[i].size());
+        uint32_t radix = static_cast<uint32_t>(class_domains[combo[i]].valid_value_indices.size());
         class_indices[i] = static_cast<uint32_t>(remainder % radix);
         remainder /= radix;
       }
 
-      // Exclude class tuples with no valid, constraint-satisfiable representative
-      // from the universe entirely (they do not count toward total_class_tuples).
-      std::vector<std::string> required_classes(effective_strength);
-      for (uint32_t k = 0; k < effective_strength; ++k) {
-        required_classes[k] = classes_per_param[k][class_indices[k]];
-      }
-      if (!ClassTupleHasValidRepresentative(params, combo_param_indices, required_classes,
-                                            constraints)) {
-        continue;
+      if (!constraints.empty()) {
+        for (uint32_t k = 0; k < effective_strength; ++k) {
+          required_candidates[k] = &class_domains[combo[k]].valid_value_indices[class_indices[k]];
+        }
+        auto feasibility = ClassTupleHasValidRepresentative(
+            params, combo_param_indices, required_candidates, constraints, assignment, choice);
+        if (feasibility == ClassTupleFeasibility::kBudgetExceeded) {
+          report.error = {
+              model::Error::Code::kConstraintError, "Constraint search budget exceeded",
+              "Class-tuple feasibility could not be determined within the search budget"};
+          return report;
+        }
+        if (feasibility == ClassTupleFeasibility::kInfeasible) continue;
       }
 
       ++report.total_class_tuples;
-
-      // Check if any test case covers this class tuple.
-      bool covered = false;
-      for (const auto* test : valid_tests) {
-        bool matches = true;
-        for (uint32_t k = 0; k < effective_strength; ++k) {
-          uint32_t pi = class_params[combo[k]];
-          uint32_t vi = test->values[pi];
-          const std::string& test_class = params[pi].equivalence_class(vi);
-          if (test_class != classes_per_param[k][class_indices[k]]) {
-            matches = false;
-            break;
-          }
-        }
-        if (matches) {
-          covered = true;
-          break;
-        }
-      }
-
-      if (covered) {
-        ++report.covered_class_tuples;
-      }
+      if (covered_flags[static_cast<size_t>(flat)]) ++report.covered_class_tuples;
     }
   }
 
@@ -499,6 +574,11 @@ void AnnotateClassCoverage(model::GenerateResult& result,
   }
 
   auto class_report = ComputeClassCoverage(params, result.tests, strength, constraints);
+  if (!class_report.error.ok()) {
+    if (result.error.ok()) result.error = class_report.error;
+    result.warnings.push_back(class_report.error.message + ": " + class_report.error.detail);
+    return;
+  }
   result.class_coverage = model::ClassCoverage{
       class_report.total_class_tuples,
       class_report.covered_class_tuples,

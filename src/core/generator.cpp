@@ -136,23 +136,18 @@ std::vector<std::vector<bool>> BuildNegativeMask(const std::vector<model::Parame
   return mask;
 }
 
-/// @brief Generate negative tests for parameters with invalid values.
+/// @brief Generate deterministic single-fault negative coverage.
 ///
-/// For each invalid value of each parameter, generates test cases that pair
-/// the invalid value with valid values of all other parameters using pairwise
-/// coverage. Each negative test case contains exactly one invalid value.
-void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t strength,
-                           const std::vector<model::Constraint>& constraints, util::Rng& rng,
-                           std::vector<model::TestCase>& negative_tests,
-                           std::vector<std::string>& warnings) {
-  constexpr uint32_t kMaxRetries = 50;
-
-  // The combination and lookup tables depend only on (params, strength), which
-  // are identical across every invalid value, so the engine is built once and
-  // its coverage state reset per pass instead of rebuilt.
-  auto fresh_result = CoverageEngine::Create(params, strength);
-  if (!fresh_result.second.ok()) return;
-  auto& fresh_cov = fresh_result.first;
+/// Reuses the positive engine after its metrics have been collected, so the
+/// negative pass never adds a second full tuple bitmap to peak memory.
+model::Error GenerateNegativeTests(const std::vector<model::Parameter>& params,
+                                   const std::vector<model::Constraint>& constraints,
+                                   CoverageEngine& fresh_cov, uint32_t max_tests,
+                                   size_t positive_test_count,
+                                   std::vector<model::TestCase>& negative_tests,
+                                   model::NegativeCoverage& metrics,
+                                   std::vector<std::string>& warnings) {
+  bool stopped_at_max_tests = false;
 
   for (uint32_t pi = 0; pi < static_cast<uint32_t>(params.size()); ++pi) {
     for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
@@ -166,47 +161,57 @@ void GenerateNegativeTests(const std::vector<model::Parameter>& params, uint32_t
       auto neg_mask = BuildNegativeMask(params, pi, vi);
       fresh_cov.ExcludeTuplesOutsideMask(neg_mask);
       fresh_cov.ExcludeTuplesNotContaining(pi, vi);
-      fresh_cov.ExcludeInvalidTuples(constraints, neg_mask);
+      bool exclusion_budget_exceeded = false;
+      fresh_cov.ExcludeInvalidTuples(constraints, neg_mask, &exclusion_budget_exceeded);
+      if (exclusion_budget_exceeded) {
+        return {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
+                "Negative coverage targets could not be classified within the search budget"};
+      }
+      const bool no_feasible_target = fresh_cov.TotalTuples() == 0;
 
-      // Cover every requested-strength tuple containing the fixed invalid value.
-      uint32_t retries = 0;
-      const size_t start_size = negative_tests.size();
+      // Cover every feasible requested-strength tuple containing the fixed
+      // invalid value. FirstUncovered + CompleteAssignment is the same
+      // deterministic completion path used by positive generation.
       while (!fresh_cov.IsComplete()) {
-        auto neg_score_fn = [&fresh_cov](const model::TestCase& partial, uint32_t pi, uint32_t vi) {
-          return fresh_cov.ScoreValue(partial, pi, vi);
-        };
-        auto tc_opt = algo::GreedyConstruct(params, neg_score_fn, constraints, rng, neg_mask);
-        if (!tc_opt) {
-          if (++retries >= kMaxRetries) break;
+        if (max_tests > 0 &&
+            positive_test_count + negative_tests.size() >= static_cast<size_t>(max_tests)) {
+          stopped_at_max_tests = true;
+          break;
+        }
+        CoverageEngine::UncoveredAssignment uncovered;
+        if (!fresh_cov.FirstUncovered(uncovered)) break;
+        model::TestCase witness{std::move(uncovered.assignment)};
+        SolveBudget budget;
+        if (!CompleteAssignment(params, constraints, neg_mask, witness, &budget)) {
+          if (budget.exceeded) {
+            return {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
+                    "A negative coverage witness could not be found within the search budget"};
+          }
+          fresh_cov.ExcludeTuple(uncovered.index);
           continue;
         }
-        auto& tc = *tc_opt;
-        uint32_t score = fresh_cov.ScoreCandidate(tc);
-        if (score == 0) {
-          if (++retries >= kMaxRetries) break;
-          continue;
-        }
-        retries = 0;
-        fresh_cov.AddTestCase(tc);
-        negative_tests.push_back(std::move(tc));
+        fresh_cov.AddTestCase(witness);
+        negative_tests.push_back(std::move(witness));
       }
 
-      // If constraints removed the entire t-wise target universe, still emit
-      // one single-fault example whenever a satisfying assignment exists.
-      if (negative_tests.size() == start_size) {
-        auto neg_score_fn = [&fresh_cov](const model::TestCase& partial, uint32_t p, uint32_t v) {
-          return fresh_cov.ScoreValue(partial, p, v);
-        };
-        auto tc = algo::GreedyConstruct(params, neg_score_fn, constraints, rng, neg_mask);
-        if (tc) negative_tests.push_back(std::move(*tc));
-      }
-
-      if (!fresh_cov.IsComplete() || negative_tests.size() == start_size) {
+      metrics.total_tuples += fresh_cov.TotalTuples();
+      metrics.covered_tuples += fresh_cov.CoveredCount();
+      if (!fresh_cov.IsComplete() || no_feasible_target) {
         warnings.push_back("Negative coverage incomplete for " + params[pi].name + "=" +
                            params[pi].values[vi]);
       }
     }
   }
+  metrics.omitted_tuples = metrics.total_tuples - metrics.covered_tuples;
+  metrics.coverage_ratio =
+      metrics.total_tuples == 0
+          ? 1.0
+          : static_cast<double>(metrics.covered_tuples) / static_cast<double>(metrics.total_tuples);
+  if (stopped_at_max_tests) {
+    warnings.push_back("Negative generation stopped at maxTests (" + std::to_string(max_tests) +
+                       ") before reaching full coverage");
+  }
+  return {};
 }
 
 /// @brief Resolve string-based WeightConfig to index-based weight vectors.
@@ -549,12 +554,6 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
     }
   }
 
-  // Generate negative tests if any parameter has invalid values.
-  if (has_invalid) {
-    GenerateNegativeTests(opts.parameters, opts.strength, constraints, rng, result.negative_tests,
-                          result.warnings);
-  }
-
   // Collect uncovered tuples from all engines.
   if (!AllComplete(coverage, sub_engines)) {
     result.uncovered_count = coverage.TotalTuples() - coverage.CoveredCount();
@@ -614,6 +613,23 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
   // uses the exact parsed constraints and effective (boundary-expanded)
   // parameters, keeping every public wrapper on the same semantics.
   validator::AnnotateClassCoverage(result, opts.parameters, opts.strength, constraints);
+  if (!result.error.ok()) return result;
+
+  // Reuse the global engine only after all positive metrics and diagnostics
+  // have been captured. This keeps the peak tuple bitmap budget unchanged.
+  if (has_invalid) {
+    model::NegativeCoverage negative_coverage;
+    model::Error negative_error = GenerateNegativeTests(
+        opts.parameters, constraints, coverage, opts.max_tests, result.tests.size(),
+        result.negative_tests, negative_coverage, result.warnings);
+    result.negative_coverage = negative_coverage;
+    result.stats.test_count =
+        static_cast<uint32_t>(result.tests.size() + result.negative_tests.size());
+    if (!negative_error.ok()) {
+      result.error = negative_error;
+      result.warnings.push_back(result.error.message + ": " + result.error.detail);
+    }
+  }
 
   return result;
 }
@@ -653,6 +669,16 @@ ModelStats EstimateModel(const GenerateOptions& options) {
   // Apply boundary expansion for estimation.
   GenerateOptions opts = options;
   ApplyBoundaryExpansion(opts);
+
+  // Estimation intentionally remains a raw tuple estimate, but it is still a
+  // model preflight API: syntax/reference errors must match generate.
+  for (const auto& expression : opts.constraint_expressions) {
+    auto parsed = model::ParseConstraint(expression, opts.parameters);
+    if (!parsed.error.ok()) {
+      stats.error = model::AnnotateConstraintError(expression, parsed.error);
+      return stats;
+    }
+  }
 
   stats.parameter_count = static_cast<uint32_t>(opts.parameters.size());
   stats.strength = opts.strength;

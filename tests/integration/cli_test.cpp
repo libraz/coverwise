@@ -94,6 +94,21 @@ TEST(CliReadFileTest, MissingVsEmptyFileDistinctDiagnostics) {
   EXPECT_EQ(empty.stdout_text.find("cannot open file"), std::string::npos) << empty.stdout_text;
 }
 
+TEST(CliInputBudgetTest, RejectsMoreThanTheSupportedParameterCount) {
+  std::string input = R"({"parameters":[)";
+  for (size_t i = 0; i < 1025; ++i) {
+    if (i != 0) input += ',';
+    input += R"({"name":"p)" + std::to_string(i) + R"(","values":["v"]})";
+  }
+  input += "]}";
+  const std::string path = TempPath("too_many_parameters.json");
+  WriteFile(path, input);
+  const auto result = RunCliCaptureStderr("generate " + path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find("parameters exceed maximum"), std::string::npos)
+      << result.stdout_text;
+}
+
 TEST(CliJsonTest, RejectsTrailingGarbageMalformedNumbersEscapesAndSurrogates) {
   const std::vector<std::string> malformed = {
       R"({"parameters":[{"name":"a","values":["0"]},{"name":"b","values":["0"]}]}) trailing)",
@@ -111,6 +126,29 @@ TEST(CliJsonTest, RejectsTrailingGarbageMalformedNumbersEscapesAndSurrogates) {
     EXPECT_EQ(result.exit_code, 3) << "case " << i << ": " << result.stdout_text;
     EXPECT_NE(result.stdout_text.find("error:"), std::string::npos) << result.stdout_text;
   }
+}
+
+TEST(CliJsonTest, RejectsMalformedRawUtf8AndAcceptsValidMultibyteText) {
+  const std::string prefix = R"({"parameters":[{"name":"a","values":[")";
+  const std::string suffix = R"("]},{"name":"b","values":["0"]}]})";
+  const std::vector<std::string> malformed = {
+      std::string("\xFF", 1),         std::string("\xC0\xAF", 2),         std::string("\x80", 1),
+      std::string("\xED\xA0\x80", 3), std::string("\xF4\x90\x80\x80", 4),
+  };
+  for (size_t i = 0; i < malformed.size(); ++i) {
+    const std::string path = TempPath("invalid_utf8_" + std::to_string(i) + ".json");
+    WriteFile(path, prefix + malformed[i] + suffix);
+    const auto result = RunCliCaptureStderr("generate " + path);
+    EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+    EXPECT_NE(result.stdout_text.find("UTF-8"), std::string::npos) << result.stdout_text;
+  }
+
+  const std::string valid_path = TempPath("valid_utf8.json");
+  WriteFile(valid_path,
+            R"({"parameters":[{"name":"a","values":["日本語"]},{"name":"b","values":["0"]}]})");
+  const auto valid = RunCli("generate " + valid_path);
+  EXPECT_EQ(valid.exit_code, 0) << valid.stdout_text;
+  EXPECT_NE(valid.stdout_text.find("日本語"), std::string::npos);
 }
 
 TEST(CliJsonTest, WriterEscapesEveryC0ControlCharacter) {
@@ -234,6 +272,75 @@ TEST(CliSchemaTest, GenerateAnalyzeAndStatsUseVersionedStableFields) {
   EXPECT_NE(stats.stdout_text.find("\"parameters\":"), std::string::npos);
   EXPECT_EQ(stats.stdout_text.find("\"subModels\":"), std::string::npos);
   EXPECT_EQ(stats.stdout_text.find("\"constraints\":"), std::string::npos);
+}
+
+TEST(CliStatsTest, RejectsMalformedConstraintsLikeGenerate) {
+  const std::string input = R"({
+    "parameters": [
+      {"name": "a", "values": ["0", "1"]},
+      {"name": "b", "values": ["0", "1"]}
+    ],
+    "constraints": ["unknown = 0"]
+  })";
+  const std::string path = TempPath("stats_bad_constraint.json");
+  WriteFile(path, input);
+
+  const auto generated = RunCliCaptureStderr("generate " + path);
+  const auto stats = RunCliCaptureStderr("stats " + path);
+  EXPECT_EQ(generated.exit_code, 1) << generated.stdout_text;
+  EXPECT_EQ(stats.exit_code, 3) << stats.stdout_text;
+  EXPECT_NE(stats.stdout_text.find("Invalid constraint"), std::string::npos) << stats.stdout_text;
+}
+
+TEST(CliPipelineTest, GenerateEnvelopeFeedsAnalyzeAndExtendDirectly) {
+  const std::string input = R"({
+    "parameters": [
+      {"name": "a", "values": ["0", "1"]},
+      {"name": "b", "values": ["0", "1"]}
+    ],
+    "strength": 2,
+    "seed": 42
+  })";
+  const std::string input_path = TempPath("pipeline_input.json");
+  const std::string generated_path = TempPath("pipeline_generated.json");
+  WriteFile(input_path, input);
+
+  const auto generated = RunCli("generate " + input_path);
+  ASSERT_EQ(generated.exit_code, 0) << generated.stdout_text;
+  WriteFile(generated_path, generated.stdout_text);
+
+  const auto analyzed =
+      RunCli("analyze --params " + input_path + " --tests " + generated_path + " --strength 2");
+  EXPECT_EQ(analyzed.exit_code, 0) << analyzed.stdout_text;
+
+  const auto extended = RunCli("extend --existing " + generated_path + " " + input_path);
+  EXPECT_EQ(extended.exit_code, 0) << extended.stdout_text;
+  EXPECT_NE(extended.stdout_text.find("\"schemaVersion\":1"), std::string::npos);
+}
+
+TEST(CliAnalyzeTest, DedicatedConstraintsObjectRequiresConstraintsArray) {
+  const std::string params = R"([{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}])";
+  const std::string tests = R"([{"a":"0","b":"0"}])";
+  const std::string params_path = TempPath("constraints_params.json");
+  const std::string tests_path = TempPath("constraints_tests.json");
+  WriteFile(params_path, params);
+  WriteFile(tests_path, tests);
+
+  for (const std::string& invalid :
+       {R"({})", R"({"constraint":["a=0"]})", R"({"constraints":null})"}) {
+    const std::string constraints_path = TempPath("constraints_invalid.json");
+    WriteFile(constraints_path, invalid);
+    const auto result = RunCliCaptureStderr("analyze --params " + params_path + " --tests " +
+                                            tests_path + " --constraints " + constraints_path);
+    EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+  }
+
+  const std::string valid_path = TempPath("constraints_valid.json");
+  WriteFile(valid_path, R"({"constraints":["a=0"]})");
+  EXPECT_EQ(RunCli("analyze --params " + params_path + " --tests " + tests_path +
+                   " --constraints " + valid_path)
+                .exit_code,
+            2);
 }
 
 // analyze with --strength 3 validates a complete 3-wise suite (exit 0).

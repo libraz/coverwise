@@ -57,6 +57,50 @@ TEST(CoverageValidatorTest, EmptyTestSuiteZeroCoverage) {
   EXPECT_EQ(report.covered_tuples, 0u);
   EXPECT_DOUBLE_EQ(report.coverage_ratio, 0.0);
   EXPECT_EQ(report.uncovered.size(), 4u);
+  for (const auto& uncovered : report.uncovered) {
+    EXPECT_EQ(uncovered.indices.size(), 2u);
+  }
+}
+
+TEST(CoverageValidatorTest, UncoveredIndicesPreserveNamesAndValuesContainingEquals) {
+  std::vector<Parameter> params = {{"A=B", {"x=y"}, {}}, {"C", {"z"}, {}}};
+  const auto report = ValidateCoverage(params, {}, 2);
+
+  ASSERT_EQ(report.uncovered.size(), 1u);
+  EXPECT_EQ(report.uncovered[0].tuple, (std::vector<std::string>{"A=B=x=y", "C=z"}));
+  EXPECT_EQ(report.uncovered[0].indices,
+            (std::vector<std::pair<uint32_t, uint32_t>>{{0, 0}, {1, 0}}));
+}
+
+TEST(CoverageValidatorTest, ContradictoryConstraintsReturnErrorInsteadOfFullCoverage) {
+  std::vector<Parameter> params = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  std::vector<coverwise::model::Constraint> constraints;
+  for (const auto& expression : {"A=0", "A!=0"}) {
+    auto parsed = coverwise::model::ParseConstraint(expression, params);
+    ASSERT_TRUE(parsed.error.ok()) << parsed.error.message;
+    constraints.push_back(std::move(parsed.constraint));
+  }
+
+  auto report = ValidateCoverage(params, {}, 2, constraints);
+
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_EQ(report.error.message, "Constraints are unsatisfiable");
+  EXPECT_NE(report.coverage_ratio, 1.0);
+}
+
+TEST(CoverageValidatorTest, AllInvalidParameterReturnsInvalidInput) {
+  std::vector<Parameter> params = {
+      Parameter{"A", {"0", "1"}, {true, true}},
+      Parameter{"B", {"0", "1"}, {}},
+  };
+
+  auto report = ValidateCoverage(params, {}, 2);
+
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_NE(report.coverage_ratio, 1.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -297,10 +341,11 @@ TEST(CoverageValidatorTest, RejectsUint64TupleProductWrapBeforeEnumeration) {
 }
 
 TEST(CoverageValidatorTest, RejectsJustAboveTupleLimit) {
-  std::vector<Parameter> params = {
-      {"A", std::vector<std::string>(4000, "a"), {}},
-      {"B", std::vector<std::string>(4001, "b"), {}},
-  };
+  Parameter a{"A", {}};
+  Parameter b{"B", {}};
+  for (uint32_t index = 0; index < 4000; ++index) a.values.push_back("a" + std::to_string(index));
+  for (uint32_t index = 0; index < 4001; ++index) b.values.push_back("b" + std::to_string(index));
+  std::vector<Parameter> params = {std::move(a), std::move(b)};
   auto report = ValidateCoverage(params, {}, 2);
   EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kTupleExplosion);
 }

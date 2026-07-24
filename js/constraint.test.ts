@@ -154,6 +154,11 @@ describe('and()', () => {
     const result = orCond.and(when('c').eq('3'));
     expect(result.toString()).toBe('(a = 1 OR b = 2) AND c = 3');
   });
+
+  it('does not mistake parentheses inside quoted values for expression grouping', () => {
+    const result = when('a').eq('(').or(when('b').eq('2')).and(when('c').eq('3'));
+    expect(result.toString()).toBe('(a = "(" OR b = 2) AND c = 3');
+  });
 });
 
 describe('or()', () => {
@@ -314,7 +319,7 @@ describe('special characters in values', () => {
   });
 
   it('empty string', () => {
-    expect(when('x').eq('').toString()).toBe('x = ');
+    expect(when('x').eq('').toString()).toBe('x = ""');
   });
 
   it('value is a single space', () => {
@@ -334,7 +339,7 @@ describe('special characters in values', () => {
   });
 
   it('null byte in value', () => {
-    expect(when('x').eq('a\0b').toString()).toBe('x = a\0b');
+    expect(when('x').eq('a\0b').toString()).toBe('x = "a\0b"');
   });
 });
 
@@ -376,7 +381,7 @@ describe('escape and quoting edge cases', () => {
   });
 
   it('value containing backslash', () => {
-    expect(when('path').eq('C:\\Users').toString()).toBe('path = C:\\Users');
+    expect(when('path').eq('C:\\Users').toString()).toBe('path = "C:\\\\Users"');
   });
 
   it('value containing backslash and space', () => {
@@ -411,12 +416,14 @@ describe('numeric edge cases', () => {
     expect(when('n').eq(3.14).toString()).toBe('n = 3.14');
   });
 
-  it('gt with Infinity', () => {
-    expect(when('n').gt(Number.POSITIVE_INFINITY).toString()).toBe('n > Infinity');
+  it('rejects Infinity', () => {
+    expect(() => when('n').gt(Number.POSITIVE_INFINITY)).toThrow(CoverwiseError);
+    expect(() => when('n').gt(Number.POSITIVE_INFINITY)).toThrow('finite');
   });
 
-  it('lt with NaN', () => {
-    expect(when('n').lt(Number.NaN).toString()).toBe('n < NaN');
+  it('rejects NaN', () => {
+    expect(() => when('n').lt(Number.NaN)).toThrow(CoverwiseError);
+    expect(() => when('n').lt(Number.NaN)).toThrow('finite');
   });
 
   it('in with mixed numbers', () => {
@@ -612,6 +619,32 @@ describe('builder output parses on the TS parser', () => {
     const result = parse(expr, params);
     expect(result.error.code).toBe(0);
     expect(result.constraint?.evaluate([0])).toBe(ConstraintResult.True);
+  });
+
+  it.each(['', 'C:\\Users', 'a\0b', 'a*b', 'a/b', 'a@b', "a'b"])(
+    'value %j round-trips',
+    (value) => {
+      const params = [new Parameter('value', [value, 'other'])];
+      const expr = when('value').eq(value).toString();
+      const result = parse(expr, params);
+      expect(result.error.code).toBe(0);
+      expect(result.constraint?.evaluate([0])).toBe(ConstraintResult.True);
+      expect(result.constraint?.evaluate([1])).toBe(ConstraintResult.False);
+    },
+  );
+
+  it('preserves Boolean grouping when a quoted value contains a parenthesis', () => {
+    const params = [
+      new Parameter('a', ['(', 'other']),
+      new Parameter('b', ['2', 'other']),
+      new Parameter('c', ['3', 'other']),
+    ];
+    const expr = when('a').eq('(').or(when('b').eq('2')).and(when('c').eq('3')).toString();
+    const result = parse(expr, params);
+    expect(expr).toBe('(a = "(" OR b = 2) AND c = 3');
+    expect(result.error.code).toBe(0);
+    expect(result.constraint?.evaluate([0, 1, 1])).toBe(ConstraintResult.False);
+    expect(result.constraint?.evaluate([0, 1, 0])).toBe(ConstraintResult.True);
   });
 
   it('IN set with an embedded double quote round-trips', () => {

@@ -24,6 +24,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "core/generator.h"
@@ -42,6 +43,13 @@ constexpr int kExitOk = 0;
 constexpr int kExitConstraintError = 1;
 constexpr int kExitInsufficientCoverage = 2;
 constexpr int kExitInvalidInput = 3;
+constexpr size_t kMaxInputBytes = 1 * 1024 * 1024;
+constexpr size_t kMaxParameters = 1024;
+constexpr size_t kMaxValuesPerParameter = 16384;
+constexpr size_t kMaxTests = 100000;
+constexpr size_t kMaxConstraints = 256;
+constexpr size_t kMaxStringBytes = 64 * 1024;
+constexpr size_t kMaxObjectMembers = 16384;
 
 /// @brief Map a structured Error::Code to the documented CLI exit code.
 ///
@@ -126,6 +134,52 @@ struct JsonValue {
     return std::find(object_keys.begin(), object_keys.end(), key) != object_keys.end();
   }
 };
+
+/// @brief Append one strict UTF-8 code point from a raw JSON string.
+///
+/// JSON text is Unicode; accepting malformed UTF-8 here would let the writer
+/// later emit a syntactically invalid JSON success result.
+bool AppendUtf8CodePoint(const std::string& input, size_t& pos, std::string& output,
+                         std::string& error) {
+  const size_t start = pos;
+  const auto byte_at = [&](size_t offset) { return static_cast<unsigned char>(input[offset]); };
+  const unsigned char first = byte_at(pos);
+  size_t length = 0;
+  if (first <= 0x7F) {
+    output.push_back(static_cast<char>(first));
+    ++pos;
+    return true;
+  }
+  if (first >= 0xC2 && first <= 0xDF) {
+    length = 2;
+  } else if (first >= 0xE0 && first <= 0xEF) {
+    length = 3;
+  } else if (first >= 0xF0 && first <= 0xF4) {
+    length = 4;
+  } else {
+    error = "invalid UTF-8 leading byte at position " + std::to_string(start);
+    return false;
+  }
+  if (pos + length > input.size()) {
+    error = "truncated UTF-8 sequence at position " + std::to_string(start);
+    return false;
+  }
+  for (size_t i = 1; i < length; ++i) {
+    if ((byte_at(pos + i) & 0xC0) != 0x80) {
+      error = "invalid UTF-8 continuation byte at position " + std::to_string(pos + i);
+      return false;
+    }
+  }
+  const unsigned char second = byte_at(pos + 1);
+  if ((first == 0xE0 && second < 0xA0) || (first == 0xED && second > 0x9F) ||
+      (first == 0xF0 && second < 0x90) || (first == 0xF4 && second > 0x8F)) {
+    error = "invalid UTF-8 code point at position " + std::to_string(start);
+    return false;
+  }
+  output.append(input, pos, length);
+  pos += length;
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Minimal recursive-descent JSON parser.
@@ -301,7 +355,7 @@ class JsonParser {
           error_ = "unescaped control character in string at position " + std::to_string(pos_);
           return {};
         }
-        val.string_val += input_[pos_++];
+        if (!AppendUtf8CodePoint(input_, pos_, val.string_val, error_)) return {};
       }
     }
     if (pos_ >= input_.size()) {
@@ -309,6 +363,10 @@ class JsonParser {
       return {};
     }
     ++pos_;  // skip closing "
+    if (val.string_val.size() > kMaxStringBytes) {
+      error_ = "string exceeds " + std::to_string(kMaxStringBytes) + " UTF-8 bytes";
+      return {};
+    }
     return val;
   }
 
@@ -416,13 +474,18 @@ class JsonParser {
       ++pos_;
       return val;
     }
+    std::unordered_set<std::string> seen_keys;
     while (true) {
       SkipWhitespace();
       auto key = ParseString();
       if (!error_.empty()) return {};
       if (!Expect(':')) return {};
-      if (val.HasKey(key.string_val)) {
+      if (!seen_keys.insert(key.string_val).second) {
         error_ = "duplicate object key '" + key.string_val + "'";
+        return {};
+      }
+      if (seen_keys.size() > kMaxObjectMembers) {
+        error_ = "object has too many members";
         return {};
       }
       auto value = ParseValue(depth);
@@ -584,11 +647,14 @@ class JsonWriter {
 /// ("cannot open file" vs "file is empty") instead of conflating the two.
 /// @return true if the file was opened and read; false if it could not be opened.
 bool ReadFile(const std::string& path, std::string& out) {
-  std::ifstream file(path);
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
   if (!file.is_open()) return false;
-  std::ostringstream ss;
-  ss << file.rdbuf();
-  out = ss.str();
+  const std::streampos size = file.tellg();
+  if (size < 0 || static_cast<uint64_t>(size) > kMaxInputBytes) return false;
+  out.resize(static_cast<size_t>(size));
+  file.seekg(0);
+  file.read(out.data(), static_cast<std::streamsize>(out.size()));
+  if (!file && !out.empty()) return false;
   return true;
 }
 
@@ -601,6 +667,10 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
                      std::string& error) {
   if (json.type != JsonType::kArray) {
     error = "parameters must be a JSON array";
+    return false;
+  }
+  if (json.array_val.size() > kMaxParameters) {
+    error = "parameters exceed maximum of " + std::to_string(kMaxParameters);
     return false;
   }
   for (size_t i = 0; i < json.array_val.size(); ++i) {
@@ -620,6 +690,11 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
     const auto& values_val = p["values"];
     if (values_val.type != JsonType::kArray) {
       error = "parameter '" + param.name + "' missing 'values' array";
+      return false;
+    }
+    if (values_val.array_val.size() > kMaxValuesPerParameter) {
+      error = "parameter '" + param.name + "' values exceed maximum of " +
+              std::to_string(kMaxValuesPerParameter);
       return false;
     }
     bool has_any_invalid = false;
@@ -868,6 +943,10 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
     error = "tests must be a JSON array";
     return false;
   }
+  if (json.array_val.size() > kMaxTests) {
+    error = "tests exceed maximum of " + std::to_string(kMaxTests);
+    return false;
+  }
   for (size_t i = 0; i < json.array_val.size(); ++i) {
     const auto& t = json.array_val[i];
     if (t.type != JsonType::kObject) {
@@ -911,6 +990,33 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
   return true;
 }
 
+/// @brief Accept a bare tests array or the schema-v1 generation envelope.
+///
+/// Analyze and extend are documented to consume `generate` output directly.
+/// Keep the envelope checks strict so a malformed or future schema is never
+/// silently interpreted as an empty test suite.
+bool ExtractTestsArray(const JsonValue& json, const JsonValue*& tests, std::string& error) {
+  if (json.type == JsonType::kArray) {
+    tests = &json;
+    return true;
+  }
+  if (json.type != JsonType::kObject) {
+    error = "tests must be a JSON array or a schema-v1 generation result";
+    return false;
+  }
+  if (!json.HasKey("schemaVersion") || json["schemaVersion"].type != JsonType::kNumber ||
+      json["schemaVersion"].number_val != 1.0) {
+    error = "tests result must have schemaVersion 1";
+    return false;
+  }
+  if (!json.HasKey("tests") || json["tests"].type != JsonType::kArray) {
+    error = "tests result must have a 'tests' JSON array";
+    return false;
+  }
+  tests = &json["tests"];
+  return true;
+}
+
 /// @brief Parse a JSON array of constraint strings into expression strings.
 /// @return true on success; on failure sets error and returns false.
 bool ParseConstraintExpressions(const JsonValue& json, std::vector<std::string>& expressions,
@@ -918,6 +1024,10 @@ bool ParseConstraintExpressions(const JsonValue& json, std::vector<std::string>&
   if (json.IsNull()) return true;
   if (json.type != JsonType::kArray) {
     error = "constraints must be a JSON array";
+    return false;
+  }
+  if (json.array_val.size() > kMaxConstraints) {
+    error = "constraints exceed maximum of " + std::to_string(kMaxConstraints);
     return false;
   }
   for (size_t i = 0; i < json.array_val.size(); ++i) {
@@ -1047,6 +1157,19 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
     w.EndObject();
   }
   w.EndArray();
+  if (result.negative_coverage) {
+    w.Key("negativeCoverage");
+    w.BeginObject();
+    w.Key("totalTuples");
+    w.WriteNumber(static_cast<double>(result.negative_coverage->total_tuples));
+    w.Key("coveredTuples");
+    w.WriteNumber(static_cast<double>(result.negative_coverage->covered_tuples));
+    w.Key("omittedTuples");
+    w.WriteNumber(static_cast<double>(result.negative_coverage->omitted_tuples));
+    w.Key("coverageRatio");
+    w.WriteNumber(result.negative_coverage->coverage_ratio);
+    w.EndObject();
+  }
 
   // coverage
   w.Key("coverage");
@@ -1070,6 +1193,18 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
     for (const auto& p : u.params) {
       w.Sep();
       w.WriteString(p);
+    }
+    w.EndArray();
+    w.Key("indices");
+    w.BeginArray();
+    for (const auto& [parameter_index, value_index] : u.indices) {
+      w.Sep();
+      w.BeginArray();
+      w.Sep();
+      w.WriteNumber(parameter_index);
+      w.Sep();
+      w.WriteNumber(value_index);
+      w.EndArray();
     }
     w.EndArray();
     w.Key("reason");
@@ -1198,6 +1333,18 @@ void WriteCoverageReport(const coverwise::validator::CoverageReport& report) {
     for (const auto& p : u.params) {
       w.Sep();
       w.WriteString(p);
+    }
+    w.EndArray();
+    w.Key("indices");
+    w.BeginArray();
+    for (const auto& [parameter_index, value_index] : u.indices) {
+      w.Sep();
+      w.BeginArray();
+      w.Sep();
+      w.WriteNumber(parameter_index);
+      w.Sep();
+      w.WriteNumber(value_index);
+      w.EndArray();
     }
     w.EndArray();
     w.Key("reason");
@@ -1442,6 +1589,12 @@ int RunAnalyze(int argc, char* argv[]) {
       std::cerr << "error: invalid constraints JSON: " << constraints_parser.error() << "\n";
       return kExitInvalidInput;
     }
+    if (constraints_json.type == JsonType::kObject &&
+        (!constraints_json.HasKey("constraints") ||
+         constraints_json["constraints"].type != JsonType::kArray)) {
+      std::cerr << "error: constraints file object must have a 'constraints' JSON array\n";
+      return kExitInvalidInput;
+    }
     const JsonValue& constraints_node = constraints_json.type == JsonType::kObject
                                             ? constraints_json["constraints"]
                                             : constraints_json;
@@ -1470,7 +1623,9 @@ int RunAnalyze(int argc, char* argv[]) {
   }
 
   std::vector<coverwise::model::TestCase> tests;
-  if (!ParseTests(tests_json, params, tests, error)) {
+  const JsonValue* tests_array = nullptr;
+  if (!ExtractTestsArray(tests_json, tests_array, error) ||
+      !ParseTests(*tests_array, params, tests, error)) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
   }
@@ -1636,7 +1791,9 @@ int RunExtend(int argc, char* argv[]) {
   }
 
   std::vector<coverwise::model::TestCase> existing;
-  if (!ParseTests(existing_json, options.parameters, existing, error)) {
+  const JsonValue* existing_array = nullptr;
+  if (!ExtractTestsArray(existing_json, existing_array, error) ||
+      !ParseTests(*existing_array, options.parameters, existing, error)) {
     std::cerr << "error: " << error << "\n";
     return kExitInvalidInput;
   }

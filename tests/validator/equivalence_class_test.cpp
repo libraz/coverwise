@@ -10,8 +10,11 @@
 #include "validator/coverage_validator.h"
 
 using coverwise::model::Constraint;
+using coverwise::model::ConstraintResult;
+using coverwise::model::GenerateResult;
 using coverwise::model::Parameter;
 using coverwise::model::TestCase;
+using coverwise::validator::AnnotateClassCoverage;
 using coverwise::validator::ComputeClassCoverage;
 
 namespace {
@@ -23,6 +26,20 @@ Parameter MakeClassParam(const std::string& name, std::vector<std::string> value
   p.set_equivalence_classes(std::move(classes));
   return p;
 }
+
+class LateClassWitnessConstraint final : public coverwise::model::ConstraintNode {
+ public:
+  ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override {
+    for (uint32_t value : assignment) {
+      if (value == coverwise::model::kUnassigned) return ConstraintResult::kUnknown;
+    }
+    if (assignment.back() == 0) return ConstraintResult::kTrue;
+    for (size_t i = 0; i + 1 < assignment.size(); ++i) {
+      if (assignment[i] != 1) return ConstraintResult::kFalse;
+    }
+    return ConstraintResult::kTrue;
+  }
+};
 
 }  // namespace
 
@@ -167,6 +184,25 @@ TEST(EquivalenceClassTest, ConstraintExcludesUnsatisfiableClassTuple) {
   EXPECT_LT(unconstrained.coverage_ratio, 1.0);
 }
 
+TEST(EquivalenceClassTest, SearchBudgetExhaustionPropagatesToGenerateResult) {
+  std::vector<Parameter> params;
+  params.reserve(22);
+  for (uint32_t index = 0; index < 22; ++index) {
+    Parameter parameter{"P" + std::to_string(index), {"0", "1"}};
+    if (index == 21) parameter.set_equivalence_classes({"", "hard"});
+    params.push_back(std::move(parameter));
+  }
+  std::vector<Constraint> constraints;
+  constraints.push_back(std::make_unique<LateClassWitnessConstraint>());
+  GenerateResult result;
+
+  AnnotateClassCoverage(result, params, 1, constraints);
+
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_EQ(result.error.message, "Constraint search budget exceeded");
+  EXPECT_FALSE(result.class_coverage.has_value());
+}
+
 TEST(EquivalenceClassTest, InvalidValueExcludesUnsatisfiableClassTuple) {
   // os = {win(desktop), mac(apple), ie6(legacy, invalid)}.
   // browser = {chrome(modern), safari(webkit)}.
@@ -217,5 +253,53 @@ TEST(EquivalenceClassTest, MultipleValuesInSameClass) {
   report = ComputeClassCoverage(params, tests, 2);
 
   EXPECT_EQ(report.covered_class_tuples, 2u);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+}
+
+TEST(EquivalenceClassTest, LargeDistinctClassUniverseUsesIndexedProjection) {
+  constexpr uint32_t kClasses = 1000;
+  Parameter left{"left", {}};
+  Parameter right{"right", {}};
+  std::vector<std::string> left_classes;
+  std::vector<std::string> right_classes;
+  left.values.reserve(kClasses);
+  right.values.reserve(kClasses);
+  left_classes.reserve(kClasses);
+  right_classes.reserve(kClasses);
+  for (uint32_t index = 0; index < kClasses; ++index) {
+    left.values.push_back("l" + std::to_string(index));
+    right.values.push_back("r" + std::to_string(index));
+    left_classes.push_back("lc" + std::to_string(index));
+    right_classes.push_back("rc" + std::to_string(index));
+  }
+  left.set_equivalence_classes(std::move(left_classes));
+  right.set_equivalence_classes(std::move(right_classes));
+
+  auto report = ComputeClassCoverage({left, right}, {{{0, 0}}}, 2);
+
+  EXPECT_TRUE(report.error.ok()) << report.error.message;
+  EXPECT_EQ(report.total_class_tuples, 1'000'000u);
+  EXPECT_EQ(report.covered_class_tuples, 1u);
+}
+
+TEST(EquivalenceClassTest, PreflightUsesClassUniverseInsteadOfRawValues) {
+  constexpr uint32_t kValues = 4001;
+  Parameter left{"left", {}};
+  Parameter right{"right", {}};
+  left.values.reserve(kValues);
+  right.values.reserve(kValues);
+  std::vector<std::string> same_class(kValues, "one");
+  for (uint32_t index = 0; index < kValues; ++index) {
+    left.values.push_back("l" + std::to_string(index));
+    right.values.push_back("r" + std::to_string(index));
+  }
+  left.set_equivalence_classes(same_class);
+  right.set_equivalence_classes(std::move(same_class));
+
+  auto report = ComputeClassCoverage({left, right}, {{{0, 0}}}, 2);
+
+  EXPECT_TRUE(report.error.ok()) << report.error.message;
+  EXPECT_EQ(report.total_class_tuples, 1u);
+  EXPECT_EQ(report.covered_class_tuples, 1u);
   EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
 }

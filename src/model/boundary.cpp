@@ -34,6 +34,29 @@ std::string FormatFloat(double value) { return JsNumberToString(value); }
 }  // namespace
 
 Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& config) {
+  return ExpandBoundaryValues(param, config, nullptr);
+}
+
+Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& config, Error* error) {
+  auto reject_metadata = [&](const std::string& field) {
+    Error metadata_error{Error::Code::kInvalidInput,
+                         "Invalid metadata length for parameter '" + param.name + "': " + field,
+                         ""};
+    if (error != nullptr) *error = metadata_error;
+    return param;
+  };
+  if (!param.invalid().empty() && param.invalid().size() != param.values.size()) {
+    return reject_metadata("invalid");
+  }
+  if (!param.all_aliases().empty() && param.all_aliases().size() != param.values.size()) {
+    return reject_metadata("aliases");
+  }
+  if (!param.equivalence_classes().empty() &&
+      param.equivalence_classes().size() != param.values.size()) {
+    return reject_metadata("equivalence classes");
+  }
+  if (error != nullptr) *error = {};
+
   // Generate boundary values.
   std::vector<double> boundary_nums;
   if (config.type == BoundaryConfig::Type::kInteger) {

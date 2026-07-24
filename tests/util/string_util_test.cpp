@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <clocale>
+#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
@@ -9,6 +11,7 @@
 using coverwise::util::CaseInsensitiveEqual;
 using coverwise::util::IsNumeric;
 using coverwise::util::JsNumberToString;
+using coverwise::util::ToDouble;
 
 namespace {
 
@@ -107,6 +110,33 @@ TEST(StringUtilTest, CaseInsensitiveEqualAsciiOnly) {
   EXPECT_TRUE(CaseInsensitiveEqual("caF\xC3\xA9", "CAF\xC3\xA9"));
 
   EXPECT_FALSE(CaseInsensitiveEqual("ab", "abc"));
+}
+
+TEST(StringUtilTest, NumericParsingAndAsciiFoldingIgnoreProcessLocale) {
+  const char* previous_numeric = std::setlocale(LC_NUMERIC, nullptr);
+  ASSERT_NE(previous_numeric, nullptr);
+  const std::string saved_numeric(previous_numeric);
+  const char* previous_ctype = std::setlocale(LC_CTYPE, nullptr);
+  ASSERT_NE(previous_ctype, nullptr);
+  const std::string saved_ctype(previous_ctype);
+
+  if (std::setlocale(LC_NUMERIC, "de_DE.UTF-8") == nullptr ||
+      std::setlocale(LC_CTYPE, "tr_TR.UTF-8") == nullptr) {
+    std::setlocale(LC_NUMERIC, saved_numeric.c_str());
+    std::setlocale(LC_CTYPE, saved_ctype.c_str());
+    GTEST_SKIP() << "Required locale is unavailable";
+  }
+
+  EXPECT_DOUBLE_EQ(ToDouble("1.5"), 1.5);
+  EXPECT_DOUBLE_EQ(ToDouble("+.5"), 0.5);
+  EXPECT_DOUBLE_EQ(ToDouble("12."), 12.0);
+  EXPECT_DOUBLE_EQ(ToDouble("-3.0E-2"), -0.03);
+  EXPECT_EQ(ToDouble("1e-9999"), 0.0);
+  EXPECT_TRUE(std::isinf(ToDouble("1e9999")));
+  EXPECT_TRUE(CaseInsensitiveEqual("I", "i"));
+
+  EXPECT_NE(std::setlocale(LC_NUMERIC, saved_numeric.c_str()), nullptr);
+  EXPECT_NE(std::setlocale(LC_CTYPE, saved_ctype.c_str()), nullptr);
 }
 
 }  // namespace

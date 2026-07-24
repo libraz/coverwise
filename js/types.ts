@@ -11,21 +11,39 @@ export interface ParameterValue {
   class?: string;
 }
 
-export interface Parameter {
+interface ParameterBase {
   name: string;
   values: (string | number | boolean | ParameterValue)[];
-  /**
-   * Boundary value expansion type. When set with {@link Parameter.range}, the
-   * value set is expanded with min/max boundary values (min-1, min, min+1,
-   * max-1, max, max+1 for `'integer'`; the same spaced by {@link Parameter.step}
-   * for `'float'`).
-   */
-  type?: 'integer' | 'float';
-  /** Inclusive `[min, max]` range driving boundary value expansion. */
-  range?: [number, number];
-  /** Step size for `'float'` boundary expansion (default 1.0). */
+}
+
+/** A normal discrete parameter with no boundary-expansion fields. */
+export interface PlainParameter extends ParameterBase {
+  type?: never;
+  range?: never;
+  step?: never;
+}
+
+/** Integer boundary expansion; the step is fixed at 1 when present. */
+export interface IntegerBoundaryParameter extends ParameterBase {
+  type: 'integer';
+  range: [number, number];
+  step?: 1;
+}
+
+/** Floating-point boundary expansion. */
+export interface FloatBoundaryParameter extends ParameterBase {
+  type: 'float';
+  range: [number, number];
   step?: number;
 }
+
+/** Public parameter contract. Boundary fields are an all-or-nothing union. */
+export type Parameter = PlainParameter | IntegerBoundaryParameter | FloatBoundaryParameter;
+
+/**
+ * @deprecated Use {@link IntegerBoundaryParameter} or {@link FloatBoundaryParameter}.
+ */
+export type BoundaryParameter = IntegerBoundaryParameter | FloatBoundaryParameter;
 
 export interface SubModel {
   parameters: string[];
@@ -65,6 +83,8 @@ export interface UncoveredTuple {
   tuple: string[];
   /** Parameter names involved. */
   params: string[];
+  /** Exact `(parameterIndex, valueIndex)` pairs; safe even when text contains `=`. */
+  indices: Array<[number, number]>;
   /**
    * Why this tuple is uncovered.
    *
@@ -87,9 +107,19 @@ export interface GenerateStats {
   testCount: number;
 }
 
+/** Coverage metrics for single-fault negative tests. */
+export interface NegativeCoverage {
+  totalTuples: number;
+  coveredTuples: number;
+  omittedTuples: number;
+  coverageRatio: number;
+}
+
 export interface GenerateResult {
   tests: TestCase[];
   negativeTests: TestCase[];
+  /** Present when the input includes invalid values. */
+  negativeCoverage?: NegativeCoverage;
   coverage: number;
   /** Uncovered tuples with context. Empty when coverage is 1.0. */
   uncovered: UncoveredTuple[];

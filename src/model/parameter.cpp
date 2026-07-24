@@ -8,6 +8,17 @@
 
 namespace coverwise {
 namespace model {
+namespace {
+
+std::string FoldAsciiName(const std::string& value) {
+  std::string folded = value;
+  for (char& c : folded) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+  }
+  return folded;
+}
+
+}  // namespace
 
 uint32_t Parameter::valid_count() const {
   if (invalid_.empty()) return size();
@@ -124,12 +135,17 @@ std::vector<std::string> Parameter::unique_classes() const {
 
 Error ValidateParameters(const std::vector<Parameter>& params) {
   std::unordered_set<std::string> seen_names;
+  std::unordered_set<std::string> seen_folded_names;
   for (const auto& p : params) {
     if (p.name.empty()) {
       return {Error::Code::kInvalidInput, "Parameter name must be a non-empty string", ""};
     }
     if (!seen_names.insert(p.name).second) {
       return {Error::Code::kInvalidInput, "Duplicate parameter name '" + p.name + "'", ""};
+    }
+    if (!seen_folded_names.insert(FoldAsciiName(p.name)).second) {
+      return {Error::Code::kInvalidInput,
+              "Parameter names must not differ only by ASCII case: '" + p.name + "'", ""};
     }
     if (p.values.empty()) {
       return {Error::Code::kInvalidInput, "Parameter '" + p.name + "' must have at least one value",
@@ -145,6 +161,10 @@ Error ValidateParameters(const std::vector<Parameter>& params) {
     if (!p.invalid().empty() && p.invalid().size() != p.values.size()) {
       return {Error::Code::kInvalidInput,
               "Invalid metadata length for parameter '" + p.name + "': invalid", ""};
+    }
+    if (p.valid_count() == 0) {
+      return {Error::Code::kInvalidInput,
+              "Parameter '" + p.name + "' must have at least one valid value", ""};
     }
     if (!p.all_aliases().empty() && p.all_aliases().size() != p.values.size()) {
       return {Error::Code::kInvalidInput,

@@ -1,4 +1,9 @@
-import { decodeMixedRadix, encodeMixedRadix, generateCombinations } from './combinatorics.js';
+import {
+  decodeMixedRadix,
+  encodeMixedRadix,
+  generateCombinations,
+  generateCombinationsFlat,
+} from './combinatorics.js';
 
 describe('generateCombinations', () => {
   it('generates C(4,2) = 6 combinations', () => {
@@ -67,6 +72,12 @@ describe('generateCombinations', () => {
     const serialized = combos.map((c) => c.join(','));
     const unique = new Set(serialized);
     expect(unique.size).toBe(combos.length);
+  });
+});
+
+describe('generateCombinationsFlat', () => {
+  it('matches lexicographic nested order without inner arrays', () => {
+    expect(generateCombinationsFlat(4, 2)).toEqual([0, 1, 0, 2, 0, 3, 1, 2, 1, 3, 2, 3]);
   });
 });
 

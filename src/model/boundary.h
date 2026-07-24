@@ -32,6 +32,17 @@ struct BoundaryConfig {
 /// @return A new Parameter with expanded values.
 Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& config);
 
+/// @brief Checked boundary expansion with an error output.
+///
+/// When per-value metadata lengths do not match @p param.values, this overload
+/// returns an unchanged copy instead of reading out of bounds.
+///
+/// @param param The original parameter.
+/// @param config The boundary configuration specifying the range.
+/// @param error Output for malformed per-value metadata.
+/// @return A new Parameter with expanded values.
+Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& config, Error* error);
+
 }  // namespace model
 }  // namespace coverwise
 

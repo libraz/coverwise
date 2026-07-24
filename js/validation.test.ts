@@ -93,6 +93,18 @@ describe('shared validation module', () => {
       const bad = { parameters: [], strength: 0 } as unknown as GenerateInput;
       expect(() => validateGenerateInput(bad, makeError)).toThrow(/Invalid strength/);
     });
+
+    it('rejects aggregate UTF-8 string data above the admission budget', () => {
+      const oversized = 'x'.repeat(64 * 1024);
+      const input = {
+        parameters: [
+          { name: 'a', values: [oversized] },
+          { name: 'b', values: [oversized] },
+        ],
+        constraints: Array.from({ length: 15 }, () => oversized),
+      } as unknown as GenerateInput;
+      expect(() => validateGenerateInput(input, makeError)).toThrow(/Input strings exceed/);
+    });
   });
 });
 

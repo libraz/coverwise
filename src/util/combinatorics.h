@@ -16,6 +16,13 @@ namespace util {
 /// @return Vector of sorted index vectors. Empty if k == 0 or k > n.
 std::vector<std::vector<uint32_t>> GenerateCombinations(uint32_t n, uint32_t k);
 
+/// @brief Generate all C(n, k) combinations in one contiguous buffer.
+///
+/// Consecutive groups of @p k entries form one sorted combination. Consumers
+/// that ultimately store a flat representation should use this directly to
+/// avoid allocating and then copying C(n, k) inner vectors.
+std::vector<uint32_t> GenerateCombinationsFlat(uint32_t n, uint32_t k);
+
 /// @brief Compute C(n, k) with a caller-provided safety limit.
 /// @return true and writes the exact value when it is <= limit; false when the
 ///         result exceeds the limit or 64-bit arithmetic would overflow.

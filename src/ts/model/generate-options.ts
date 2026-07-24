@@ -34,12 +34,11 @@ export interface WeightConfig {
 
 /** Get the weight for a specific parameter value. Returns 1.0 if not specified. */
 export function getWeight(config: WeightConfig, paramName: string, valueName: string): number {
-  const paramWeights = config.entries[paramName];
-  if (paramWeights === undefined) {
+  if (!Object.hasOwn(config.entries, paramName)) {
     return 1.0;
   }
-  const w = paramWeights[valueName];
-  return w === undefined ? 1.0 : w;
+  const paramWeights = config.entries[paramName];
+  return Object.hasOwn(paramWeights, valueName) ? paramWeights[valueName] : 1.0;
 }
 
 /** Check if any weights are configured. */
@@ -49,7 +48,7 @@ export function isWeightConfigEmpty(config: WeightConfig): boolean {
 
 /** Create an empty WeightConfig. */
 export function createWeightConfig(): WeightConfig {
-  return { entries: {} };
+  return { entries: Object.create(null) as Record<string, Record<string, number>> };
 }
 
 /** Options for test generation. */

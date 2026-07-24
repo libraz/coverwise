@@ -221,6 +221,21 @@ describe('CoverageEngine', () => {
       // (mac, ie) is excluded, so 6 - 1 = 5 valid tuples.
       expect(engine.totalTuples).toBe(5);
     });
+
+    it('scales across many simple constrained parameters', () => {
+      const parameterCount = 1500;
+      const params = Array.from(
+        { length: parameterCount },
+        (_, index) => new Parameter(`P${index}`, ['v']),
+      );
+      const result = CoverageEngine.create(params, 1);
+      const budgetExceeded = { value: false };
+
+      result.engine.excludeInvalidTuples([new EqualsNode(0, 0)], [], budgetExceeded);
+
+      expect(budgetExceeded.value).toBe(false);
+      expect(result.engine.totalTuples).toBe(parameterCount);
+    }, 3000);
   });
 
   describe('excludeInvalidValues()', () => {

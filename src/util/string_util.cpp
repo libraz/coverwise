@@ -2,19 +2,66 @@
 
 #include "util/string_util.h"
 
-#include <cctype>
 #include <charconv>
 #include <cmath>
-#include <cstdlib>
+#include <limits>
+#include <system_error>
 
 namespace coverwise {
 namespace util {
+namespace {
+
+unsigned char FoldAscii(unsigned char value) {
+  if (value >= static_cast<unsigned char>('A') && value <= static_cast<unsigned char>('Z')) {
+    return static_cast<unsigned char>(value + ('a' - 'A'));
+  }
+  return value;
+}
+
+bool HasNegativeDecimalOrder(const std::string& value) {
+  size_t i = (value[0] == '+' || value[0] == '-') ? 1 : 0;
+  const size_t exponent_pos = value.find_first_of("eE", i);
+  const size_t mantissa_end = exponent_pos == std::string::npos ? value.size() : exponent_pos;
+  const size_t decimal_pos = value.find('.', i);
+  const size_t integer_digits = decimal_pos == std::string::npos || decimal_pos >= mantissa_end
+                                    ? mantissa_end - i
+                                    : decimal_pos - i;
+
+  size_t digit_position = 0;
+  size_t first_nonzero = std::string::npos;
+  for (size_t pos = i; pos < mantissa_end; ++pos) {
+    if (value[pos] == '.') continue;
+    if (first_nonzero == std::string::npos && value[pos] != '0') first_nonzero = digit_position;
+    ++digit_position;
+  }
+  if (first_nonzero == std::string::npos) return false;
+
+  long long explicit_exponent = 0;
+  if (exponent_pos != std::string::npos) {
+    size_t pos = exponent_pos + 1;
+    bool negative = false;
+    if (value[pos] == '+' || value[pos] == '-') {
+      negative = value[pos] == '-';
+      ++pos;
+    }
+    for (; pos < value.size() && explicit_exponent < 1000000; ++pos) {
+      explicit_exponent = explicit_exponent * 10 + (value[pos] - '0');
+    }
+    if (negative) explicit_exponent = -explicit_exponent;
+  }
+
+  const long long decimal_order = explicit_exponent + static_cast<long long>(integer_digits) -
+                                  static_cast<long long>(first_nonzero) - 1;
+  return decimal_order < 0;
+}
+
+}  // namespace
 
 bool CaseInsensitiveEqual(const std::string& a, const std::string& b) {
   if (a.size() != b.size()) return false;
   for (size_t i = 0; i < a.size(); ++i) {
-    if (std::tolower(static_cast<unsigned char>(a[i])) !=
-        std::tolower(static_cast<unsigned char>(b[i]))) {
+    if (FoldAscii(static_cast<unsigned char>(a[i])) !=
+        FoldAscii(static_cast<unsigned char>(b[i]))) {
       return false;
     }
   }
@@ -66,7 +113,28 @@ bool IsNumeric(const std::string& s) {
   return i == len;
 }
 
-double ToDouble(const std::string& s) { return std::strtod(s.c_str(), nullptr); }
+double ToDouble(const std::string& s) {
+  if (s.empty()) return std::numeric_limits<double>::quiet_NaN();
+  const char* begin = s.data();
+  const char* end = begin + s.size();
+  if (*begin == '+') ++begin;
+
+  double value = 0.0;
+  const auto result = std::from_chars(begin, end, value, std::chars_format::general);
+  if (result.ec == std::errc{} && result.ptr == end) return value;
+
+  // IsNumeric is a documented precondition. The only remaining expected
+  // failure is a finite decimal outside double's representable range.
+  if (result.ec == std::errc::result_out_of_range) {
+    const bool negative = s[0] == '-';
+    if (HasNegativeDecimalOrder(s)) {
+      return negative ? -0.0 : 0.0;
+    }
+    return negative ? -std::numeric_limits<double>::infinity()
+                    : std::numeric_limits<double>::infinity();
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
 
 std::string JsNumberToString(double value) {
   // Non-finite values are not expected as parameter values; fall back to a

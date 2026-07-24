@@ -231,6 +231,12 @@ export enum RelOp {
   GreaterEqual = '>=',
 }
 
+/** Immutable numeric parsing cache shared by relational atoms. */
+export interface NumericValueCache {
+  numeric: Float64Array;
+  valid: Uint8Array;
+}
+
 /**
  * Relational comparison of a parameter's numeric value against a literal or another parameter.
  *
@@ -258,8 +264,9 @@ export class RelationalNode implements ConstraintNode {
     op: RelOp,
     literal: number,
     paramValues: string[],
+    paramCache?: NumericValueCache,
   ): RelationalNode {
-    return new RelationalNode(paramIndex, op, false, literal, 0, paramValues, []);
+    return new RelationalNode(paramIndex, op, false, literal, 0, paramValues, [], paramCache);
   }
 
   /** Compare two parameter values against each other. */
@@ -269,8 +276,20 @@ export class RelationalNode implements ConstraintNode {
     rightParam: number,
     leftValues: string[],
     rightValues: string[],
+    leftCache?: NumericValueCache,
+    rightCache?: NumericValueCache,
   ): RelationalNode {
-    return new RelationalNode(leftParam, op, true, 0, rightParam, leftValues, rightValues);
+    return new RelationalNode(
+      leftParam,
+      op,
+      true,
+      0,
+      rightParam,
+      leftValues,
+      rightValues,
+      leftCache,
+      rightCache,
+    );
   }
 
   private constructor(
@@ -281,18 +300,24 @@ export class RelationalNode implements ConstraintNode {
     rightParam: number,
     leftValues: string[],
     rightValues: string[],
+    leftCache?: NumericValueCache,
+    rightCache?: NumericValueCache,
   ) {
     this.leftParam = leftParam;
     this.op = op;
     this.isParamComparison = isParamComparison;
     this.literal = literal;
     this.rightParam = rightParam;
-    [this.leftNumeric, this.leftValid] = RelationalNode.precompute(leftValues);
-    [this.rightNumeric, this.rightValid] = RelationalNode.precompute(rightValues);
+    const left = leftCache ?? RelationalNode.createNumericCache(leftValues);
+    const right = rightCache ?? RelationalNode.createNumericCache(rightValues);
+    this.leftNumeric = left.numeric;
+    this.leftValid = left.valid;
+    this.rightNumeric = right.numeric;
+    this.rightValid = right.valid;
   }
 
   /** Precompute numeric conversions for a parameter's value strings. */
-  private static precompute(values: string[]): [Float64Array, Uint8Array] {
+  static createNumericCache(values: string[]): NumericValueCache {
     const numeric = new Float64Array(values.length);
     const valid = new Uint8Array(values.length);
     for (let i = 0; i < values.length; i++) {
@@ -301,7 +326,7 @@ export class RelationalNode implements ConstraintNode {
         numeric[i] = toDouble(values[i]);
       }
     }
-    return [numeric, valid];
+    return { numeric, valid };
   }
 
   evaluate(assignment: number[]): ConstraintResult {

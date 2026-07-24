@@ -45,6 +45,11 @@ TEST(DecodeMixedRadixTest, SingleElement) {
   EXPECT_EQ(out[0], 3u);
 }
 
+TEST(GenerateCombinationsFlatTest, MatchesLexicographicNestedOrder) {
+  EXPECT_EQ(GenerateCombinationsFlat(4, 2),
+            (std::vector<uint32_t>{0, 1, 0, 2, 0, 3, 1, 2, 1, 3, 2, 3}));
+}
+
 }  // namespace
 }  // namespace util
 }  // namespace coverwise

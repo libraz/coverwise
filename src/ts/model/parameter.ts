@@ -187,6 +187,10 @@ export function hasInvalidValues(params: Parameter[]): boolean {
   return params.some((p) => p.hasInvalidValues);
 }
 
+function foldAsciiName(value: string): string {
+  return value.replace(/[A-Z]/g, (char) => char.toLowerCase());
+}
+
 /**
  * Validate the semantic well-formedness of a parameter collection.
  *
@@ -202,6 +206,7 @@ export function hasInvalidValues(params: Parameter[]): boolean {
  */
 export function validateParameters(params: Parameter[]): string {
   const seenNames = new Set<string>();
+  const seenFoldedNames = new Set<string>();
   for (const p of params) {
     if (p.name.length === 0) {
       return 'Parameter name must be a non-empty string';
@@ -210,6 +215,11 @@ export function validateParameters(params: Parameter[]): string {
       return `Duplicate parameter name '${p.name}'`;
     }
     seenNames.add(p.name);
+    const foldedName = foldAsciiName(p.name);
+    if (seenFoldedNames.has(foldedName)) {
+      return `Parameter names must not differ only by ASCII case: '${p.name}'`;
+    }
+    seenFoldedNames.add(foldedName);
     if (p.values.length === 0) {
       return `Parameter '${p.name}' must have at least one value`;
     }
@@ -222,6 +232,9 @@ export function validateParameters(params: Parameter[]): string {
     }
     if (p.invalid.length > 0 && p.invalid.length !== p.values.length) {
       return `Invalid metadata length for parameter '${p.name}': invalid`;
+    }
+    if (p.validCount === 0) {
+      return `Parameter '${p.name}' must have at least one valid value`;
     }
     if (p.allAliases.length > 0 && p.allAliases.length !== p.values.length) {
       return `Invalid metadata length for parameter '${p.name}': aliases`;

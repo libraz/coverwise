@@ -28,6 +28,37 @@ export function createSolveBudget(): SolveBudget {
   return { remaining: DEFAULT_SOLVE_NODE_BUDGET, exceeded: false };
 }
 
+export type SolveParameterOrder = readonly number[];
+
+function buildSolveParameterOrder(
+  params: readonly Parameter[],
+  allowedValues: readonly (readonly boolean[])[] | null,
+): number[] {
+  return params
+    .map((param, pi) => {
+      let count = 0;
+      for (let vi = 0; vi < param.size; ++vi) {
+        if (allowedValues === null ? !param.isInvalid(vi) : allowedValues[pi][vi]) {
+          ++count;
+        }
+      }
+      return { pi, count };
+    })
+    .sort((left, right) => left.count - right.count || left.pi - right.pi)
+    .map(({ pi }) => pi);
+}
+
+export function buildValidSolveParameterOrder(params: readonly Parameter[]): number[] {
+  return buildSolveParameterOrder(params, null);
+}
+
+export function buildAllowedSolveParameterOrder(
+  params: readonly Parameter[],
+  allowedValues: readonly (readonly boolean[])[],
+): number[] {
+  return buildSolveParameterOrder(params, allowedValues);
+}
+
 function constraintsCanStillPass(
   constraints: readonly ConstraintNode[],
   assignment: number[],
@@ -41,7 +72,8 @@ function search(
   params: readonly Parameter[],
   constraints: readonly ConstraintNode[],
   assignment: number[],
-  assignedCount: number,
+  parameterOrder: SolveParameterOrder,
+  orderPosition: number,
   allowedValues: readonly (readonly boolean[])[] | null,
   budget: SolveBudget,
 ): boolean {
@@ -53,37 +85,33 @@ function search(
   if (!constraintsCanStillPass(constraints, assignment)) {
     return false;
   }
-  if (assignedCount === params.length) {
+  while (
+    orderPosition < parameterOrder.length &&
+    assignment[parameterOrder[orderPosition]] !== UNASSIGNED
+  ) {
+    ++orderPosition;
+  }
+  if (orderPosition === parameterOrder.length) {
     return true;
   }
-
-  let next = UNASSIGNED;
-  let fewest = Number.MAX_SAFE_INTEGER;
-  for (let pi = 0; pi < params.length; ++pi) {
-    if (assignment[pi] !== UNASSIGNED) {
-      continue;
-    }
-    let validCount = 0;
-    for (let vi = 0; vi < params[pi].size; ++vi) {
-      if (allowedValues === null ? !params[pi].isInvalid(vi) : allowedValues[pi][vi]) {
-        ++validCount;
-      }
-    }
-    if (validCount < fewest) {
-      fewest = validCount;
-      next = pi;
-    }
-  }
-  if (next === UNASSIGNED || fewest === 0) {
-    return false;
-  }
+  const next = parameterOrder[orderPosition];
 
   for (let vi = 0; vi < params[next].size; ++vi) {
     if (allowedValues === null ? params[next].isInvalid(vi) : !allowedValues[next][vi]) {
       continue;
     }
     assignment[next] = vi;
-    if (search(params, constraints, assignment, assignedCount + 1, allowedValues, budget)) {
+    if (
+      search(
+        params,
+        constraints,
+        assignment,
+        parameterOrder,
+        orderPosition + 1,
+        allowedValues,
+        budget,
+      )
+    ) {
       return true;
     }
     if (budget.exceeded) {
@@ -108,6 +136,7 @@ export function completeAssignment(
   allowedValues: readonly (readonly boolean[])[],
   partial: TestCase,
   budget?: SolveBudget,
+  parameterOrder?: SolveParameterOrder,
 ): TestCase | null {
   if (
     allowedValues.length !== params.length ||
@@ -116,7 +145,6 @@ export function completeAssignment(
     return null;
   }
   const assignment = new Array<number>(params.length).fill(UNASSIGNED);
-  let assignedCount = 0;
   for (let pi = 0; pi < params.length; ++pi) {
     const vi = partial.values[pi] ?? UNASSIGNED;
     assignment[pi] = vi;
@@ -126,10 +154,10 @@ export function completeAssignment(
     if (vi < 0 || vi >= params[pi].size || !allowedValues[pi][vi]) {
       return null;
     }
-    ++assignedCount;
   }
   const b = budget ?? createSolveBudget();
-  return search(params, constraints, assignment, assignedCount, allowedValues, b)
+  const order = parameterOrder ?? buildAllowedSolveParameterOrder(params, allowedValues);
+  return search(params, constraints, assignment, order, 0, allowedValues, b)
     ? { values: assignment }
     : null;
 }
@@ -143,9 +171,9 @@ export function completeValidAssignment(
   constraints: readonly ConstraintNode[],
   partial: TestCase,
   budget?: SolveBudget,
+  parameterOrder?: SolveParameterOrder,
 ): TestCase | null {
   const assignment = new Array<number>(params.length).fill(UNASSIGNED);
-  let assignedCount = 0;
   for (let pi = 0; pi < params.length; ++pi) {
     const vi = partial.values[pi] ?? UNASSIGNED;
     assignment[pi] = vi;
@@ -155,10 +183,8 @@ export function completeValidAssignment(
     if (vi < 0 || vi >= params[pi].size || params[pi].isInvalid(vi)) {
       return null;
     }
-    ++assignedCount;
   }
   const b = budget ?? createSolveBudget();
-  return search(params, constraints, assignment, assignedCount, null, b)
-    ? { values: assignment }
-    : null;
+  const order = parameterOrder ?? buildValidSolveParameterOrder(params);
+  return search(params, constraints, assignment, order, 0, null, b) ? { values: assignment } : null;
 }

@@ -190,46 +190,48 @@ ConstraintResult IfThenElseNode::Evaluate(const std::vector<uint32_t>& assignmen
 
 // --- RelationalNode ---
 
-namespace {
+namespace {}  // namespace
 
-// Precompute numeric conversions for a parameter's value strings so relational
-// evaluation never reparses on the hot path. For each value index, `valid`
-// records whether the string is numeric and `numeric` holds its parsed double
-// (0.0 for non-numeric values, which Evaluate never reads).
-void PrecomputeNumeric(const std::vector<std::string>& values, std::vector<double>& numeric,
-                       std::vector<uint8_t>& valid) {
-  numeric.resize(values.size());
-  valid.resize(values.size());
+NumericValueCachePtr BuildNumericValueCache(const std::vector<std::string>& values) {
+  auto cache = std::make_shared<NumericValueCache>();
+  cache->numeric.resize(values.size());
+  cache->valid.resize(values.size());
   for (size_t i = 0; i < values.size(); ++i) {
     const bool is_num = IsNumeric(values[i]);
-    valid[i] = is_num ? 1 : 0;
-    numeric[i] = is_num ? ToDouble(values[i]) : 0.0;
+    cache->valid[i] = is_num ? 1 : 0;
+    cache->numeric[i] = is_num ? ToDouble(values[i]) : 0.0;
   }
+  return cache;
 }
-
-}  // namespace
 
 RelationalNode::RelationalNode(uint32_t param_index, RelOp op, double literal,
                                const std::vector<std::string>& param_values)
+    : RelationalNode(param_index, op, literal, BuildNumericValueCache(param_values)) {}
+
+RelationalNode::RelationalNode(uint32_t param_index, RelOp op, double literal,
+                               NumericValueCachePtr param_cache)
     : left_param_(param_index),
       op_(op),
       is_param_comparison_(false),
       literal_(literal),
-      right_param_(0) {
-  PrecomputeNumeric(param_values, left_numeric_, left_valid_);
-}
+      right_param_(0),
+      left_cache_(std::move(param_cache)) {}
 
 RelationalNode::RelationalNode(uint32_t left_param, RelOp op, uint32_t right_param,
                                const std::vector<std::string>& left_values,
                                const std::vector<std::string>& right_values)
+    : RelationalNode(left_param, op, right_param, BuildNumericValueCache(left_values),
+                     BuildNumericValueCache(right_values)) {}
+
+RelationalNode::RelationalNode(uint32_t left_param, RelOp op, uint32_t right_param,
+                               NumericValueCachePtr left_cache, NumericValueCachePtr right_cache)
     : left_param_(left_param),
       op_(op),
       is_param_comparison_(true),
       literal_(0.0),
-      right_param_(right_param) {
-  PrecomputeNumeric(left_values, left_numeric_, left_valid_);
-  PrecomputeNumeric(right_values, right_numeric_, right_valid_);
-}
+      right_param_(right_param),
+      left_cache_(std::move(left_cache)),
+      right_cache_(std::move(right_cache)) {}
 
 bool RelationalNode::CompareValues(double left, double right) const {
   switch (op_) {
@@ -254,10 +256,10 @@ ConstraintResult RelationalNode::Evaluate(const std::vector<uint32_t>& assignmen
     return ConstraintResult::kUnknown;
   }
 
-  if (left_val >= left_valid_.size() || !left_valid_[left_val]) {
+  if (left_val >= left_cache_->valid.size() || !left_cache_->valid[left_val]) {
     return ConstraintResult::kFalse;
   }
-  double left_num = left_numeric_[left_val];
+  double left_num = left_cache_->numeric[left_val];
 
   if (is_param_comparison_) {
     if (right_param_ >= assignment.size()) {
@@ -267,10 +269,10 @@ ConstraintResult RelationalNode::Evaluate(const std::vector<uint32_t>& assignmen
     if (right_val == kUnassigned) {
       return ConstraintResult::kUnknown;
     }
-    if (right_val >= right_valid_.size() || !right_valid_[right_val]) {
+    if (right_val >= right_cache_->valid.size() || !right_cache_->valid[right_val]) {
       return ConstraintResult::kFalse;
     }
-    double right_num = right_numeric_[right_val];
+    double right_num = right_cache_->numeric[right_val];
     return CompareValues(left_num, right_num) ? ConstraintResult::kTrue : ConstraintResult::kFalse;
   }
 

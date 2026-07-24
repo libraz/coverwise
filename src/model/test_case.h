@@ -49,6 +49,18 @@ struct GenerateStats {
   uint32_t test_count = 0;
 };
 
+/// @brief Coverage metrics for single-fault negative tests.
+///
+/// Each feasible requested-strength tuple containing exactly one invalid value
+/// is counted once. `omitted_tuples` is the number left uncovered, for example
+/// because `maxTests` capped the combined positive and negative suite.
+struct NegativeCoverage {
+  uint64_t total_tuples = 0;
+  uint64_t covered_tuples = 0;
+  uint64_t omitted_tuples = 0;
+  double coverage_ratio = 1.0;
+};
+
 /// @brief Equivalence class coverage metrics.
 struct ClassCoverage {
   uint64_t total_class_tuples = 0;
@@ -78,7 +90,8 @@ struct GenerateResult {
   std::vector<Parameter> parameters;
   std::vector<TestCase> tests;           ///< Positive tests (no invalid values)
   std::vector<TestCase> negative_tests;  ///< Negative tests (exactly 1 invalid value each)
-  double coverage = 0.0;                 ///< Minimum coverage ratio across all engines
+  std::optional<NegativeCoverage> negative_coverage;  ///< Present when invalid values exist
+  double coverage = 0.0;                              ///< Minimum coverage ratio across all engines
   std::vector<UncoveredTuple> uncovered;
   uint64_t uncovered_count = 0;  ///< Total uncovered tuples before diagnostic truncation.
   uint64_t omitted_uncovered = 0;

@@ -30,7 +30,7 @@
     "prepare": "test -z \"$npm_config_production\" && simple-git-hooks >&2 || true",
     "build": "yarn build:wasm && yarn build:js",
     "build:wasm": "emcmake cmake -B build-wasm -DBUILD_WASM=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build-wasm -j",
-    "build:js": "tsc",
+    "build:js": "tsc && tsc -p tests/type/tsconfig.json",
     "clean": "rm -rf dist build-wasm",
     "lint": "biome check js/ tests/wasm/ src/ts/",
     "lint:fix": "biome check --write js/ tests/wasm/ src/ts/",

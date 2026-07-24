@@ -47,6 +47,13 @@ TEST(ValidateParametersTest, RejectsEmptyValues) {
   EXPECT_EQ(err.message, "Parameter 'os' must have at least one value");
 }
 
+TEST(ValidateParametersTest, RejectsParameterWithNoValidValues) {
+  std::vector<Parameter> params{Parameter{"os", {"win", "mac"}, {true, true}}};
+  Error err = ValidateParameters(params);
+  EXPECT_EQ(err.code, Error::Code::kInvalidInput);
+  EXPECT_EQ(err.message, "Parameter 'os' must have at least one valid value");
+}
+
 TEST(ValidateParametersTest, RejectsDuplicateValue) {
   std::vector<Parameter> params{Parameter{"os", {"win", "win"}}};
   Error err = ValidateParameters(params);
@@ -62,6 +69,16 @@ TEST(ValidateParametersTest, RejectsDuplicateParameterName) {
   Error err = ValidateParameters(params);
   EXPECT_EQ(err.code, Error::Code::kInvalidInput);
   EXPECT_EQ(err.message, "Duplicate parameter name 'os'");
+}
+
+TEST(ValidateParametersTest, RejectsParameterNamesDifferingOnlyByAsciiCase) {
+  std::vector<Parameter> params{
+      Parameter{"OS", {"win"}},
+      Parameter{"os", {"linux"}},
+  };
+  Error err = ValidateParameters(params);
+  EXPECT_EQ(err.code, Error::Code::kInvalidInput);
+  EXPECT_EQ(err.message, "Parameter names must not differ only by ASCII case: 'os'");
 }
 
 TEST(ValidateParametersTest, RejectsAliasPrimaryAndCaseOnlyCollisions) {

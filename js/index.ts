@@ -13,17 +13,21 @@ export { allOf, anyOf, not, when } from './constraint.js';
 // --- Public Types (re-exported from types module) ---
 
 export type {
+  BoundaryParameter,
   ClassCoverage,
   CoverageReport,
   CoverwiseErrorCode,
   ExtendInput,
+  FloatBoundaryParameter,
   GenerateInput,
   GenerateResult,
   GenerateStats,
+  IntegerBoundaryParameter,
   ModelStats,
   Parameter,
   ParameterValue,
   ParamStats,
+  PlainParameter,
   SubModel,
   Suggestion,
   TestCase,
@@ -134,7 +138,11 @@ function checkResult<T>(result: unknown): T {
       typeof r.code === 'number'
         ? errorCodeFromNumber(r.code)
         : ((r.code as CoverwiseError['code']) ?? 'INVALID_INPUT');
-    throw new CoverwiseError(code, (r.message as string) ?? 'Unknown error');
+    throw new CoverwiseError(
+      code,
+      (r.message as string) ?? 'Unknown error',
+      typeof r.detail === 'string' ? r.detail : undefined,
+    );
   }
   return result as T;
 }

@@ -468,6 +468,15 @@ val UncoveredToJS(const std::vector<coverwise::model::UncoveredTuple>& uncovered
     }
     obj.set("params", params_arr);
 
+    val indices_arr = val::array();
+    for (const auto& [parameter_index, value_index] : ut.indices) {
+      val index_pair = val::array();
+      index_pair.call<void>("push", parameter_index);
+      index_pair.call<void>("push", value_index);
+      indices_arr.call<void>("push", index_pair);
+    }
+    obj.set("indices", indices_arr);
+
     obj.set("reason", ut.reason);
     obj.set("display", val(ut.ToString()));
 
@@ -489,6 +498,17 @@ val GenerateResultToJS(const coverwise::model::GenerateResult& result,
 
   // negativeTests
   obj.set("negativeTests", TestCasesToJS(result.negative_tests, params));
+  if (result.negative_coverage) {
+    val negative_coverage = val::object();
+    negative_coverage.set("totalTuples",
+                          static_cast<double>(result.negative_coverage->total_tuples));
+    negative_coverage.set("coveredTuples",
+                          static_cast<double>(result.negative_coverage->covered_tuples));
+    negative_coverage.set("omittedTuples",
+                          static_cast<double>(result.negative_coverage->omitted_tuples));
+    negative_coverage.set("coverageRatio", result.negative_coverage->coverage_ratio);
+    obj.set("negativeCoverage", negative_coverage);
+  }
 
   // coverage
   obj.set("coverage", result.coverage);
@@ -510,7 +530,9 @@ val GenerateResultToJS(const coverwise::model::GenerateResult& result,
   for (uint32_t i = 0; i < result.suggestions.size(); ++i) {
     val s = val::object();
     s.set("description", result.suggestions[i].description);
-    s.set("testCase", TestCaseToJS(result.suggestions[i].test_case, params, i));
+    // Suggestions are canonical diagnostics, not rotated test-suite rows.
+    // Keep their text and object values self-consistent across WASM and Pure.
+    s.set("testCase", TestCaseToJS(result.suggestions[i].test_case, params, 0));
     suggestions.call<void>("push", s);
   }
   obj.set("suggestions", suggestions);
@@ -583,21 +605,18 @@ val ModelStatsToJS(const coverwise::model::ModelStats& stats) {
 /// The JS wrapper maps this number to a canonical string code. The default 3
 /// (kInvalidInput) covers exceptions thrown at the JS<->C++ boundary (parse and
 /// shape errors); structured core failures pass their real code explicitly.
-val MakeError(const std::string& message, int code = 3) {
+val MakeError(const std::string& message, int code = 3, const std::string& detail = {}) {
   val obj = val::object();
   obj.set("error", true);
   obj.set("code", code);
   obj.set("message", val(message));
+  obj.set("detail", val(detail));
   return obj;
 }
 
 /// @brief Build a JS error object from a structured core Error.
 val MakeError(const coverwise::model::Error& error) {
-  std::string message = error.message;
-  if (!error.detail.empty()) {
-    message += ": " + error.detail;
-  }
-  return MakeError(message, static_cast<int>(error.code));
+  return MakeError(error.message, static_cast<int>(error.code), error.detail);
 }
 
 // ---------------------------------------------------------------------------

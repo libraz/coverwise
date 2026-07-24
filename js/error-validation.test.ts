@@ -73,6 +73,7 @@ describe('error shape and input validation', () => {
           expect(err).toBeInstanceOf(CoverwiseError);
           expect((err as CoverwiseError).code).toBe('CONSTRAINT_ERROR');
           expect((err as CoverwiseError).message).toBeTruthy();
+          expect((err as CoverwiseError).detail).toContain('Available parameters:');
         });
 
         it('throws CoverwiseError with INVALID_INPUT for invalid input', () => {

@@ -38,6 +38,15 @@ export interface GenerateStats {
   testCount: number;
 }
 
+/** Coverage metrics for single-fault negative tests. */
+export interface NegativeCoverage {
+  totalTuples: number;
+  coveredTuples: number;
+  /** Feasible negative tuples left uncovered, for example due to maxTests. */
+  omittedTuples: number;
+  coverageRatio: number;
+}
+
 /** Equivalence class coverage metrics. */
 export interface ClassCoverage {
   totalClassTuples: number;
@@ -69,6 +78,8 @@ export interface GenerateResult {
   tests: TestCase[];
   /** Negative tests (exactly 1 invalid value each). */
   negativeTests: TestCase[];
+  /** Present when the model defines invalid values. */
+  negativeCoverage?: NegativeCoverage;
   /** Minimum coverage ratio across all engines. */
   coverage: number;
   uncovered: UncoveredTuple[];

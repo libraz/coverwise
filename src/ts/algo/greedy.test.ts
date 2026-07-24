@@ -45,6 +45,24 @@ describe('greedyConstruct', () => {
     expect(tc.values[0]).toBe(2);
   });
 
+  it('handles finite extreme tie weights without overflow', () => {
+    const params = [{ size: 2 }];
+    const selected = new Set<number>();
+    for (let seed = 0; seed < 32; ++seed) {
+      const tc = greedyConstruct(
+        params,
+        () => 1,
+        [],
+        new Rng(seed),
+        [],
+        [[Number.MAX_VALUE, Number.MAX_VALUE]],
+      );
+      expect(tc).not.toBeNull();
+      selected.add(tc?.values[0] ?? -1);
+    }
+    expect(selected).toEqual(new Set([0, 1]));
+  });
+
   it('skips values pruned by constraints', () => {
     // 2 params: os={win, mac}, browser={chrome, ie, safari}
     // Constraint: IF os=mac THEN browser!=ie

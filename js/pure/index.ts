@@ -8,17 +8,21 @@
 export type { Condition, ConditionStart, Constraint } from '../constraint.js';
 export { allOf, anyOf, not, when } from '../constraint.js';
 export type {
+  BoundaryParameter,
   ClassCoverage,
   CoverageReport,
   CoverwiseErrorCode,
   ExtendInput,
+  FloatBoundaryParameter,
   GenerateInput,
   GenerateResult,
   GenerateStats,
+  IntegerBoundaryParameter,
   ModelStats,
   Parameter,
   ParameterValue,
   ParamStats,
+  PlainParameter,
   SubModel,
   Suggestion,
   TestCase,
@@ -81,8 +85,11 @@ function throwOnResultError(error: { code: number; message: string; detail: stri
   if (error.code === 0) {
     return;
   }
-  const message = error.detail ? `${error.message}: ${error.detail}` : error.message;
-  throw new CoverwiseError(errorCodeFromNumber(error.code), message);
+  throw new CoverwiseError(
+    errorCodeFromNumber(error.code),
+    error.message,
+    error.detail || undefined,
+  );
 }
 
 // --- Core API ---
@@ -145,15 +152,13 @@ export function analyzeCoverage(
     for (const expr of constraints) {
       const parseResult = parseConstraint(expr, params);
       if (parseResult.error.code !== 0 || !parseResult.constraint) {
-        // Uniform cross-surface message: same "Invalid constraint …" prefix and
-        // ": <detail>" rendering that the generate paths (core + WASM) produce.
+        // Keep the structured detail separate so the public error shape matches
+        // the WASM surface and callers do not have to parse display text.
         const annotated = annotateConstraintError(expr, parseResult.error);
-        const message = annotated.detail
-          ? `${annotated.message}: ${annotated.detail}`
-          : annotated.message;
         throw new CoverwiseError(
           annotated.code !== 0 ? errorCodeFromNumber(annotated.code) : 'CONSTRAINT_ERROR',
-          message,
+          annotated.message,
+          annotated.detail || undefined,
         );
       }
       parsedConstraints.push(parseResult.constraint);

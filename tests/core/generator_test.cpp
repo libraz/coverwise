@@ -393,6 +393,53 @@ TEST(GeneratorTest, NegativeTestingCoversRequestedThreeWiseTuples) {
   EXPECT_TRUE(result.warnings.empty());
 }
 
+TEST(GeneratorTest, NegativeTestingDeterministicallyCompletesFourWiseCoverage) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "bad"}, {false, true}},
+      {"B", {"b0", "b1", "b2"}, {}},
+      {"C", {"c0", "c1", "c2"}, {}},
+      {"D", {"d0", "d1", "d2"}, {}},
+  };
+  opts.strength = 4;
+
+  for (uint32_t seed : {0u, 1u, 42u, 999u}) {
+    opts.seed = seed;
+    auto result = Generate(opts);
+    ASSERT_TRUE(result.error.ok());
+    ASSERT_TRUE(result.negative_coverage.has_value());
+    EXPECT_EQ(result.negative_tests.size(), 27u);
+    EXPECT_EQ(result.negative_coverage->total_tuples, 27u);
+    EXPECT_EQ(result.negative_coverage->covered_tuples, 27u);
+    EXPECT_EQ(result.negative_coverage->omitted_tuples, 0u);
+    EXPECT_DOUBLE_EQ(result.negative_coverage->coverage_ratio, 1.0);
+  }
+}
+
+TEST(GeneratorTest, MaxTestsCapsCombinedPositiveAndNegativeSuite) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "bad"}, {false, true}},
+      {"B", {"b0", "b1"}, {}},
+  };
+  opts.strength = 2;
+  opts.max_tests = 3;
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok());
+  ASSERT_TRUE(result.negative_coverage.has_value());
+  EXPECT_EQ(result.tests.size(), 2u);
+  EXPECT_EQ(result.negative_tests.size(), 1u);
+  EXPECT_EQ(result.stats.test_count, 3u);
+  EXPECT_EQ(result.negative_coverage->total_tuples, 2u);
+  EXPECT_EQ(result.negative_coverage->covered_tuples, 1u);
+  EXPECT_EQ(result.negative_coverage->omitted_tuples, 1u);
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Negative generation stopped at maxTests (3) before reaching full coverage"),
+            result.warnings.end());
+}
+
 TEST(GeneratorTest, NegativeTestingSingleParameterProducesOneExample) {
   GenerateOptions opts;
   opts.parameters = {{"A", {"valid", "bad"}, {false, true}}};
@@ -505,6 +552,21 @@ TEST(GeneratorConstraintIntegrityTest, FullyUnsatisfiableParameterEmitsNoViolati
   EXPECT_TRUE(result.tests.empty());
   EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kConstraintError);
   EXPECT_EQ(result.error.message, "Constraints are unsatisfiable");
+}
+
+TEST(GeneratorConstraintIntegrityTest, AllInvalidParameterIsRejected) {
+  GenerateOptions opts;
+  opts.parameters = {
+      Parameter{"A", {"a0", "a1"}, {true, true}},
+      Parameter{"B", {"b0", "b1"}, {}},
+  };
+  opts.strength = 2;
+
+  auto result = Generate(opts);
+
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_EQ(result.error.message, "Parameter 'A' must have at least one valid value");
+  EXPECT_TRUE(result.tests.empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -740,6 +802,16 @@ TEST(EstimateModelTest, BasicStats) {
   EXPECT_EQ(stats.parameters[0].name, "A");
   EXPECT_EQ(stats.parameters[0].value_count, 2u);
   EXPECT_EQ(stats.parameters[0].invalid_count, 0u);
+}
+
+TEST(EstimateModelTest, RejectsMalformedConstraintLikeGenerate) {
+  GenerateOptions opts;
+  opts.parameters = {{"A", {"0", "1"}, {}}, {"B", {"0", "1"}, {}}};
+  opts.constraint_expressions = {"unknown = 0"};
+
+  auto stats = EstimateModel(opts);
+  EXPECT_EQ(stats.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_NE(stats.error.message.find("unknown"), std::string::npos);
 }
 
 TEST(EstimateModelTest, WithSubModels) {

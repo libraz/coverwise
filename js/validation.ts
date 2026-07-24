@@ -92,6 +92,49 @@ function isParameterScalar(value: unknown): value is string | number | boolean {
 }
 
 const DECIMAL_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+const MAX_PARAMETERS = 1_024;
+const MAX_VALUES_PER_PARAMETER = 16_384;
+const MAX_TESTS = 100_000;
+const MAX_CONSTRAINTS = 256;
+const MAX_STRING_BYTES = 64 * 1024;
+const MAX_AGGREGATE_STRING_BYTES = 1 * 1024 * 1024;
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function validateStringBudget(value: string, context: string, aggregate: { value: number }): void {
+  const bytes = utf8Bytes(value);
+  if (bytes > MAX_STRING_BYTES) {
+    invalid(`${context} exceeds ${MAX_STRING_BYTES} UTF-8 bytes.`);
+  }
+  aggregate.value += bytes;
+  if (aggregate.value > MAX_AGGREGATE_STRING_BYTES) {
+    invalid(`Input strings exceed ${MAX_AGGREGATE_STRING_BYTES} UTF-8 bytes.`);
+  }
+}
+
+function validateAggregateStringBudget(value: unknown): void {
+  const seen = new Set<object>();
+  let bytes = 0;
+  const visit = (current: unknown): void => {
+    if (typeof current === 'string') {
+      bytes += utf8Bytes(current);
+      if (bytes > MAX_AGGREGATE_STRING_BYTES) {
+        invalid(`Input strings exceed ${MAX_AGGREGATE_STRING_BYTES} UTF-8 bytes.`);
+      }
+      return;
+    }
+    if (typeof current !== 'object' || current === null || seen.has(current)) {
+      return;
+    }
+    seen.add(current);
+    for (const nested of Array.isArray(current) ? current : Object.values(current)) {
+      visit(nested);
+    }
+  };
+  visit(value);
+}
 
 function validateBoundaryValue(
   value: unknown,
@@ -166,6 +209,11 @@ export function validateParameters(parameters: unknown): void {
   if (!Array.isArray(parameters)) {
     invalid('Invalid parameters: must be an array.');
   }
+  if (parameters.length > MAX_PARAMETERS) {
+    invalid(`Invalid parameters: maximum is ${MAX_PARAMETERS}.`);
+  }
+  const foldedNames = new Set<string>();
+  const aggregate = { value: 0 };
   for (let pi = 0; pi < parameters.length; ++pi) {
     const parameter = parameters[pi];
     if (!isRecord(parameter)) {
@@ -174,8 +222,19 @@ export function validateParameters(parameters: unknown): void {
     if (typeof parameter.name !== 'string' || parameter.name.length === 0) {
       invalid('Parameter name must be a non-empty string');
     }
+    validateStringBudget(parameter.name, `Parameter name '${parameter.name}'`, aggregate);
+    const foldedName = parameter.name.replace(/[A-Z]/g, (char) => char.toLowerCase());
+    if (foldedNames.has(foldedName)) {
+      invalid(`Parameter names must not differ only by ASCII case: '${parameter.name}'`);
+    }
+    foldedNames.add(foldedName);
     if (!Array.isArray(parameter.values)) {
       invalid(`Parameter '${parameter.name}' must have at least one value`);
+    }
+    if (parameter.values.length > MAX_VALUES_PER_PARAMETER) {
+      invalid(
+        `Parameter '${parameter.name}' has too many values (maximum ${MAX_VALUES_PER_PARAMETER}).`,
+      );
     }
     validateBoundary(parameter, parameter.name);
     if (parameter.values.length === 0 && parameter.type === undefined) {
@@ -199,7 +258,13 @@ export function validateParameters(parameters: unknown): void {
         }
       }
       if (isParameterScalar(value)) {
+        if (typeof value === 'string') {
+          validateStringBudget(value, `${parameter.name}[${vi}]`, aggregate);
+        }
         continue;
+      }
+      if (typeof value.value === 'string') {
+        validateStringBudget(value.value, `${parameter.name}[${vi}]`, aggregate);
       }
       if (!isRecord(value) || !Object.hasOwn(value, 'value') || !isParameterScalar(value.value)) {
         invalid(`Invalid value at ${parameter.name}[${vi}]: expected string, number, or boolean.`);
@@ -214,8 +279,14 @@ export function validateParameters(parameters: unknown): void {
       ) {
         invalid(`Aliases at ${parameter.name}[${vi}] must be non-empty strings.`);
       }
+      for (const alias of value.aliases ?? []) {
+        validateStringBudget(alias, `Alias at ${parameter.name}[${vi}]`, aggregate);
+      }
       if (value.class !== undefined && typeof value.class !== 'string') {
         invalid(`Class at ${parameter.name}[${vi}] must be a string.`);
+      }
+      if (typeof value.class === 'string') {
+        validateStringBudget(value.class, `Class at ${parameter.name}[${vi}]`, aggregate);
       }
     }
   }
@@ -226,14 +297,23 @@ export function validateTestArray(tests: unknown, field: string): void {
   if (!Array.isArray(tests)) {
     invalid(`Invalid ${field}: must be an array.`);
   }
+  if (tests.length > MAX_TESTS) {
+    invalid(`Invalid ${field}: maximum is ${MAX_TESTS} rows.`);
+  }
   for (let i = 0; i < tests.length; ++i) {
     const test = tests[i];
     if (!isRecord(test)) {
       invalid(`Invalid ${field}[${i}]: must be an object.`);
     }
+    if (Object.keys(test).length > MAX_PARAMETERS) {
+      invalid(`Invalid ${field}[${i}]: too many fields.`);
+    }
     for (const [name, value] of Object.entries(test)) {
       if (!isParameterScalar(value)) {
         invalid(`Invalid ${field}[${i}].${name}: expected string, number, or boolean.`);
+      }
+      if (typeof value === 'string' && utf8Bytes(value) > MAX_STRING_BYTES) {
+        invalid(`Invalid ${field}[${i}].${name}: string exceeds ${MAX_STRING_BYTES} UTF-8 bytes.`);
       }
     }
   }
@@ -246,6 +326,14 @@ export function validateConstraints(constraints: unknown): void {
   }
   if (!Array.isArray(constraints) || constraints.some((expr) => typeof expr !== 'string')) {
     invalid('Invalid constraints: must be an array of strings.');
+  }
+  if (constraints.length > MAX_CONSTRAINTS) {
+    invalid(`Invalid constraints: maximum is ${MAX_CONSTRAINTS}.`);
+  }
+  for (const expression of constraints) {
+    if (utf8Bytes(expression) > MAX_STRING_BYTES) {
+      invalid(`Invalid constraint: maximum expression size is ${MAX_STRING_BYTES} UTF-8 bytes.`);
+    }
   }
 }
 
@@ -324,6 +412,7 @@ export function validateGenerateInput(input: GenerateInput, makeError: ScalarErr
   if (!isRecord(input)) {
     invalid('Invalid input: must be an object.');
   }
+  validateAggregateStringBudget(input);
   validateParameters(input.parameters);
   validateStrength(input.strength, makeError);
   validateMaxTests(input.maxTests, makeError);

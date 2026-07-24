@@ -145,6 +145,17 @@ class IfThenElseNode : public ConstraintNode {
 /// @brief Relational comparison operators.
 enum class RelOp { kLess, kLessEqual, kGreater, kGreaterEqual };
 
+/// @brief Immutable numeric parsing cache shared by relational atoms.
+struct NumericValueCache {
+  std::vector<double> numeric;
+  std::vector<uint8_t> valid;
+};
+
+using NumericValueCachePtr = std::shared_ptr<const NumericValueCache>;
+
+/// @brief Build a numeric cache for one parameter's value strings.
+NumericValueCachePtr BuildNumericValueCache(const std::vector<std::string>& values);
+
 /// @brief Relational comparison of a parameter's numeric value against a literal or another param.
 ///
 /// Compares parameter values as doubles. If a value cannot be parsed as numeric,
@@ -158,6 +169,7 @@ class RelationalNode : public ConstraintNode {
   /// @param param_values The string values of the parameter (copied for numeric conversion).
   RelationalNode(uint32_t param_index, RelOp op, double literal,
                  const std::vector<std::string>& param_values);
+  RelationalNode(uint32_t param_index, RelOp op, double literal, NumericValueCachePtr param_cache);
 
   /// @brief Compare two parameter values against each other.
   /// @param left_param Index of the left parameter.
@@ -168,6 +180,8 @@ class RelationalNode : public ConstraintNode {
   RelationalNode(uint32_t left_param, RelOp op, uint32_t right_param,
                  const std::vector<std::string>& left_values,
                  const std::vector<std::string>& right_values);
+  RelationalNode(uint32_t left_param, RelOp op, uint32_t right_param,
+                 NumericValueCachePtr left_cache, NumericValueCachePtr right_cache);
 
   ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override;
 
@@ -183,10 +197,8 @@ class RelationalNode : public ConstraintNode {
   // reparses on the hot path (mirrors LikeNode's precomputed matching). For
   // each value index, `*_valid_` records whether the string is numeric and
   // `*_numeric_` holds its parsed double (0.0 when not numeric).
-  std::vector<double> left_numeric_;
-  std::vector<uint8_t> left_valid_;
-  std::vector<double> right_numeric_;
-  std::vector<uint8_t> right_valid_;
+  NumericValueCachePtr left_cache_;
+  NumericValueCachePtr right_cache_;
 };
 
 /// @brief IN-set membership test: param IN {val1, val2, ...}.

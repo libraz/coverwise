@@ -38,6 +38,34 @@ export function generateCombinations(n: number, k: number): number[][] {
   return result;
 }
 
+/** Generate C(n, k) combinations in one contiguous flat buffer. */
+export function generateCombinationsFlat(n: number, k: number): number[] {
+  if (k === 0 || k > n) {
+    return [];
+  }
+  const result: number[] = [];
+  const indices = new Array<number>(k);
+  for (let i = 0; i < k; i++) {
+    indices[i] = i;
+  }
+  while (true) {
+    for (let i = 0; i < k; i++) {
+      result.push(indices[i]);
+    }
+    let pos = k - 1;
+    while (pos >= 0 && indices[pos] === n - k + pos) {
+      pos--;
+    }
+    if (pos < 0) {
+      return result;
+    }
+    indices[pos]++;
+    for (let j = pos + 1; j < k; j++) {
+      indices[j] = indices[j - 1] + 1;
+    }
+  }
+}
+
 /** Compute C(n, k), returning null when it exceeds limit or safe-integer range. */
 export function checkedBinomial(n: number, k: number, limit: number): number | null {
   if (k > n) {

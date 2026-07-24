@@ -180,6 +180,21 @@ describe('generate', () => {
     expect(result.tests).toHaveLength(0);
   });
 
+  it('rejects a parameter with no valid values', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'A', values: ['a0', 'a1'], invalid: [true, true] },
+          { name: 'B', values: ['b0', 'b1'] },
+        ],
+        strength: 2,
+      }),
+    );
+    expect(result.error.code).toBe(ErrorCode.InvalidInput);
+    expect(result.error.message).toBe("Parameter 'A' must have at least one valid value");
+    expect(result.tests).toHaveLength(0);
+  });
+
   it('sets a constraint error code when a constraint fails to parse', () => {
     const opts = createGenerateOptions({
       parameters: [
@@ -422,6 +437,57 @@ describe('generate', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it('deterministically completes four-wise negative coverage for every seed', () => {
+    for (const seed of [0, 1, 42, 999]) {
+      const result = generate(
+        createGenerateOptions({
+          parameters: [
+            { name: 'A', values: ['a0', 'bad'], invalid: [false, true] },
+            { name: 'B', values: ['b0', 'b1', 'b2'] },
+            { name: 'C', values: ['c0', 'c1', 'c2'] },
+            { name: 'D', values: ['d0', 'd1', 'd2'] },
+          ],
+          strength: 4,
+          seed,
+        }),
+      );
+      expect(result.error.code).toBe(ErrorCode.Ok);
+      expect(result.negativeTests).toHaveLength(27);
+      expect(result.negativeCoverage).toEqual({
+        totalTuples: 27,
+        coveredTuples: 27,
+        omittedTuples: 0,
+        coverageRatio: 1,
+      });
+    }
+  });
+
+  it('caps positive and negative tests together at maxTests', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'A', values: ['a0', 'bad'], invalid: [false, true] },
+          { name: 'B', values: ['b0', 'b1'] },
+        ],
+        strength: 2,
+        maxTests: 3,
+      }),
+    );
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.tests).toHaveLength(2);
+    expect(result.negativeTests).toHaveLength(1);
+    expect(result.stats.testCount).toBe(3);
+    expect(result.negativeCoverage).toEqual({
+      totalTuples: 2,
+      coveredTuples: 1,
+      omittedTuples: 1,
+      coverageRatio: 0.5,
+    });
+    expect(result.warnings).toContain(
+      'Negative generation stopped at maxTests (3) before reaching full coverage',
+    );
+  });
+
   it('emits a single-fault negative example for one parameter', () => {
     const result = generate(
       createGenerateOptions({
@@ -661,6 +727,17 @@ describe('estimateModel', () => {
     expect(stats.parameters[0].valueCount).toBe(3);
     expect(stats.parameters[1].name).toBe('browser');
     expect(stats.parameters[1].valueCount).toBe(3);
+  });
+
+  it('rejects malformed constraints like generation does', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['0', '1'] },
+        { name: 'B', values: ['0', '1'] },
+      ],
+      constraintExpressions: ['unknown = 0'],
+    });
+    expect(estimateModel(opts).error.code).toBe(ErrorCode.ConstraintError);
   });
 
   it('returns correct stats for larger model', () => {
