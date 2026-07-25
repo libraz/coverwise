@@ -25,6 +25,16 @@ bool IsNumeric(const std::string& s);
 /// @return The parsed double value.
 double ToDouble(const std::string& s);
 
+/// @brief Parse a string that must denote a finite double.
+///
+/// Unlike ToDouble this validates its input, so it is the entry point for
+/// callers that accept arbitrary text and reject anything unrepresentable.
+///
+/// @param s The string to parse.
+/// @param out Receives the parsed value on success; untouched otherwise.
+/// @return true if s is numeric and denotes a finite double.
+bool TryParseFiniteDouble(const std::string& s, double* out);
+
 /// @brief Format a double exactly like JavaScript's Number.prototype.toString().
 ///
 /// Produces the shortest decimal string that round-trips to the same double,

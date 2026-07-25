@@ -1,8 +1,6 @@
 #include "model/constraint_parser.h"
 
 #include <algorithm>
-#include <charconv>
-#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
@@ -128,18 +126,6 @@ size_t ScanDecimal(const std::string& value, size_t start, bool allow_sign_or_le
     if (i == exponent_digits_start) return exponent_start;
   }
   return i;
-}
-
-bool ParseFiniteDecimal(const std::string& value, double* result) {
-  if (!util::IsNumeric(value)) return false;
-  const char* begin = value.data();
-  const char* end = begin + value.size();
-  if (*begin == '+') ++begin;
-  double parsed = 0.0;
-  const auto parse = std::from_chars(begin, end, parsed, std::chars_format::general);
-  if (parse.ec != std::errc{} || parse.ptr != end || !std::isfinite(parsed)) return false;
-  *result = parsed;
-  return true;
 }
 
 struct TokenizeResult {
@@ -937,7 +923,7 @@ class Parser {
     if (Current().type == TokenType::kNumber) {
       const Token& num_tok = Advance();
       double literal = 0.0;
-      if (!ParseFiniteDecimal(num_tok.text, &literal)) {
+      if (!util::TryParseFiniteDouble(num_tok.text, &literal)) {
         return {nullptr,
                 {Error::Code::kConstraintError,
                  "Invalid or out-of-range decimal literal '" + num_tok.text + "' at position " +
@@ -963,7 +949,7 @@ class Parser {
       // Try parsing as a number (identifiers that look like numbers)
       if (IsNumeric(rhs_tok.text)) {
         double literal = 0.0;
-        if (!ParseFiniteDecimal(rhs_tok.text, &literal)) {
+        if (!util::TryParseFiniteDouble(rhs_tok.text, &literal)) {
           return {nullptr,
                   {Error::Code::kConstraintError,
                    "Invalid or out-of-range decimal literal '" + rhs_tok.text + "' at position " +

@@ -5,7 +5,27 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
+#include <locale>
+#include <sstream>
 #include <system_error>
+
+// libc++ implemented std::from_chars for floating point in LLVM 20, and Apple
+// gates it behind a macOS 26 deployment target, so it is unusable on every
+// currently supported macOS release. std::to_chars has been available since
+// macOS 13.3 and has no equivalent fallback that is guaranteed to reproduce its
+// shortest round-trip digits, so that one is a hard requirement instead.
+#if defined(__cpp_lib_to_chars) &&                                   \
+    (!defined(_LIBCPP_AVAILABILITY_HAS_FROM_CHARS_FLOATING_POINT) || \
+     _LIBCPP_AVAILABILITY_HAS_FROM_CHARS_FLOATING_POINT)
+#define COVERWISE_HAS_FLOAT_FROM_CHARS 1
+#else
+#define COVERWISE_HAS_FLOAT_FROM_CHARS 0
+#endif
+
+#if defined(_LIBCPP_AVAILABILITY_HAS_TO_CHARS_FLOATING_POINT) && \
+    !_LIBCPP_AVAILABILITY_HAS_TO_CHARS_FLOATING_POINT
+#error "coverwise requires a macOS 13.3 or newer deployment target"
+#endif
 
 namespace coverwise {
 namespace util {
@@ -53,6 +73,37 @@ bool HasNegativeDecimalOrder(const std::string& value) {
   const long long decimal_order = explicit_exponent + static_cast<long long>(integer_digits) -
                                   static_cast<long long>(first_nonzero) - 1;
   return decimal_order < 0;
+}
+
+/// @brief Outcome of parsing a decimal field, mirroring what std::from_chars
+///   reports back to this file.
+struct DecimalParse {
+  double value = 0.0;
+  bool complete = false;      ///< The whole field was consumed and represented.
+  bool out_of_range = false;  ///< Valid decimal syntax, not a representable double.
+};
+
+/// @brief Parse a decimal field independently of the active C locale.
+/// @param begin First character of the field, past any leading '+'.
+/// @param end One past the last character of the field.
+DecimalParse ParseDecimal(const char* begin, const char* end) {
+  DecimalParse parsed;
+#if COVERWISE_HAS_FLOAT_FROM_CHARS
+  const auto result = std::from_chars(begin, end, parsed.value, std::chars_format::general);
+  parsed.complete = result.ec == std::errc{} && result.ptr == end;
+  parsed.out_of_range = result.ec == std::errc::result_out_of_range;
+#else
+  // num_get reports malformed input and out-of-range values through the same
+  // failbit, so the syntax check is what separates them.
+  const std::string field(begin, end);
+  if (!IsNumeric(field)) return parsed;
+  std::istringstream stream(field);
+  stream.imbue(std::locale::classic());
+  stream >> parsed.value;
+  parsed.complete = !stream.fail();
+  parsed.out_of_range = stream.fail();
+#endif
+  return parsed;
 }
 
 }  // namespace
@@ -119,13 +170,12 @@ double ToDouble(const std::string& s) {
   const char* end = begin + s.size();
   if (*begin == '+') ++begin;
 
-  double value = 0.0;
-  const auto result = std::from_chars(begin, end, value, std::chars_format::general);
-  if (result.ec == std::errc{} && result.ptr == end) return value;
+  const DecimalParse result = ParseDecimal(begin, end);
+  if (result.complete) return result.value;
 
   // IsNumeric is a documented precondition. The only remaining expected
   // failure is a finite decimal outside double's representable range.
-  if (result.ec == std::errc::result_out_of_range) {
+  if (result.out_of_range) {
     const bool negative = s[0] == '-';
     if (HasNegativeDecimalOrder(s)) {
       return negative ? -0.0 : 0.0;
@@ -134,6 +184,18 @@ double ToDouble(const std::string& s) {
                     : std::numeric_limits<double>::infinity();
   }
   return std::numeric_limits<double>::quiet_NaN();
+}
+
+bool TryParseFiniteDouble(const std::string& s, double* out) {
+  if (!IsNumeric(s)) return false;
+  const char* begin = s.data();
+  const char* end = begin + s.size();
+  if (*begin == '+') ++begin;
+
+  const DecimalParse result = ParseDecimal(begin, end);
+  if (!result.complete || !std::isfinite(result.value)) return false;
+  *out = result.value;
+  return true;
 }
 
 std::string JsNumberToString(double value) {
