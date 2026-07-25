@@ -636,25 +636,89 @@ class JsonWriter {
 };
 
 // ---------------------------------------------------------------------------
-// File reading utility.
+// Input reading utility.
 // ---------------------------------------------------------------------------
 
+/// @brief True when @p path selects standard input rather than a named file.
+bool IsStdinPath(const std::string& path) { return path == "-"; }
+
+/// @brief Human-readable name of an input source, for diagnostics.
+std::string InputName(const std::string& path) {
+  return IsStdinPath(path) ? "standard input" : "file '" + path + "'";
+}
+
 /// @brief Read entire file contents into @p out.
-///
-/// Distinguishes a file that cannot be opened (missing/unreadable) from one that
-/// opens successfully but is genuinely empty: the former returns false, the latter
-/// returns true with an empty @p out. This lets callers emit accurate diagnostics
-/// ("cannot open file" vs "file is empty") instead of conflating the two.
-/// @return true if the file was opened and read; false if it could not be opened.
-bool ReadFile(const std::string& path, std::string& out) {
+/// @return true if the file was opened and read within the size cap.
+bool ReadFile(const std::string& path, std::string& out, bool& too_large) {
   std::ifstream file(path, std::ios::binary | std::ios::ate);
   if (!file.is_open()) return false;
   const std::streampos size = file.tellg();
-  if (size < 0 || static_cast<uint64_t>(size) > kMaxInputBytes) return false;
+  if (size < 0) return false;
+  if (static_cast<uint64_t>(size) > kMaxInputBytes) {
+    too_large = true;
+    return false;
+  }
   out.resize(static_cast<size_t>(size));
   file.seekg(0);
   file.read(out.data(), static_cast<std::streamsize>(out.size()));
   if (!file && !out.empty()) return false;
+  return true;
+}
+
+/// @brief Read standard input to end-of-stream into @p out.
+///
+/// Stops as soon as the size cap is exceeded so a runaway producer cannot make
+/// the CLI allocate without bound.
+/// @return true if the stream was consumed within the size cap.
+bool ReadStdin(std::string& out, bool& too_large) {
+  char buffer[65536];
+  while (std::cin.read(buffer, sizeof(buffer)) || std::cin.gcount() > 0) {
+    const size_t count = static_cast<size_t>(std::cin.gcount());
+    if (out.size() + count > kMaxInputBytes) {
+      too_large = true;
+      return false;
+    }
+    out.append(buffer, count);
+  }
+  return !std::cin.bad();
+}
+
+/// @brief Read an input source named on the command line into @p out.
+///
+/// A path of `-` reads standard input, which every subcommand accepts wherever
+/// it takes a file, so callers can pipe JSON instead of writing a temporary
+/// file. Standard input is consumable only once, so a second `-` in the same
+/// invocation is rejected rather than silently yielding empty content.
+///
+/// Every failure mode gets its own message in @p error: a source that cannot be
+/// opened, one that exceeds the size cap, and one that is genuinely empty are
+/// distinguishable instead of conflated.
+/// @return true if non-empty content was read; otherwise @p error is set.
+bool ReadInput(const std::string& path, std::string& out, std::string& error) {
+  bool too_large = false;
+  if (IsStdinPath(path)) {
+    // A completed ReadStdin leaves eofbit set, so the stream itself records
+    // whether an earlier argument already drained it — no separate flag needed.
+    if (std::cin.eof()) {
+      error = "standard input can only be read once; '-' was given more than once";
+      return false;
+    }
+    if (!ReadStdin(out, too_large)) {
+      error = too_large ? "standard input exceeds the maximum of " +
+                              std::to_string(kMaxInputBytes) + " bytes"
+                        : "cannot read standard input";
+      return false;
+    }
+  } else if (!ReadFile(path, out, too_large)) {
+    error = too_large ? "file '" + path + "' exceeds the maximum of " +
+                            std::to_string(kMaxInputBytes) + " bytes"
+                      : "cannot open file '" + path + "'";
+    return false;
+  }
+  if (out.empty()) {
+    error = InputName(path) + " is empty";
+    return false;
+  }
   return true;
 }
 
@@ -1387,12 +1451,9 @@ int RunGenerate(int argc, char* argv[]) {
   }
 
   std::string content;
-  if (!ReadFile(argv[2], content)) {
-    std::cerr << "error: cannot open file '" << argv[2] << "'\n";
-    return kExitInvalidInput;
-  }
-  if (content.empty()) {
-    std::cerr << "error: file '" << argv[2] << "' is empty\n";
+  std::string read_error;
+  if (!ReadInput(argv[2], content, read_error)) {
+    std::cerr << "error: " << read_error << "\n";
     return kExitInvalidInput;
   }
 
@@ -1529,12 +1590,9 @@ int RunAnalyze(int argc, char* argv[]) {
   // parameters or an object with a "parameters" array (and optional
   // "constraints"), matching the shape that generate accepts.
   std::string params_content;
-  if (!ReadFile(params_path, params_content)) {
-    std::cerr << "error: cannot open file '" << params_path << "'\n";
-    return kExitInvalidInput;
-  }
-  if (params_content.empty()) {
-    std::cerr << "error: file '" << params_path << "' is empty\n";
+  std::string read_error;
+  if (!ReadInput(params_path, params_content, read_error)) {
+    std::cerr << "error: " << read_error << "\n";
     return kExitInvalidInput;
   }
   JsonParser params_parser(params_content);
@@ -1575,12 +1633,8 @@ int RunAnalyze(int argc, char* argv[]) {
   // JSON object with a "constraints" array (or a bare array of strings).
   if (!constraints_path.empty()) {
     std::string constraints_content;
-    if (!ReadFile(constraints_path, constraints_content)) {
-      std::cerr << "error: cannot open file '" << constraints_path << "'\n";
-      return kExitInvalidInput;
-    }
-    if (constraints_content.empty()) {
-      std::cerr << "error: file '" << constraints_path << "' is empty\n";
+    if (!ReadInput(constraints_path, constraints_content, read_error)) {
+      std::cerr << "error: " << read_error << "\n";
       return kExitInvalidInput;
     }
     JsonParser constraints_parser(constraints_content);
@@ -1607,12 +1661,8 @@ int RunAnalyze(int argc, char* argv[]) {
 
   // Read and parse tests.
   std::string tests_content;
-  if (!ReadFile(tests_path, tests_content)) {
-    std::cerr << "error: cannot open file '" << tests_path << "'\n";
-    return kExitInvalidInput;
-  }
-  if (tests_content.empty()) {
-    std::cerr << "error: file '" << tests_path << "' is empty\n";
+  if (!ReadInput(tests_path, tests_content, read_error)) {
+    std::cerr << "error: " << read_error << "\n";
     return kExitInvalidInput;
   }
   JsonParser tests_parser(tests_content);
@@ -1676,7 +1726,7 @@ int RunExtend(int argc, char* argv[]) {
     std::string arg = argv[i];
     if (arg == "--existing" && i + 1 < argc) {
       existing_path = argv[++i];
-    } else if (!arg.empty() && arg[0] != '-' && input_path.empty()) {
+    } else if (input_path.empty() && (IsStdinPath(arg) || (!arg.empty() && arg[0] != '-'))) {
       input_path = arg;
     } else {
       std::cerr << "error: unknown argument '" << arg << "'\n";
@@ -1691,12 +1741,9 @@ int RunExtend(int argc, char* argv[]) {
 
   // Read and parse input.
   std::string input_content;
-  if (!ReadFile(input_path, input_content)) {
-    std::cerr << "error: cannot open file '" << input_path << "'\n";
-    return kExitInvalidInput;
-  }
-  if (input_content.empty()) {
-    std::cerr << "error: file '" << input_path << "' is empty\n";
+  std::string read_error;
+  if (!ReadInput(input_path, input_content, read_error)) {
+    std::cerr << "error: " << read_error << "\n";
     return kExitInvalidInput;
   }
   JsonParser input_parser(input_content);
@@ -1775,12 +1822,8 @@ int RunExtend(int argc, char* argv[]) {
 
   // Read and parse existing tests.
   std::string existing_content;
-  if (!ReadFile(existing_path, existing_content)) {
-    std::cerr << "error: cannot open file '" << existing_path << "'\n";
-    return kExitInvalidInput;
-  }
-  if (existing_content.empty()) {
-    std::cerr << "error: file '" << existing_path << "' is empty\n";
+  if (!ReadInput(existing_path, existing_content, read_error)) {
+    std::cerr << "error: " << read_error << "\n";
     return kExitInvalidInput;
   }
   JsonParser existing_parser(existing_content);
@@ -1817,12 +1860,9 @@ int RunStats(int argc, char* argv[]) {
   }
 
   std::string content;
-  if (!ReadFile(argv[2], content)) {
-    std::cerr << "error: cannot open file '" << argv[2] << "'\n";
-    return kExitInvalidInput;
-  }
-  if (content.empty()) {
-    std::cerr << "error: file '" << argv[2] << "' is empty\n";
+  std::string read_error;
+  if (!ReadInput(argv[2], content, read_error)) {
+    std::cerr << "error: " << read_error << "\n";
     return kExitInvalidInput;
   }
 
@@ -1936,6 +1976,8 @@ void PrintUsage() {
                " [--strength <n>] [--constraints <file.json>]\n"
             << "  coverwise extend --existing <tests.json> <input.json>\n"
             << "  coverwise stats <input.json>\n"
+            << "\n"
+            << "Any input path may be '-' to read that JSON from standard input.\n"
             << "\n"
             << "Exit codes:\n"
             << "  0 = OK (coverage 100%)\n"

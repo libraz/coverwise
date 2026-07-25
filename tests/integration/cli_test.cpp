@@ -696,3 +696,85 @@ TEST(CliGenerateTest, BoundaryExpansionRendersNonEmptyValues) {
   // Coverage must be complete.
   EXPECT_NE(result.stdout_text.find("\"coverage\":1"), std::string::npos) << result.stdout_text;
 }
+
+// Every subcommand accepts '-' in place of an input path and reads that JSON
+// from standard input, producing the same output as the file form.
+TEST(CliStdinTest, EachCommandReadsInputFromStandardInput) {
+  const std::string input = R"({
+    "parameters": [
+      {"name": "os", "values": ["win", "mac"]},
+      {"name": "browser", "values": ["chrome", "safari"]}
+    ],
+    "seed": 7
+  })";
+  const std::string input_path = TempPath("stdin_input.json");
+  WriteFile(input_path, input);
+
+  const auto generate_file = RunCli("generate " + input_path);
+  const auto generate_stdin = RunCli("generate - < " + input_path);
+  ASSERT_EQ(generate_stdin.exit_code, 0) << generate_stdin.stdout_text;
+  EXPECT_EQ(generate_stdin.stdout_text, generate_file.stdout_text);
+
+  const auto stats_file = RunCli("stats " + input_path);
+  const auto stats_stdin = RunCli("stats - < " + input_path);
+  ASSERT_EQ(stats_stdin.exit_code, 0) << stats_stdin.stdout_text;
+  EXPECT_EQ(stats_stdin.stdout_text, stats_file.stdout_text);
+
+  const std::string tests_path = TempPath("stdin_tests.json");
+  WriteFile(tests_path, generate_file.stdout_text);
+
+  // analyze reads either side from standard input; the other stays a file.
+  const auto analyze_params_stdin =
+      RunCli("analyze --params - --tests " + tests_path + " < " + input_path);
+  EXPECT_EQ(analyze_params_stdin.exit_code, 0) << analyze_params_stdin.stdout_text;
+  const auto analyze_tests_stdin =
+      RunCli("analyze --params " + input_path + " --tests - < " + tests_path);
+  EXPECT_EQ(analyze_tests_stdin.exit_code, 0) << analyze_tests_stdin.stdout_text;
+
+  const auto extend_stdin = RunCli("extend --existing " + tests_path + " - < " + input_path);
+  EXPECT_EQ(extend_stdin.exit_code, 0) << extend_stdin.stdout_text;
+  EXPECT_NE(extend_stdin.stdout_text.find("\"coverage\":1"), std::string::npos)
+      << extend_stdin.stdout_text;
+}
+
+// Standard input can be consumed only once, so a second '-' is a clear error
+// rather than an empty read.
+TEST(CliStdinTest, RejectsStandardInputRequestedTwice) {
+  const std::string input = R"([{"name": "os", "values": ["win", "mac"]}])";
+  const std::string input_path = TempPath("stdin_twice.json");
+  WriteFile(input_path, input);
+
+  const auto result = RunCliCaptureStderr("analyze --params - --tests - < " + input_path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find("standard input can only be read once"), std::string::npos)
+      << result.stdout_text;
+}
+
+// Empty standard input is reported as empty input, not as an unopenable file.
+TEST(CliStdinTest, EmptyStandardInputIsReportedAsEmpty) {
+  const auto result = RunCliCaptureStderr("generate - < /dev/null");
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find("standard input is empty"), std::string::npos)
+      << result.stdout_text;
+  EXPECT_EQ(result.stdout_text.find("cannot open file"), std::string::npos) << result.stdout_text;
+}
+
+// An input larger than the accepted budget is reported as oversized rather than
+// being conflated with an unopenable file.
+TEST(CliInputBudgetTest, OversizedInputIsDistinguishedFromAnUnopenableFile) {
+  std::string oversized = R"({"parameters":[{"name":"a","values":[")";
+  oversized.append(1024 * 1024 + 1, 'x');
+  oversized += R"("]}]})";
+  const std::string path = TempPath("oversized.json");
+  WriteFile(path, oversized);
+
+  const auto from_file = RunCliCaptureStderr("generate " + path);
+  EXPECT_EQ(from_file.exit_code, 3) << from_file.stdout_text;
+  EXPECT_NE(from_file.stdout_text.find("exceeds the maximum"), std::string::npos)
+      << from_file.stdout_text;
+
+  const auto from_stdin = RunCliCaptureStderr("generate - < " + path);
+  EXPECT_EQ(from_stdin.exit_code, 3) << from_stdin.stdout_text;
+  EXPECT_NE(from_stdin.stdout_text.find("standard input exceeds the maximum"), std::string::npos)
+      << from_stdin.stdout_text;
+}
