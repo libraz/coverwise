@@ -16,7 +16,18 @@ def native_binary() -> Path:
     The distribution is intentionally platform-specific: its CLI delegates to
     the same C++ binary shipped in GitHub Release archives, so JSON behavior and
     exit codes stay identical across installation methods.
+
+    ``COVERWISE_BINARY`` overrides the bundled path. It exists so this package
+    can be exercised from an unpacked source tree against a locally built CLI;
+    an installed wheel never needs it.
     """
+
+    override = os.environ.get("COVERWISE_BINARY")
+    if override:
+        binary = Path(override)
+        if not binary.is_file():
+            raise RuntimeError(f"COVERWISE_BINARY points at a missing file: {binary}")
+        return binary
 
     binary = Path(__file__).parent / "_bin" / "coverwise"
     if not binary.is_file():
