@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # develop is where work lands; main only receives release promotions, so
+    # gating on main alone would first exercise a change at release time.
+    branches: [main, develop]
     tags-ignore: ['**']
     paths-ignore:
       - '**.md'
