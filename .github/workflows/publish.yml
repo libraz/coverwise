@@ -129,11 +129,22 @@ jobs:
         with:
           name: native-linux-x64
           path: coverwise-${{ github.ref_name }}-linux-x64.tar.gz
+          # Artifacts outlive a single attempt, so re-running the whole workflow
+          # after a publish failure would otherwise collide with itself.
+          overwrite: true
 
   python-linux-wheel:
     needs: verify-release
-    runs-on: ubuntu-latest
-    container: quay.io/pypa/manylinux_2_28_x86_64
+    runs-on: ${{ matrix.runner }}
+    container: quay.io/pypa/manylinux_2_28_${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - name: Build and repair manylinux wheel
@@ -143,10 +154,10 @@ jobs:
           dnf install -y cmake
           python_bin=/opt/python/cp312-cp312/bin/python
           "$python_bin" -m pip install --upgrade build wheel auditwheel pytest
-          PYTHON="$python_bin" COVERWISE_WHEEL_PLATFORM_TAG=manylinux_2_28_x86_64 \
+          PYTHON="$python_bin" COVERWISE_WHEEL_PLATFORM_TAG=manylinux_2_28_${{ matrix.arch }} \
             bindings/python/scripts/build_wheel.sh
           "$python_bin" -m auditwheel repair bindings/python/dist/*.whl \
-            --plat manylinux_2_28_x86_64 --wheel-dir bindings/python/wheelhouse
+            --plat manylinux_2_28_${{ matrix.arch }} --wheel-dir bindings/python/wheelhouse
       - name: Test installed wheel
         shell: bash
         run: |
@@ -157,8 +168,9 @@ jobs:
           /tmp/coverwise-wheel-test/bin/python -m pytest bindings/python/tests -v
       - uses: actions/upload-artifact@v6
         with:
-          name: python-wheel-manylinux-x86_64
+          name: python-wheel-manylinux-${{ matrix.arch }}
           path: bindings/python/wheelhouse/*.whl
+          overwrite: true
 
   python-macos-wheel:
     needs: verify-release
@@ -173,7 +185,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --upgrade build wheel pytest
-          COVERWISE_WHEEL_PLATFORM_TAG=macosx_11_0_arm64 bindings/python/scripts/build_wheel.sh
+          bindings/python/scripts/build_wheel.sh
       - name: Test installed wheel
         shell: bash
         run: |
@@ -185,6 +197,7 @@ jobs:
         with:
           name: python-wheel-macos-arm64
           path: bindings/python/dist/*.whl
+          overwrite: true
 
   publish-pypi:
     needs: [publish-npm, python-linux-wheel, python-macos-wheel]

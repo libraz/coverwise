@@ -115,6 +115,43 @@ jobs:
           name: codecov-coverwise-js
           fail_ci_if_error: false
 
+  python-binding:
+    # The release pipeline is the only other place these wheels are built, and a
+    # failure there lands after npm has already published.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: python3 -m pip install --upgrade build wheel pytest ruff twine
+
+      - name: Check release version consistency
+        run: python3 bindings/python/scripts/check_version.py
+
+      - name: Lint
+        run: |
+          ruff format --check bindings/python/src bindings/python/tests
+          ruff check bindings/python/src bindings/python/tests
+
+      - name: Build wheel
+        run: bindings/python/scripts/build_wheel.sh
+
+      - name: Validate wheel metadata
+        run: python3 -m twine check bindings/python/dist/*.whl
+
+      - name: Test installed wheel
+        run: |
+          python3 -m venv /tmp/coverwise-wheel-test
+          /tmp/coverwise-wheel-test/bin/python -m pip install bindings/python/dist/*.whl pytest
+          /tmp/coverwise-wheel-test/bin/python -m pytest bindings/python/tests -v
+
   sanitizers:
     runs-on: ubuntu-latest
     steps:
