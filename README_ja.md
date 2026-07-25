@@ -115,13 +115,39 @@ const extended = cw.extendTests(existingTests, { parameters });
 | 依存 | WASM対応が必要 | なし |
 | API | 同一 | 同一 |
 
-## CLI
-
-Linux x64 または macOS Apple Silicon では、PyPI から native CLI をインストールできます。
+## Python
 
 ```bash
 pip install coverwise
 ```
+
+PyPI パッケージには native CLI と、同じ JSON 契約の上に立つ Python API が含まれます。`generate`、`analyze_coverage`、`extend_tests`、`estimate_model` は素の dict をやり取りします。
+
+```python
+import coverwise
+
+result = coverwise.generate(
+    parameters={
+        "os": ["Windows", "macOS", "Linux"],
+        "browser": ["Chrome", "Firefox", "Safari"],
+    },
+    constraints=["IF os = Windows THEN browser != Safari"],
+)
+```
+
+`coverwise.parametrize` はモデルを pytest のケースに変換し、手書きの全組み合わせを網羅スイートに置き換えます。
+
+```python
+@coverwise.parametrize({"os": ["Windows", "macOS"], "browser": ["Chrome", "Firefox"]})
+def test_login(os, browser):
+    assert login(os, browser).ok
+```
+
+詳細は [Python API リファレンス](docs/ja/python-api.md) を参照してください。
+
+## CLI
+
+`pip install coverwise` でインストールされる実行ファイルは同じものです。対象は Linux（x86_64 / aarch64）と macOS 14 以降の Apple Silicon です。
 
 npm パッケージはネイティブ実行ファイルをインストールしません。Linux x64 アーカイブは各 [GitHub Release](https://github.com/libraz/coverwise/releases) に添付されています。ソースからビルドすると `build/bin/coverwise` が生成され、`cmake --install build` で選択したプレフィックス配下の `bin/coverwise` にインストールされます。
 
@@ -137,6 +163,12 @@ coverwise generate input.json > tests.json
 
 # モデルの複雑さを確認
 coverwise stats input.json
+```
+
+入力 path にはいずれも `-` を指定でき、その JSON を標準入力から読み込みます。中間ファイルなしでコマンドを繋げられます。
+
+```bash
+coverwise generate input.json | coverwise analyze --params input.json --tests -
 ```
 
 終了コード: `0` 成功、`1` 制約エラー、`2` カバレッジ不足、`3` 入力不正。

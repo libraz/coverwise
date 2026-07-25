@@ -2,7 +2,7 @@
 
 よくあるテストシナリオの実践的なレシピ集です。
 
-以下のレシピは、クラスベース API を使う TypeScript の断片です。同じモジュールに次の準備コードを置き、その後で各レシピを実行してください：
+以下のレシピは、クラスベース API を使う TypeScript の断片です。同じモデルを pytest から扱う例は [Python](#python) の節にまとめています。同じモジュールに次の準備コードを置き、その後で各レシピを実行してください：
 
 ```typescript
 import { Coverwise, when, allOf } from '@libraz/coverwise';
@@ -216,6 +216,103 @@ console.log(`パラメータ数: ${stats.parameterCount}`);
 console.log(`3-wise タプル数: ${stats.totalTuples}`);
 console.log(`推定テスト数: ${stats.estimatedTests}`);
 ```
+
+## Python
+
+上記のレシピはすべて Python からそのまま使えます。モデルのフィールドは同じで、`coverwise.generate` に keyword 引数または mapping として渡すだけです。ここでは、モデルではなく Python のテストスイートの形に沿ったレシピを挙げます。完全なリファレンスは [Python API](python-api.md) を参照してください。
+
+### pytest テストのパラメータ化
+
+`coverwise.parametrize` は手書きの全組み合わせを置き換えます。各パラメータは同名の引数として渡されます。
+
+```python
+import coverwise
+
+@coverwise.parametrize(
+    {
+        "os": ["Windows", "macOS", "Linux"],
+        "browser": ["Chrome", "Firefox", "Safari"],
+        "language": ["en", "ja", "de"],
+    },
+    constraints=["IF os = Windows THEN browser != Safari"],
+)
+def test_page_renders(os, browser, language):
+    assert render(os, browser, language).ok
+```
+
+制約適用後の有効な組み合わせは 24 通りですが、ペアワイズスイートは 13 ケースですべてのペアを網羅します。各ケースには読みやすい id (`os=macOS-browser=Chrome-language=ja`) が付きます。
+
+### 正常系と異常系を別のテストに分ける
+
+invalid 値からは、invalid 値をちょうど 1 つ含むネガティブテストが生成されます。期待結果が逆になるため、2 つのテストに分けるのが自然です。
+
+```python
+import coverwise
+import pytest
+
+LOGIN_MODEL = {
+    "parameters": [
+        {"name": "email", "values": [
+            "user@example.com",
+            {"value": "", "invalid": True},
+            {"value": "not-an-email", "invalid": True},
+        ]},
+        {"name": "password", "values": [
+            "Str0ng!Pass",
+            {"value": "short", "invalid": True},
+        ]},
+    ]
+}
+_suite = coverwise.generate(LOGIN_MODEL)
+
+
+@pytest.mark.parametrize("case", _suite["tests"])
+def test_login_accepts_valid_input(case):
+    assert login(**case).ok
+
+
+@pytest.mark.parametrize("case", _suite["negativeTests"])
+def test_login_rejects_invalid_input(case):
+    with pytest.raises(ValidationError):
+        login(**case)
+```
+
+テストケース全体を 1 つの `case` 引数として渡しておくと、モデルにパラメータが増えてもテストの書き換えが要りません。`coverwise.parametrize(..., include_negative=True)` を使えば両方のスイートを 1 つのテストで実行できます。こちらは、受け取った値から期待結果を自分で判断するテストに向きます。
+
+### 手書きスイートのカバレッジを保証する
+
+既存スイートのカバレッジは通常のアサーションとして書けます。不足があれば、欠けている組み合わせを名指しでテストが失敗します。
+
+```python
+PARAMETERS = {"os": ["Windows", "macOS"], "browser": ["Chrome", "Firefox"]}
+
+
+def test_manual_suite_covers_every_pair():
+    report = coverwise.analyze_coverage(PARAMETERS, MANUAL_TESTS)
+
+    assert report["uncovered"] == [], [item["display"] for item in report["uncovered"]]
+```
+
+### 重要なグループだけ強度を上げる
+
+`subModels` を含め、モデルのフィールドはそのまま decorator に渡せます。
+
+```python
+@coverwise.parametrize(
+    {
+        "protocol": ["HTTP/1.1", "HTTP/2", "HTTP/3"],
+        "auth": ["none", "basic", "oauth"],
+        "cache": ["enabled", "disabled"],
+        "region": ["us", "eu", "ap"],
+    },
+    strength=2,
+    subModels=[{"parameters": ["protocol", "auth", "cache"], "strength": 3}],
+)
+def test_request_path(protocol, auth, cache, region):
+    assert request(protocol, auth, cache, region).ok
+```
+
+ネットワーク周りの 3 パラメータは 3-wise で網羅し、`region` はペアワイズのままです。全組み合わせの 54 ケースに対して 18 ケースになります。
 
 ## CI 統合
 

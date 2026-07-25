@@ -2,21 +2,179 @@
 
 ## Installation
 
-The `coverwise` PyPI package installs the native command-line tool. It ships no
-separate Python implementation of the generator, so its JSON behavior, output,
-and exit codes exactly match the C++ CLI.
+The `coverwise` PyPI package ships the native command-line tool plus a thin
+Python API that drives it. There is no separate Python implementation of the
+generator, so results, JSON shapes, and error categories match the C++ CLI and
+the JavaScript API exactly.
 
 ```bash
 pip install coverwise
 coverwise --help
 ```
 
-Supported wheels are Linux x86_64 and macOS Apple Silicon. There are no runtime
+Supported wheels are Linux x86_64, Linux aarch64, and macOS 14+ Apple Silicon.
+Other platforms have to build the CLI from source, because the package ships a
+prebuilt executable rather than portable Python code. There are no runtime
 Python dependencies. `python -m coverwise` invokes the same command.
+
+## Quick start
+
+```python
+import coverwise
+
+result = coverwise.generate(
+    parameters={
+        "os": ["Windows", "macOS", "Linux"],
+        "browser": ["Chrome", "Firefox", "Safari"],
+    },
+    constraints=["IF os = Windows THEN browser != Safari"],
+    strength=2,
+)
+
+print(result["coverage"])  # 1
+for test in result["tests"]:
+    print(test)  # {"os": "Linux", "browser": "Firefox"}, ...
+```
+
+Every function takes and returns plain dictionaries and lists — the same JSON
+documented in the [CLI reference](cli.md). Nothing has to be serialized or
+parsed by hand. Numbers decode the way `json` decodes them, so a whole-numbered
+ratio such as full coverage arrives as `1` rather than `1.0`; comparing against
+`1.0` still works.
+
+## Model input
+
+`parameters` accepts either the JSON list form or a name-to-values mapping:
+
+```python
+# Mapping form: concise, and preserves declaration order.
+coverwise.generate(parameters={"os": ["win", "mac"]})
+
+# List form: required for per-value options such as invalid values or aliases.
+coverwise.generate(
+    parameters=[
+        {"name": "os", "values": ["win", "mac"]},
+        {"name": "browser", "values": ["Chrome", {"value": "IE", "invalid": True}]},
+    ]
+)
+```
+
+Model fields can be passed as keyword arguments, as a single mapping, or both —
+keyword arguments override the mapping, which makes a stored model easy to reuse:
+
+```python
+MODEL = {"parameters": {"os": ["win", "mac"], "browser": ["Chrome", "Firefox"]}}
+
+pairwise = coverwise.generate(MODEL)
+three_wise = coverwise.generate(MODEL, strength=3)
+```
+
+## Functions
+
+### `generate(model=None, **fields)`
+
+Generate a covering test suite. Returns the `generate` result: `tests`,
+`coverage`, `uncovered`, `stats`, and the other fields the CLI documents.
+
+A suite that cannot reach full coverage — for example under `maxTests` — is
+returned with `coverage` below 1.0 rather than raising, so a partial result stays
+inspectable:
+
+```python
+result = coverwise.generate(MODEL, maxTests=3)
+if result["coverage"] < 1.0:
+    for missing in result["uncovered"]:
+        print(missing["display"])  # "os=mac, browser=Firefox"
+```
+
+### `analyze_coverage(parameters, tests, strength=2, constraints=None)`
+
+Measure the t-wise coverage of a suite you already have — hand-written tests, a
+suite from another tool, or a previous `generate` result. Accepts a bare list of
+test cases or a whole `generate` result.
+
+```python
+report = coverwise.analyze_coverage(
+    {"os": ["win", "mac"], "browser": ["Chrome", "Safari"]},
+    [{"os": "win", "browser": "Chrome"}],
+)
+
+report["coverageRatio"]  # 0.25
+[item["display"] for item in report["uncovered"]]  # ["os=win, browser=Safari", ...]
+```
+
+### `extend_tests(existing, model=None, **fields)`
+
+Extend a suite until the model is covered. Existing tests are kept as-is and
+come first in the returned `tests`, so recorded runs stay valid.
+
+```python
+result = coverwise.extend_tests(previous["tests"], MODEL)
+added = result["tests"][len(previous["tests"]) :]
+```
+
+### `estimate_model(model=None, **fields)`
+
+Report model statistics without generating anything: parameter and value counts,
+the raw tuple count, and an estimated suite size. Constraint syntax and
+parameter references are validated, which makes it a cheap pre-flight check.
+
+```python
+stats = coverwise.estimate_model(MODEL, strength=3)
+stats["totalTuples"], stats["estimatedTests"]
+```
+
+## pytest integration
+
+`coverwise.parametrize` replaces a hand-written cross-product with a generated
+t-wise suite. Each parameter becomes a same-named test argument:
+
+```python
+import coverwise
+
+@coverwise.parametrize(
+    {
+        "os": ["Windows", "macOS", "Linux"],
+        "browser": ["Chrome", "Firefox", "Safari"],
+        "locale": ["en", "ja"],
+    },
+    constraints=["IF os = Windows THEN browser != Safari"],
+)
+def test_login(os, browser, locale):
+    assert login(os, browser, locale).ok
+```
+
+The full cross-product above is 18 cases; the pairwise suite covers every pair
+in far fewer, and each case gets a readable id (`os=macOS-browser=Chrome-locale=ja`).
+
+Parameter names become test arguments, so they must be valid Python identifiers.
+Any further model field (`strength`, `seed`, `maxTests`, `weights`, `subModels`)
+is passed through. Values marked `"invalid": true` are excluded unless
+`include_negative=True` is given, which also runs the generated negative tests.
+
+pytest is not a dependency of this package; the decorator only needs it in the
+environment where tests run. `pip install coverwise[pytest]` installs both when
+that environment is the same one.
+
+## Errors
+
+Invalid models and unparsable constraints raise `coverwise.CoverwiseError`:
+
+```python
+try:
+    coverwise.generate(MODEL, constraints=["IF os = = THEN"])
+except coverwise.CoverwiseError as error:
+    error.code       # "CONSTRAINT_ERROR"
+    error.exit_code  # 1, matching the CLI exit-code contract
+    error.stderr     # the CLI's full diagnostic output
+```
+
+`code` uses the same vocabulary as the JavaScript API (`CONSTRAINT_ERROR`,
+`INVALID_INPUT`). Insufficient coverage is not an error — see `generate` above.
 
 ## Command-line interface
 
-Use the installed command for shell scripts and pipelines:
+The installed command is the same executable the API drives:
 
 ```bash
 coverwise generate input.json > tests.json
@@ -28,23 +186,16 @@ coverwise stats input.json
 See the [CLI reference](cli.md) for input schemas, output schemas, and exit
 codes.
 
-## Automation helper
+## Running the executable directly
 
-For a Python process that needs to run the executable, `coverwise.run()` returns
-the standard `subprocess.CompletedProcess`. Pass the same arguments that follow
-the `coverwise` command.
+`coverwise.run()` returns the standard `subprocess.CompletedProcess` for
+arguments passed straight to the CLI, and `coverwise.native_binary()` returns the
+bundled executable's path when an integration needs to own process creation:
 
 ```python
-import coverwise
-
-result = coverwise.run(
-    ["generate", "input.json"],
-    text=True,
-    capture_output=True,
-    check=True,
-)
+result = coverwise.run(["generate", "input.json"], text=True, capture_output=True, check=True)
 print(result.stdout)
 ```
 
-`coverwise.native_binary()` returns the bundled executable path when an
-integration needs to own process creation itself.
+Setting `COVERWISE_BINARY` points both at a different executable. It exists for
+developing against a locally built CLI; an installed wheel never needs it.

@@ -2,7 +2,8 @@
 
 Practical recipes for common testing scenarios.
 
-The recipes below are TypeScript fragments that use the class-based API. Put the
+The recipes below are TypeScript fragments that use the class-based API; the
+[Python](#python) section covers the same models from a pytest suite. Put the
 following setup in the same module, then run a recipe after it:
 
 ```typescript
@@ -220,6 +221,114 @@ console.log(`Parameters: ${stats.parameterCount}`);
 console.log(`Total 3-wise tuples: ${stats.totalTuples}`);
 console.log(`Estimated tests: ${stats.estimatedTests}`);
 ```
+
+## Python
+
+Every recipe above works from Python unchanged: the model fields are the same,
+passed to `coverwise.generate` as keyword arguments or a mapping. The recipes
+below are the ones shaped by a Python test suite rather than by the model.
+See the [Python API](python-api.md) for the full reference.
+
+### Parametrizing a pytest test
+
+`coverwise.parametrize` replaces a hand-written cross-product. Each parameter
+arrives as a same-named argument:
+
+```python
+import coverwise
+
+@coverwise.parametrize(
+    {
+        "os": ["Windows", "macOS", "Linux"],
+        "browser": ["Chrome", "Firefox", "Safari"],
+        "language": ["en", "ja", "de"],
+    },
+    constraints=["IF os = Windows THEN browser != Safari"],
+)
+def test_page_renders(os, browser, language):
+    assert render(os, browser, language).ok
+```
+
+The constraint leaves 24 valid combinations; the pairwise suite covers every pair
+in 13 cases, each with a readable id (`os=macOS-browser=Chrome-language=ja`).
+
+### Positive and negative suites as separate tests
+
+Invalid values produce negative tests with exactly one invalid value each, so the
+two suites belong in two tests with opposite expectations:
+
+```python
+import coverwise
+import pytest
+
+LOGIN_MODEL = {
+    "parameters": [
+        {"name": "email", "values": [
+            "user@example.com",
+            {"value": "", "invalid": True},
+            {"value": "not-an-email", "invalid": True},
+        ]},
+        {"name": "password", "values": [
+            "Str0ng!Pass",
+            {"value": "short", "invalid": True},
+        ]},
+    ]
+}
+_suite = coverwise.generate(LOGIN_MODEL)
+
+
+@pytest.mark.parametrize("case", _suite["tests"])
+def test_login_accepts_valid_input(case):
+    assert login(**case).ok
+
+
+@pytest.mark.parametrize("case", _suite["negativeTests"])
+def test_login_rejects_invalid_input(case):
+    with pytest.raises(ValidationError):
+        login(**case)
+```
+
+Passing whole test cases as one `case` argument keeps this working when the model
+grows a parameter. `coverwise.parametrize(..., include_negative=True)` runs both
+suites through a single test instead, which suits a test that derives the expected
+outcome from the values it receives.
+
+### Guarding a hand-written suite's coverage
+
+Coverage of an existing suite is a normal assertion, so a gap fails the test run
+with the missing combinations named:
+
+```python
+PARAMETERS = {"os": ["Windows", "macOS"], "browser": ["Chrome", "Firefox"]}
+
+
+def test_manual_suite_covers_every_pair():
+    report = coverwise.analyze_coverage(PARAMETERS, MANUAL_TESTS)
+
+    assert report["uncovered"] == [], [item["display"] for item in report["uncovered"]]
+```
+
+### Higher strength for a critical group
+
+Any model field passes through the decorator, including `subModels`:
+
+```python
+@coverwise.parametrize(
+    {
+        "protocol": ["HTTP/1.1", "HTTP/2", "HTTP/3"],
+        "auth": ["none", "basic", "oauth"],
+        "cache": ["enabled", "disabled"],
+        "region": ["us", "eu", "ap"],
+    },
+    strength=2,
+    subModels=[{"parameters": ["protocol", "auth", "cache"], "strength": 3}],
+)
+def test_request_path(protocol, auth, cache, region):
+    assert request(protocol, auth, cache, region).ok
+```
+
+The networking trio gets exhaustive 3-wise coverage while `region` stays
+pairwise: 18 cases instead of the 54-case cross-product.
 
 ## CI Integration
 

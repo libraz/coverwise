@@ -1,6 +1,6 @@
 # CLI リファレンス
 
-Linux x64 または macOS Apple Silicon では、PyPI から `coverwise` native CLI をインストールできます。
+Linux（x86_64 / aarch64）または macOS 14 以降の Apple Silicon では、PyPI から `coverwise` native CLI をインストールできます。
 
 ```bash
 pip install coverwise
@@ -11,6 +11,8 @@ native CLIはnpm packageには含まれません。Linux x64版は
 pathは`build/bin/coverwise`で、CMake install後は指定prefix配下の`bin/coverwise`です。
 
 `coverwise` コマンドラインツールは JSON 入力を読み込み、JSON 出力を書き出します。
+
+入力 path にはいずれも `-` を指定でき、その JSON を標準入力から読み込みます。標準入力は一度しか読めないため、入力を 2 つ取るコマンドでは、そのうち 1 つに `-` を指定できます。
 
 すべてのコマンド出力は CLI schema version `1` を使用し、`"schemaVersion": 1` を含みます。
 v1 では空の配列フィールドも常に出力し、suggestionを`{ description, testCase }`形式へ変更し、
@@ -197,7 +199,7 @@ coverwise stats <input.json>
 
 ## パイプ
 
-標準的な Unix パイプが使えます：
+標準的な Unix パイプが入力側・出力側とも使えます。入力 path の代わりに `-` を渡すと、その JSON を標準入力から読み込みます。
 
 ```bash
 # 生成して件数を確認
@@ -205,7 +207,15 @@ coverwise generate input.json | jq '.tests | length'
 
 # 他のツールに連携
 coverwise generate input.json | my-test-runner --from-stdin
+
+# モデルをその場で組み立てて生成
+jq '{parameters: .matrix}' config.json | coverwise generate -
+
+# 中間ファイルなしで生成結果を測定
+coverwise generate input.json | coverwise analyze --params input.json --tests -
 ```
+
+標準入力は一度しか読めないため、1 つのコマンドの両方の入力に `-` を渡した場合は、空として読むのではなくエラーになります。
 
 ## 使用例
 

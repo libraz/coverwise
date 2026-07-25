@@ -77,8 +77,9 @@ coverwise は単なる生成ツールではなく、**テスト設計API** と�
 |----------------|------|
 | Node.js (≥ 18) | `npm install @libraz/coverwise` |
 | ブラウザ | ESM インポート（WASMは自動ロード） |
+| Python (≥ 3.10) | `pip install coverwise`（Linux x86_64 / aarch64、macOS 14 以降の Apple Silicon） |
 | C++ (ネイティブ) | CMake、静的ライブラリ |
-| CLI | `pip install coverwise`（Linux x64 / macOS Apple Silicon）、release archive、またはソースビルド |
+| CLI | `pip install coverwise`、release archive、またはソースビルド |
 
 ## パフォーマンス
 

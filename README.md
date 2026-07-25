@@ -115,13 +115,43 @@ const extended = cw.extendTests(existingTests, { parameters });
 | Dependencies | Requires WASM support | None |
 | API | Identical | Identical |
 
-## CLI
-
-Install the native CLI from PyPI on Linux x64 or macOS Apple Silicon:
+## Python
 
 ```bash
 pip install coverwise
 ```
+
+The PyPI package ships the native CLI plus a Python API over the same JSON
+contract. `generate`, `analyze_coverage`, `extend_tests`, and `estimate_model`
+take and return plain dictionaries:
+
+```python
+import coverwise
+
+result = coverwise.generate(
+    parameters={
+        "os": ["Windows", "macOS", "Linux"],
+        "browser": ["Chrome", "Firefox", "Safari"],
+    },
+    constraints=["IF os = Windows THEN browser != Safari"],
+)
+```
+
+`coverwise.parametrize` turns a model into pytest cases, replacing a
+hand-written cross-product with a covering suite:
+
+```python
+@coverwise.parametrize({"os": ["Windows", "macOS"], "browser": ["Chrome", "Firefox"]})
+def test_login(os, browser):
+    assert login(os, browser).ok
+```
+
+See the [Python API reference](docs/en/python-api.md).
+
+## CLI
+
+The same executable is installed by `pip install coverwise` on Linux
+(x86_64 / aarch64) and macOS 14+ Apple Silicon.
 
 The npm package does not install a native executable. Linux x64 archives are also attached to each
 [GitHub Release](https://github.com/libraz/coverwise/releases); source builds produce `build/bin/coverwise`,
@@ -139,6 +169,13 @@ coverwise generate input.json > tests.json
 
 # Preview model complexity
 coverwise stats input.json
+```
+
+Any input path may be `-` to read that JSON from standard input, so commands
+compose without intermediate files:
+
+```bash
+coverwise generate input.json | coverwise analyze --params input.json --tests -
 ```
 
 Exit codes: `0` OK, `1` constraint error, `2` insufficient coverage, `3` invalid input.

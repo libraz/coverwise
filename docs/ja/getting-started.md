@@ -10,6 +10,14 @@ npm install @libraz/coverwise
 yarn add @libraz/coverwise
 ```
 
+### Python
+
+API、pytest 連携、エラー処理は [Python API](python-api.md) を参照してください。
+
+```bash
+pip install coverwise
+```
+
 ### C++ (ネイティブ)
 
 ヘッダー、リンク方法、完全な API は [C++ API](cpp-api.md) を参照してください。
@@ -26,7 +34,7 @@ cmake --install build --prefix ./install
 
 コマンド、JSON スキーマ、終了コードは [CLI リファレンス](cli.md) を参照してください。
 
-Linux x64 または macOS Apple Silicon では、PyPI から native CLI をインストールできます。
+Linux（x86_64 / aarch64）または macOS 14 以降の Apple Silicon では、PyPI から native CLI をインストールできます。
 
 ```bash
 pip install coverwise
@@ -68,6 +76,29 @@ for (const test of result.tests) {
 // { os: 'Windows', browser: 'Chrome', theme: 'light' }
 // { os: 'macOS', browser: 'Firefox', theme: 'dark' }
 // ...
+```
+
+### Python
+
+```python
+import coverwise
+
+result = coverwise.generate(
+    parameters={
+        "os": ["Windows", "macOS", "Linux"],
+        "browser": ["Chrome", "Firefox", "Safari"],
+        "theme": ["light", "dark"],
+    },
+)
+
+print(f"生成テスト数: {len(result['tests'])}")
+print(f"カバレッジ: {result['coverage'] * 100}%")
+
+for test in result["tests"]:
+    print(test)
+# {'os': 'Windows', 'browser': 'Chrome', 'theme': 'light'}
+# {'os': 'macOS', 'browser': 'Firefox', 'theme': 'dark'}
+# ...
 ```
 
 ### C++
@@ -199,7 +230,7 @@ const result = cw.generate({
 
 - [実例集](examples.md) — ネガティブテスト、混合強度、境界値など
 - [JavaScript API](js-api.md) — API リファレンス
-- [Python API](python-api.md) — PyPI パッケージと自動化用ヘルパー
+- [Python API](python-api.md) — PyPI パッケージ、Python API、pytest 連携
 - [C++ API](cpp-api.md) — ネイティブライブラリのリファレンス
 - [CLI リファレンス](cli.md) — コマンドと JSON スキーマ
 - [制約構文](constraints.md) — 制約言語の完全なリファレンス

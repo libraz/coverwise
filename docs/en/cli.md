@@ -2,7 +2,7 @@
 
 The `coverwise` command-line tool reads JSON input and writes JSON output.
 
-Install the native CLI from PyPI on Linux x64 or macOS Apple Silicon:
+Install the native CLI from PyPI on Linux (x86_64 / aarch64) or macOS 14+ Apple Silicon:
 
 ```bash
 pip install coverwise
@@ -11,6 +11,10 @@ pip install coverwise
 The npm package does not install the native executable. Linux x64 archives are also available from
 [GitHub Releases](https://github.com/libraz/coverwise/releases); source builds place it at
 `build/bin/coverwise`, and CMake installs it to `bin/coverwise` under the selected prefix.
+
+Any input path may be `-`, which reads that JSON from standard input. Since
+standard input can be consumed only once, a command that takes two inputs accepts
+`-` for one of them.
 
 All command outputs use CLI schema version `1` and include `"schemaVersion": 1`.
 The v1 migration makes empty array fields explicit, represents suggestions as
@@ -198,7 +202,8 @@ Values can be simple strings or objects:
 
 ## Piping
 
-Standard Unix piping works:
+Standard Unix piping works in both directions. `-` in place of an input path
+reads that JSON from standard input:
 
 ```bash
 # Generate and analyze in one pipeline
@@ -206,7 +211,16 @@ coverwise generate input.json | jq '.tests | length'
 
 # Feed output to other tools
 coverwise generate input.json | my-test-runner --from-stdin
+
+# Build a model on the fly and generate from it
+jq '{parameters: .matrix}' config.json | coverwise generate -
+
+# Measure a generated suite without an intermediate file
+coverwise generate input.json | coverwise analyze --params input.json --tests -
 ```
+
+Standard input is consumable only once, so passing `-` for both inputs of one
+command is rejected rather than silently read as empty.
 
 ## Examples
 

@@ -10,6 +10,15 @@ npm install @libraz/coverwise
 yarn add @libraz/coverwise
 ```
 
+### Python
+
+For the API, pytest integration, and error handling, see the
+[Python API](python-api.md).
+
+```bash
+pip install coverwise
+```
+
 ### C++ (Native)
 
 For headers, linking, and the complete API, see the [C++ API](cpp-api.md).
@@ -26,7 +35,7 @@ cmake --install build --prefix ./install
 
 For commands, JSON schemas, and exit codes, see the [CLI Reference](cli.md).
 
-Install the native CLI from PyPI on Linux x64 or macOS Apple Silicon:
+Install the native CLI from PyPI on Linux (x86_64 / aarch64) or macOS 14+ Apple Silicon:
 
 ```bash
 pip install coverwise
@@ -68,6 +77,29 @@ for (const test of result.tests) {
 // { os: 'Windows', browser: 'Chrome', theme: 'light' }
 // { os: 'macOS', browser: 'Firefox', theme: 'dark' }
 // ...
+```
+
+### Python
+
+```python
+import coverwise
+
+result = coverwise.generate(
+    parameters={
+        "os": ["Windows", "macOS", "Linux"],
+        "browser": ["Chrome", "Firefox", "Safari"],
+        "theme": ["light", "dark"],
+    },
+)
+
+print(f"Generated {len(result['tests'])} tests")
+print(f"Coverage: {result['coverage'] * 100}%")
+
+for test in result["tests"]:
+    print(test)
+# {'os': 'Windows', 'browser': 'Chrome', 'theme': 'light'}
+# {'os': 'macOS', 'browser': 'Firefox', 'theme': 'dark'}
+# ...
 ```
 
 ### C++
@@ -199,7 +231,7 @@ const result = cw.generate({
 
 - [Examples](examples.md) — Negative testing, mixed strength, boundary values, and more
 - [JavaScript API](js-api.md) — Full API reference
-- [Python API](python-api.md) — PyPI package and automation helper
+- [Python API](python-api.md) — PyPI package, Python API, and pytest integration
 - [C++ API](cpp-api.md) — Native library reference
 - [CLI Reference](cli.md) — Command-line commands and JSON schemas
 - [Constraint Syntax](constraints.md) — Complete constraint language reference

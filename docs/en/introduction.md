@@ -77,8 +77,9 @@ coverwise is built as a **test design API**, not just a generation tool:
 |----------|--------|
 | Node.js (≥ 18) | `npm install @libraz/coverwise` |
 | Browser | ESM import (WASM loaded automatically) |
+| Python (≥ 3.10) | `pip install coverwise` (Linux x86_64 / aarch64, macOS 14+ Apple Silicon) |
 | C++ (native) | CMake, static library |
-| CLI | `pip install coverwise` (Linux x64 / macOS Apple Silicon), release archive, or source build |
+| CLI | `pip install coverwise`, release archive, or source build |
 
 ## Performance
 
