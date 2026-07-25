@@ -9,6 +9,8 @@ dist/
 *.dylib
 bindings/python/src/coverwise/_bin/coverwise
 bindings/python/wheelhouse/
+# Copied from the top-level LICENSE when a wheel is built
+bindings/python/LICENSE
 
 # CMake
 CMakeCache.txt
