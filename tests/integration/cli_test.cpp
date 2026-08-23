@@ -41,11 +41,10 @@ std::string TempPath(const std::string& suffix) {
   return ss.str();
 }
 
-/// @brief Run the CLI with the given argument string, capturing stdout and exit code.
+/// @brief Run a shell command line, capturing whatever it writes to the pipe.
 ///
 /// The exit code is recovered from popen's pclose status (WEXITSTATUS).
-CliResult RunCli(const std::string& args) {
-  std::string command = std::string(COVERWISE_CLI_PATH) + " " + args + " 2>/dev/null";
+CliResult RunCommandLine(const std::string& command) {
   FILE* pipe = popen(command.c_str(), "r");
   EXPECT_NE(pipe, nullptr) << "popen failed for: " << command;
   CliResult result;
@@ -59,22 +58,24 @@ CliResult RunCli(const std::string& args) {
   return result;
 }
 
+/// @brief Run the CLI with the given argument string, capturing stdout and exit code.
+CliResult RunCli(const std::string& args) {
+  return RunCommandLine(std::string(COVERWISE_CLI_PATH) + " " + args + " 2>/dev/null");
+}
+
 /// @brief Run the CLI capturing merged stdout+stderr and the exit code.
 ///
 /// Unlike RunCli, this keeps stderr so diagnostics can be asserted on.
 CliResult RunCliCaptureStderr(const std::string& args) {
-  std::string command = std::string(COVERWISE_CLI_PATH) + " " + args + " 2>&1";
-  FILE* pipe = popen(command.c_str(), "r");
-  EXPECT_NE(pipe, nullptr) << "popen failed for: " << command;
-  CliResult result;
-  if (!pipe) return result;
-  char buffer[4096];
-  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-    result.stdout_text += buffer;
-  }
-  int status = pclose(pipe);
-  result.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-  return result;
+  return RunCommandLine(std::string(COVERWISE_CLI_PATH) + " " + args + " 2>&1");
+}
+
+/// @brief Run the CLI capturing stderr alone, discarding stdout.
+///
+/// Lets two subcommands whose success output differs by design be compared on
+/// their diagnostics, which are supposed to agree.
+CliResult RunCliStderrOnly(const std::string& args) {
+  return RunCommandLine(std::string(COVERWISE_CLI_PATH) + " " + args + " 2>&1 1>/dev/null");
 }
 
 }  // namespace
@@ -297,6 +298,88 @@ TEST(CliStatsTest, RejectsMalformedConstraintsLikeGenerate) {
   EXPECT_EQ(generated.exit_code, 1) << generated.stdout_text;
   EXPECT_EQ(stats.exit_code, generated.exit_code) << stats.stdout_text;
   EXPECT_NE(stats.stdout_text.find("Invalid constraint"), std::string::npos) << stats.stdout_text;
+}
+
+// stats is a preflight for generate, so the two have to reach the same verdict
+// on a model document, with the same diagnostic. `seeds` is part of that
+// document: a seed row generate refuses must not pass the preflight, and a
+// document generate accepts must not be turned away by it either. The one
+// difference stats is entitled to is coverage shortfall (exit 2), which it has
+// no opinion on, so every case here is a model generate covers completely.
+TEST(CliStatsTest, ReachesTheSameVerdictOnSeedsAsGenerate) {
+  struct SeedsCase {
+    const char* description;
+    const char* document;
+    int expected_exit;
+    const char* expected_diagnostic;
+  };
+  const std::vector<SeedsCase> cases = {
+      {"a seed row carrying a value the parameter does not declare",
+       R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}],
+           "seeds":[{"a":"9","b":"1"}]})",
+       3, "seeds 0 parameter 'a' has unknown value '9'"},
+      {"a seed row missing a declared parameter",
+       R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}],
+           "seeds":[{"a":"0"}]})",
+       3, "seeds 0 missing parameter 'b'"},
+      {"a seed row carrying a member no parameter declares",
+       R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}],
+           "seeds":[{"a":"0","b":"1","c":"1"}]})",
+       3, "seeds 0 has unknown parameter 'c'"},
+      {"a seed row that is not an object",
+       R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}],
+           "seeds":[42]})",
+       3, "seeds 0 must be an object"},
+      {"a seeds field that is not an array",
+       R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}],
+           "seeds":{"a":"0","b":"1"}})",
+       3, "seeds must be a JSON array"},
+      {"a seeds array both commands accept",
+       R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}],
+           "seeds":[{"a":"0","b":"1"}]})",
+       0, ""},
+      {"a document with no seeds field at all",
+       R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}]})", 0,
+       ""},
+  };
+
+  for (size_t i = 0; i < cases.size(); ++i) {
+    const auto& c = cases[i];
+    SCOPED_TRACE(c.description);
+    const std::string path = TempPath("stats_seeds_" + std::to_string(i) + ".json");
+    WriteFile(path, c.document);
+
+    const auto generated = RunCliStderrOnly("generate " + path);
+    const auto stats = RunCliStderrOnly("stats " + path);
+
+    EXPECT_EQ(generated.exit_code, c.expected_exit) << generated.stdout_text;
+    EXPECT_EQ(stats.exit_code, generated.exit_code) << stats.stdout_text;
+    // The message has to match too: agreeing only on "this failed" would let a
+    // preflight refuse a document for a reason generation never had.
+    EXPECT_EQ(stats.stdout_text, generated.stdout_text);
+    EXPECT_NE(generated.stdout_text.find(c.expected_diagnostic), std::string::npos)
+        << generated.stdout_text;
+  }
+}
+
+// Seeds change what generation builds on, but they are not part of any figure
+// stats reports, so adding them must not move a single number.
+TEST(CliStatsTest, ReportsTheSameFiguresWithAndWithoutSeeds) {
+  const std::string without =
+      R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}]})";
+  const std::string with =
+      R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}],
+          "seeds":[{"a":"0","b":"1"}]})";
+  const std::string without_path = TempPath("stats_no_seeds.json");
+  const std::string with_path = TempPath("stats_with_seeds.json");
+  WriteFile(without_path, without);
+  WriteFile(with_path, with);
+
+  const auto plain = RunCli("stats " + without_path);
+  const auto seeded = RunCli("stats " + with_path);
+  ASSERT_EQ(plain.exit_code, 0) << plain.stdout_text;
+  ASSERT_EQ(seeded.exit_code, 0) << seeded.stdout_text;
+  EXPECT_EQ(seeded.stdout_text, plain.stdout_text);
 }
 
 TEST(CliPipelineTest, GenerateEnvelopeFeedsAnalyzeAndExtendDirectly) {

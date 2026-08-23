@@ -1194,6 +1194,53 @@ bool ParseWeights(const JsonValue& json, coverwise::model::WeightConfig& weights
   return true;
 }
 
+/// @brief Read the top-level model document into generation options.
+///
+/// `generate`, `extend` and `stats` all consume the same document, and `stats`
+/// is documented as a preflight for `generate`: whatever one of them accepts,
+/// the others have to accept too, and reject with the same message. Reading
+/// every top-level field in one place is what keeps that true — a field wired
+/// into a single subcommand cannot silently be missed by the rest.
+///
+/// `seeds` are held to the seed policy here even for `stats`, which reports no
+/// figure derived from them: the acceptance decision is the whole point of a
+/// preflight, so a seed row generation would refuse must not pass.
+/// @return true on success; on failure sets error and returns false.
+bool ParseModelDocument(const JsonValue& json, coverwise::model::GenerateOptions& options,
+                        std::string& error) {
+  // Parameters are parsed and their boundary value space expanded first, so
+  // that everything below resolves value names against the value space
+  // generation actually uses.
+  if (!ParseModelParameters(json["parameters"], options, error)) return false;
+
+  // Optional scalar fields.
+  if (!ParseOptionalUint32(json, "strength", 1, options.strength, error)) return false;
+  uint32_t seed = 0;
+  if (!ParseOptionalUint32(json, "seed", 0, seed, error)) return false;
+  options.seed = seed;
+  if (!ParseOptionalUint32(json, "maxTests", 0, options.max_tests, error)) return false;
+
+  // Constraints (array of strings).
+  if (!ParseConstraintExpressions(json["constraints"], options.constraint_expressions, error)) {
+    return false;
+  }
+
+  // Weights: {"param_name": {"value_name": weight, ...}, ...}
+  if (!ParseWeights(json["weights"], options.weights, error)) return false;
+
+  // Sub-models (mixed-strength parameter groups).
+  if (!ParseSubModels(json["subModels"], options.sub_models, error)) return false;
+
+  // Seed tests (existing tests to build upon). Their value indices point into
+  // the already-expanded value lists.
+  const auto& seeds_val = json["seeds"];
+  if (!seeds_val.IsNull() && !ParseTests(seeds_val, options.parameters, TestRowPolicy::kSeed,
+                                         "seeds", options.seeds, error)) {
+    return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Write coverwise output as JSON.
 // ---------------------------------------------------------------------------
@@ -1524,49 +1571,10 @@ ExitStatus RunGenerate(int argc, char* argv[]) {
     return InvalidInput("input must be a JSON object");
   }
 
-  // Parse parameters and expand their boundary value space.
   std::string error;
   coverwise::model::GenerateOptions options;
-  if (!ParseModelParameters(json["parameters"], options, error)) {
+  if (!ParseModelDocument(json, options, error)) {
     return InvalidInput(error);
-  }
-
-  // Parse optional fields.
-  if (!ParseOptionalUint32(json, "strength", 1, options.strength, error)) {
-    return InvalidInput(error);
-  }
-  uint32_t seed = 0;
-  if (!ParseOptionalUint32(json, "seed", 0, seed, error)) {
-    return InvalidInput(error);
-  }
-  options.seed = seed;
-  if (!ParseOptionalUint32(json, "maxTests", 0, options.max_tests, error)) {
-    return InvalidInput(error);
-  }
-
-  // Parse constraints (array of strings).
-  if (!ParseConstraintExpressions(json["constraints"], options.constraint_expressions, error)) {
-    return InvalidInput(error);
-  }
-
-  // Parse weights: {"param_name": {"value_name": weight, ...}, ...}
-  if (!ParseWeights(json["weights"], options.weights, error)) {
-    return InvalidInput(error);
-  }
-
-  // Parse sub-models (mixed-strength parameter groups).
-  if (!ParseSubModels(json["subModels"], options.sub_models, error)) {
-    return InvalidInput(error);
-  }
-
-  // Parse seed tests (existing tests to build upon). Their value indices point
-  // into the already-expanded value lists.
-  const auto& seeds_val = json["seeds"];
-  if (!seeds_val.IsNull()) {
-    if (!ParseTests(seeds_val, options.parameters, TestRowPolicy::kSeed, "seeds", options.seeds,
-                    error)) {
-      return InvalidInput(error);
-    }
   }
 
   const uint32_t strength = options.strength;
@@ -1813,50 +1821,15 @@ ExitStatus RunExtend(int argc, char* argv[]) {
     return InvalidInput("input must be a JSON object");
   }
 
-  // Parse parameters and expand up front so generation and rendering share the
-  // same expanded Parameter objects. Seeds and existing tests are parsed
-  // afterward so their value indices match.
+  // Extend reads the same model document as generate, so it accepts and rejects
+  // exactly what generate does. The document is read up front, which also
+  // expands the boundary value space before the --existing rows below are
+  // resolved against it, so every row's value indices match the parameters that
+  // generation and rendering share.
   std::string error;
   coverwise::model::GenerateOptions options;
-  if (!ParseModelParameters(input_json["parameters"], options, error)) {
+  if (!ParseModelDocument(input_json, options, error)) {
     return InvalidInput(error);
-  }
-
-  if (!ParseOptionalUint32(input_json, "strength", 1, options.strength, error)) {
-    return InvalidInput(error);
-  }
-  uint32_t seed = 0;
-  if (!ParseOptionalUint32(input_json, "seed", 0, seed, error)) {
-    return InvalidInput(error);
-  }
-  options.seed = seed;
-  if (!ParseOptionalUint32(input_json, "maxTests", 0, options.max_tests, error)) {
-    return InvalidInput(error);
-  }
-
-  // Parse constraints (array of strings).
-  if (!ParseConstraintExpressions(input_json["constraints"], options.constraint_expressions,
-                                  error)) {
-    return InvalidInput(error);
-  }
-
-  // Parse weights: {"param_name": {"value_name": weight, ...}, ...}
-  if (!ParseWeights(input_json["weights"], options.weights, error)) {
-    return InvalidInput(error);
-  }
-
-  // Parse sub-models (mixed-strength parameter groups).
-  if (!ParseSubModels(input_json["subModels"], options.sub_models, error)) {
-    return InvalidInput(error);
-  }
-
-  // Parse seed tests from the input JSON (in addition to --existing tests).
-  const auto& seeds_val = input_json["seeds"];
-  if (!seeds_val.IsNull()) {
-    if (!ParseTests(seeds_val, options.parameters, TestRowPolicy::kSeed, "seeds", options.seeds,
-                    error)) {
-      return InvalidInput(error);
-    }
   }
 
   // Read and parse existing tests.
@@ -1922,28 +1895,13 @@ ExitStatus RunStats(int argc, char* argv[]) {
     return InvalidInput("input must be a JSON object");
   }
 
+  // Stats is a preflight for generate, so it reads the document through the same
+  // reader: a document generate would refuse must not be reported on as if it
+  // were a model. None of the figures below is derived from the fields that only
+  // generation uses.
   std::string error;
   coverwise::model::GenerateOptions options;
-  if (!ParseModelParameters(json["parameters"], options, error)) {
-    return InvalidInput(error);
-  }
-
-  if (!ParseOptionalUint32(json, "strength", 1, options.strength, error)) {
-    return InvalidInput(error);
-  }
-  uint32_t seed = 0;
-  if (!ParseOptionalUint32(json, "seed", 0, seed, error) ||
-      !ParseOptionalUint32(json, "maxTests", 0, options.max_tests, error)) {
-    return InvalidInput(error);
-  }
-  options.seed = seed;
-
-  if (!ParseConstraintExpressions(json["constraints"], options.constraint_expressions, error)) {
-    return InvalidInput(error);
-  }
-
-  if (!ParseSubModels(json["subModels"], options.sub_models, error) ||
-      !ParseWeights(json["weights"], options.weights, error)) {
+  if (!ParseModelDocument(json, options, error)) {
     return InvalidInput(error);
   }
 
