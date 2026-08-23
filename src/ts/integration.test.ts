@@ -938,3 +938,70 @@ describe('mixed type parameter values', () => {
     expect(r1.tests).toEqual(r2.tests);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Equivalence classes
+//
+// Equivalence classes and the class coverage they produce are not part of the
+// surface the adapters above mirror, so these tests build GenerateOptions
+// directly instead of going through tsGenerate.
+// ---------------------------------------------------------------------------
+
+/**
+ * Expression whose only cheap witnesses are gate="open" and pick="cheap". With
+ * both fixed the other way it stays undecided until "relief" is assigned, and
+ * "none" — its only satisfying value — is invalid, so proving the branch
+ * unsatisfiable costs more than the search budget allows. Every filler
+ * parameter has more valid values than "relief", so a search ordering
+ * parameters by ascending domain size settles the branch immediately while one
+ * walking parameters in declaration order does not.
+ */
+const COSTLY_REPRESENTATIVE_EXPRESSION = 'gate="open" OR pick="cheap" OR relief="none"';
+
+/**
+ * Build a model whose "same" class holds one cheap and one costly
+ * representative. `cheapFirst` places the cheap representative at value index 0
+ * when true and at value index 1 when false; the class tuple is feasible either
+ * way, so both orders must produce the same verdict.
+ */
+function representativeOrderParameters(cheapFirst: boolean): GenerateOptions['parameters'] {
+  return [
+    {
+      name: 'gate',
+      values: ['open', 'shut'],
+      equivalenceClasses: ['open_class', 'shut_class'],
+    },
+    {
+      name: 'pick',
+      values: cheapFirst ? ['cheap', 'costly'] : ['costly', 'cheap'],
+      equivalenceClasses: ['same', 'same'],
+    },
+    ...Array.from({ length: 14 }, (_, index) => ({
+      name: `f${index}`,
+      values: ['a', 'b', 'c'],
+    })),
+    { name: 'relief', values: ['r0', 'r1', 'none'], invalid: [false, false, true] },
+  ];
+}
+
+describe('class tuple representatives', () => {
+  it('completes generation when a costly representative comes first', () => {
+    const totals = [true, false].map((cheapFirst) => {
+      const options = createGenerateOptions({
+        parameters: representativeOrderParameters(cheapFirst),
+        constraintExpressions: [COSTLY_REPRESENTATIVE_EXPRESSION],
+        strength: 2,
+      });
+
+      const result = generate(options);
+
+      expect(result.error.code).toBe(ErrorCode.Ok);
+      expect(result.tests.length).toBeGreaterThan(0);
+      expect(result.classCoverage).toBeDefined();
+      return result.classCoverage?.totalClassTuples;
+    });
+
+    expect(totals[0]).toBe(totals[1]);
+    expect(totals[0]).toBe(2);
+  });
+});

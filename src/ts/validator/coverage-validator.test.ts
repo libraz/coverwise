@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { generate } from '../core/generator.js';
 import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
 import { parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode } from '../model/error.js';
-import { createGenerateOptions } from '../model/generate-options.js';
 import { MAX_PARAMETERS, Parameter } from '../model/parameter.js';
 import type { GenerateResult, TestCase } from '../model/test-case.js';
 import { createGenerateResult, UNASSIGNED } from '../model/test-case.js';
@@ -596,26 +594,6 @@ describe('class tuple representatives', () => {
       // tuple: the "same" class also holds a trivially satisfiable
       // representative, which makes the tuple feasible from either value order.
       expect(result.error.code).toBe(ErrorCode.Ok);
-      expect(result.classCoverage).toBeDefined();
-      return result.classCoverage?.totalClassTuples;
-    });
-
-    expect(totals[0]).toBe(totals[1]);
-    expect(totals[0]).toBe(2);
-  });
-
-  it('completes generation when a costly representative comes first', () => {
-    const totals = [true, false].map((cheapFirst) => {
-      const options = createGenerateOptions({
-        parameters: representativeOrderParameters(cheapFirst),
-        constraintExpressions: [COSTLY_REPRESENTATIVE_EXPRESSION],
-        strength: 2,
-      });
-
-      const result = generate(options);
-
-      expect(result.error.code).toBe(ErrorCode.Ok);
-      expect(result.tests.length).toBeGreaterThan(0);
       expect(result.classCoverage).toBeDefined();
       return result.classCoverage?.totalClassTuples;
     });
