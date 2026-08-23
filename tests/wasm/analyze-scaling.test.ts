@@ -10,6 +10,13 @@ import { analyzeCoverage as pureAnalyzeCoverage } from '../../js/pure/index';
 /// documented input ceiling. These are wall-clock comparisons of the same work
 /// on the same inputs rather than absolute budgets, so they hold on any machine.
 
+/// These tests measure wall-clock ratios over repeated runs of a large suite, and
+/// CI runs them under v8 coverage instrumentation on a shared runner. A per-test
+/// timeout sized for ordinary unit tests does not apply, so each one states its
+/// own; it is a ceiling on a hang, not a performance budget. The assertions below
+/// compare two measurements from the same run, so they are unaffected by it.
+const MEASUREMENT_TIMEOUT_MS = 120_000;
+
 const PARAM_COUNT = 100;
 const VALUES_PER_PARAM = 4;
 const BASE_ROWS = 2000;
@@ -64,7 +71,7 @@ describe('WASM coverage analysis on a large suite', () => {
     }
   }, 600_000);
 
-  it('scales linearly in the row count', () => {
+  it('scales linearly in the row count', { timeout: MEASUREMENT_TIMEOUT_MS }, () => {
     const base = timings.get(BASE_ROWS) as number;
     const doubled = timings.get(BASE_ROWS * 2) as number;
     const quadrupled = timings.get(BASE_ROWS * 4) as number;
@@ -80,7 +87,9 @@ describe('WASM coverage analysis on a large suite', () => {
   // and linear in the rows: doubling rows doubled the work either way. Doubling
   // the parameter count is what separates the two, because it doubles the cells
   // and, if each cell rescans the model, doubles the per-cell cost as well.
-  it('converts a row in time proportional to the model, not its square', () => {
+  it('converts a row in time proportional to the model, not its square', {
+    timeout: MEASUREMENT_TIMEOUT_MS,
+  }, () => {
     const narrowParams = buildParams(PARAM_COUNT);
     const wideParams = buildParams(PARAM_COUNT * 2);
     const narrowRows = buildRows(BASE_ROWS, PARAM_COUNT);
@@ -101,7 +110,9 @@ describe('WASM coverage analysis on a large suite', () => {
     expect(wide / narrow).toBeLessThan(3);
   });
 
-  it('does not fall behind the pure TypeScript surface as the model grows', () => {
+  it('does not fall behind the pure TypeScript surface as the model grows', {
+    timeout: MEASUREMENT_TIMEOUT_MS,
+  }, () => {
     // The default import must not be the worse choice for the job it is the
     // default for. Compared at a model size where the claim is the product's to
     // make: the two surfaces are close on small models, because what is left
