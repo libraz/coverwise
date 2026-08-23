@@ -306,8 +306,11 @@ struct ModelStats {
 ```
 
 `total_tuples` is a raw global-plus-sub-model upper bound before constraint
-exclusion. `EstimateModel` validates constraints and references before returning
-the estimate.
+exclusion. `estimated_tests` is a coarse sizing heuristic derived from the
+largest value count, the strength and the parameter count, capped at
+`total_tuples`; it is not a bound in either direction, and a generated suite may
+be smaller or larger. `EstimateModel` validates constraints and references before
+returning the estimate.
 
 ### `validator::CoverageReport`
 

@@ -303,7 +303,10 @@ struct ModelStats {
 ```
 
 `total_tuples` は制約除外前の、グローバルとサブモデルを合わせた生の上限です。
-`EstimateModel` は推定を返す前に制約と参照を検証します。
+`estimated_tests` は、最大値数・強度・パラメータ数から求めて `total_tuples` で
+頭打ちにした、大まかな見積もりです。上限でも下限でもなく、生成されるスイートは
+これを下回ることも、上回ることもあります。`EstimateModel` は推定を返す前に制約と
+参照を検証します。
 
 ### `validator::CoverageReport`
 

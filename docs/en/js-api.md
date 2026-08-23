@@ -280,7 +280,9 @@ const newTests = result.tests.slice(existing.length);
 
 Preview model statistics without running generation. Useful for estimating complexity before committing to a full generation.
 
-The estimate is a raw tuple upper bound before constraint exclusion, but malformed constraints and unknown parameter references are rejected just as they are by `generate`.
+`totalTuples` is a raw tuple upper bound before constraint exclusion, but malformed constraints and unknown parameter references are rejected just as they are by `generate`.
+
+`estimatedTests` is a coarse sizing heuristic derived from the largest value count, the strength and the parameter count, capped at `totalTuples`. It is not a bound in either direction — a generated suite may be smaller or larger.
 
 ```typescript
 function estimateModel(input: GenerateInput): ModelStats

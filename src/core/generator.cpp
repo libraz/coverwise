@@ -857,9 +857,11 @@ ModelStats EstimateModel(const GenerateOptions& options) {
     stats.total_tuples += sub_coverage.TotalTuples();
   }
 
-  // Estimate test count: upper bound is max_values^strength.
-  // For better estimate, use max_values^strength when param_count > strength,
-  // otherwise it is the product of all value counts.
+  // Estimate the suite size. When every parameter fits in one tuple the exact
+  // product of the value counts is the answer; otherwise the heuristic is
+  // max_values^strength scaled by a log factor over the parameter count. The
+  // scaled form is a sizing hint only -- a generated suite can fall on either
+  // side of it.
   if (stats.parameter_count == 0) {
     stats.estimated_tests = 0;
   } else if (stats.parameter_count <= stats.strength) {

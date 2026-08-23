@@ -21,6 +21,7 @@
 #include "model/constraint_parser.h"
 #include "model/parameter.h"
 
+using coverwise::core::EstimateModel;
 using coverwise::core::Generate;
 using coverwise::model::GenerateOptions;
 using coverwise::model::Parameter;
@@ -310,6 +311,30 @@ std::vector<Parameter> MakeUniformParams(uint32_t count, uint32_t values_per_par
     params.emplace_back("P" + std::to_string(i), std::move(values));
   }
   return params;
+}
+
+// --- Estimate witnesses ---
+
+/// @brief What a model estimates against what generating it actually costs.
+struct EstimateWitness {
+  uint32_t estimated;
+  size_t generated;
+};
+
+/// @brief Report the estimate for a model beside the suite generation produces.
+EstimateWitness MeasureEstimate(std::vector<Parameter> params, uint32_t strength,
+                                std::vector<std::string> constraints = {}) {
+  GenerateOptions opts;
+  opts.parameters = std::move(params);
+  opts.strength = strength;
+  opts.constraint_expressions = std::move(constraints);
+  opts.seed = 42;
+
+  const auto stats = EstimateModel(opts);
+  EXPECT_TRUE(stats.error.ok()) << "Cannot estimate the witness model: " << stats.error.message;
+  const auto result = Generate(opts);
+  EXPECT_TRUE(result.error.ok()) << "Cannot generate the witness model: " << result.error.message;
+  return {stats.estimated_tests, result.tests.size()};
 }
 
 // --- Benchmark table extraction ---
@@ -619,4 +644,29 @@ TEST(DocsContractTest, PublishedBenchmarkCountsMatchGeneratedSuites) {
         << "Published test count is stale for " << key.parameters << " parameters of " << key.values
         << " values at strength " << key.strength;
   }
+}
+
+// --- Model size estimate ---
+
+TEST(DocsContractTest, TheDocumentedModelSizeEstimateBoundsNothing) {
+  // The documentation describes estimatedTests as a sizing heuristic that bounds
+  // the suite in neither direction. Both directions are witnessed by generating,
+  // so the wording cannot outlive the behaviour it describes. Should either
+  // witness fail, the estimate no longer falls on that side for that model:
+  // replace it with one that does, or -- if none does -- strengthen the
+  // documented claim to the bound the new measurement supports.
+  const auto larger = MeasureEstimate(MakeUniformParams(12, 3), 6);
+  EXPECT_GT(larger.generated, larger.estimated)
+      << "12 parameters of 3 values at strength 6 estimates " << larger.estimated
+      << " tests and generates " << larger.generated
+      << ", so the estimate no longer undershoots a generated suite";
+
+  const auto smaller = MeasureEstimate({{"os", {"Windows", "macOS", "Linux"}},
+                                        {"browser", {"Chrome", "Firefox", "Safari"}},
+                                        {"theme", {"light", "dark"}}},
+                                       2, {"IF os = Windows THEN browser != Safari"});
+  EXPECT_LT(smaller.generated, smaller.estimated)
+      << "the model the CLI document shows estimates " << smaller.estimated
+      << " tests and generates " << smaller.generated
+      << ", so the estimate no longer overshoots a generated suite";
 }

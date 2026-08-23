@@ -77,6 +77,9 @@ struct ModelStats {
   uint32_t strength = 0;
   /// Raw global + sub-model tuple upper bound before constraint exclusion.
   uint64_t total_tuples = 0;
+  /// Coarse sizing heuristic from the largest value count, the strength and the
+  /// parameter count, capped at total_tuples. Not a bound in either direction:
+  /// a generated suite may be smaller or larger.
   uint32_t estimated_tests = 0;
   uint32_t sub_model_count = 0;
   uint32_t constraint_count = 0;

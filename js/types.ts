@@ -171,6 +171,11 @@ export interface ModelStats {
   strength: number;
   /** Raw global + sub-model tuple upper bound before constraint exclusion. */
   totalTuples: number;
+  /**
+   * Coarse sizing heuristic from the largest value count, the strength and the
+   * parameter count, capped at `totalTuples`. Not a bound in either direction:
+   * a generated suite may be smaller or larger.
+   */
   estimatedTests: number;
   subModelCount: number;
   constraintCount: number;

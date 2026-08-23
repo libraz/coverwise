@@ -278,7 +278,9 @@ const newTests = result.tests.slice(existing.length);
 
 生成を実行せずにモデル統計をプレビューします。生成前の複雑さ推定に便利です。
 
-推定値は制約除外前の raw タプル上限ですが、不正な制約構文や未知のパラメータ参照は `generate` と同様に拒否されます。
+`totalTuples` は制約除外前の raw タプル上限ですが、不正な制約構文や未知のパラメータ参照は `generate` と同様に拒否されます。
+
+`estimatedTests` は、最大値数・強度・パラメータ数から求めて `totalTuples` で頭打ちにした、大まかな見積もりです。上限でも下限でもなく、生成されるスイートはこれを下回ることも、上回ることもあります。
 
 ```typescript
 function estimateModel(input: GenerateInput): ModelStats

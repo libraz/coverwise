@@ -102,6 +102,8 @@ added = result["tests"][len(previous["tests"]) :]
 
 生成せずにモデルの統計だけを返します。パラメータ数と値の数、制約適用前の tuple 数、推定スイートサイズが得られます。制約の構文とパラメータ参照も検証されるので、安価な事前チェックとして使えます。
 
+`estimatedTests` は、最大値数・強度・パラメータ数から求めて `totalTuples` で頭打ちにした、大まかな見積もりです。上限でも下限でもなく、生成されるスイートはこれを下回ることも、上回ることもあります。
+
 ```python
 stats = coverwise.estimate_model(MODEL, strength=3)
 stats["totalTuples"], stats["estimatedTests"]

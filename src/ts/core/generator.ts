@@ -1060,7 +1060,11 @@ export function estimateModel(options: GenerateOptions): ModelStats {
     stats.totalTuples += subResult.engine.totalTuples;
   }
 
-  // Estimate test count.
+  // Estimate the suite size. When every parameter fits in one tuple the exact
+  // product of the value counts is the answer; otherwise the heuristic is
+  // maxValues^strength scaled by a log factor over the parameter count. The
+  // scaled form is a sizing hint only -- a generated suite can fall on either
+  // side of it.
   if (stats.parameterCount === 0) {
     stats.estimatedTests = 0;
   } else if (stats.parameterCount <= stats.strength) {

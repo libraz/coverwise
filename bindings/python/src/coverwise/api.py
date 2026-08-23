@@ -374,6 +374,11 @@ def estimate_model(model: Mapping[str, Any] | None = None, **fields: Any) -> dic
     Validates constraint syntax and parameter references, then reports the
     pre-constraint tuple count and an estimated suite size.
 
+    ``estimatedTests`` is a coarse sizing heuristic from the largest value
+    count, the strength and the parameter count, capped at ``totalTuples``. It
+    is not a bound in either direction: a generated suite may be smaller or
+    larger.
+
     Args:
         model: A JSON-shaped model mapping, as accepted by the CLI.
         **fields: Individual model fields, overriding ``model``.

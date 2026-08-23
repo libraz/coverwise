@@ -248,9 +248,10 @@ coverwise stats <input.json>
 ```
 
 `totalTuples` counts the pairs before constraint exclusion: 3·3 + 3·2 + 3·2.
-`estimatedTests` is a conservative upper bound derived from the largest value
-count and the strength, not a prediction — running `generate` on this model
-produces fewer test cases.
+`estimatedTests` is a coarse sizing heuristic derived from the largest value
+count, the strength and the parameter count, capped at `totalTuples`. It is not
+a bound in either direction — `generate` may return fewer test cases than it
+reports, as it does for this model, or more.
 
 ## Exit Codes
 

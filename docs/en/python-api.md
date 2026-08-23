@@ -124,6 +124,10 @@ Report model statistics without generating anything: parameter and value counts,
 the raw tuple count, and an estimated suite size. Constraint syntax and
 parameter references are validated, which makes it a cheap pre-flight check.
 
+`estimatedTests` is a coarse sizing heuristic derived from the largest value
+count, the strength and the parameter count, capped at `totalTuples`. It is not
+a bound in either direction — a generated suite may be smaller or larger.
+
 ```python
 stats = coverwise.estimate_model(MODEL, strength=3)
 stats["totalTuples"], stats["estimatedTests"]
