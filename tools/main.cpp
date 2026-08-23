@@ -31,73 +31,76 @@
 #include "model/boundary.h"
 #include "model/constraint_ast.h"
 #include "model/constraint_parser.h"
+#include "model/limits.h"
 #include "model/options_validation.h"
 #include "model/parameter.h"
+#include "model/surface_error.h"
 #include "model/test_case.h"
 #include "util/string_util.h"
 #include "validator/coverage_validator.h"
 
 namespace {
 
-constexpr int kExitOk = 0;
-constexpr int kExitConstraintError = 1;
-constexpr int kExitInsufficientCoverage = 2;
-constexpr int kExitInvalidInput = 3;
-constexpr size_t kMaxInputBytes = 1 * 1024 * 1024;
-constexpr size_t kMaxParameters = 1024;
-constexpr size_t kMaxValuesPerParameter = 16384;
-constexpr size_t kMaxTests = 100000;
-constexpr size_t kMaxConstraints = 256;
-constexpr size_t kMaxStringBytes = 64 * 1024;
+// The documented input limits live in model/limits.h and are the same on every
+// surface; the CLI reads them from there instead of restating the numbers.
+using coverwise::model::kMaxConstraints;
+using coverwise::model::kMaxDocumentBytes;
+using coverwise::model::kMaxParameters;
+using coverwise::model::kMaxStringBytes;
+using coverwise::model::kMaxTests;
+using coverwise::model::kMaxValuesPerParameter;
+
+/// @brief Cap on members in one JSON object, guarding the parser's key set.
+///
+/// Structural, not a documented input limit: it bounds what the reader will
+/// build before any acceptance rule sees it.
 constexpr size_t kMaxObjectMembers = 16384;
 
-/// @brief Map a structured Error::Code to the documented CLI exit code.
-///
-/// This is the single mapping used by every subcommand so exit codes never
-/// diverge: constraint errors are exit 1, invalid input and tuple explosion are
-/// exit 3, insufficient coverage is exit 2, and ok is 0. The raw enum value is
-/// never returned directly (kTupleExplosion == 4 would otherwise leak an
-/// undocumented exit code).
-int ErrorExitCode(coverwise::model::Error::Code code) {
-  using Code = coverwise::model::Error::Code;
-  switch (code) {
-    case Code::kConstraintError:
-      return kExitConstraintError;
-    case Code::kInvalidInput:
-    case Code::kTupleExplosion:
-      return kExitInvalidInput;
-    case Code::kInsufficientCoverage:
-      return kExitInsufficientCoverage;
-    case Code::kOk:
-      return kExitOk;
-  }
-  return kExitOk;
+// Every failure a caller sees — its exit code and its message alike — is read
+// off a SurfaceError, which only a model::Error can produce. No subcommand can
+// name an exit code: ExitStatus has no constructor taking one.
+using coverwise::model::ExitStatus;
+using coverwise::model::SurfaceError;
+
+/// @brief Print a failure in the CLI's stderr envelope and surface its status.
+ExitStatus Fail(const coverwise::model::Error& error) {
+  SurfaceError surfaced(error);
+  std::cerr << "error: " << surfaced.text() << "\n";
+  return surfaced;
 }
 
-/// @brief Map a generator result's error/coverage to a CLI exit code.
+/// @brief Report a failure the core never saw: an argument, a file, or a JSON
+/// document the CLI could not turn into a model. It is invalid input by
+/// definition, and routing it through a structured Error keeps its message and
+/// its exit code paired the same way a core failure's are.
+ExitStatus InvalidInput(std::string message) {
+  return Fail({coverwise::model::Error::Code::kInvalidInput, std::move(message), ""});
+}
+
+/// @brief Print usage text and classify the invocation as invalid input.
 ///
-/// A constraint parse error takes precedence (exit 1). Otherwise, any coverage
-/// below 100% — for any reason, independent of max_tests — yields insufficient
-/// coverage (exit 2). A fully covered suite yields OK (exit 0). Invalid-input
-/// errors surfaced in the result map to exit 3.
-int ResultExitCode(const coverwise::model::GenerateResult& result) {
-  if (result.error.code != coverwise::model::Error::Code::kOk) {
-    return ErrorExitCode(result.error.code);
+/// Usage text is its own envelope, without the "error: " prefix, so it is
+/// printed here rather than through Fail.
+ExitStatus UsageError(const std::string& usage) {
+  std::cerr << usage;
+  return SurfaceError({coverwise::model::Error::Code::kInvalidInput, usage, ""});
+}
+
+/// @brief Derive a subcommand's status from a generator result.
+///
+/// A structured failure takes precedence (a constraint error is exit 1).
+/// Otherwise any coverage below 100% — for any reason, independent of maxTests
+/// — is insufficient coverage. That shortfall is reported in the JSON body
+/// rather than on stderr, so it is turned into a status without printing.
+ExitStatus ResultStatus(const coverwise::model::GenerateResult& result) {
+  if (!result.error.ok()) {
+    return SurfaceError(result.error);
   }
   if (result.coverage < 1.0) {
-    return kExitInsufficientCoverage;
+    return SurfaceError(
+        {coverwise::model::Error::Code::kInsufficientCoverage, "Coverage is below 100%", ""});
   }
-  return kExitOk;
-}
-
-/// @brief Validate that an interaction strength is a positive integer.
-/// @return true if valid; otherwise prints a message to stderr and returns false.
-bool ValidateStrength(uint32_t strength) {
-  if (strength < 1) {
-    std::cerr << "error: strength must be a positive integer (>= 1)\n";
-    return false;
-  }
-  return true;
+  return ExitStatus::Success();
 }
 
 // ---------------------------------------------------------------------------
@@ -654,7 +657,7 @@ bool ReadFile(const std::string& path, std::string& out, bool& too_large) {
   if (!file.is_open()) return false;
   const std::streampos size = file.tellg();
   if (size < 0) return false;
-  if (static_cast<uint64_t>(size) > kMaxInputBytes) {
+  if (static_cast<uint64_t>(size) > kMaxDocumentBytes) {
     too_large = true;
     return false;
   }
@@ -674,7 +677,7 @@ bool ReadStdin(std::string& out, bool& too_large) {
   char buffer[65536];
   while (std::cin.read(buffer, sizeof(buffer)) || std::cin.gcount() > 0) {
     const size_t count = static_cast<size_t>(std::cin.gcount());
-    if (out.size() + count > kMaxInputBytes) {
+    if (out.size() + count > kMaxDocumentBytes) {
       too_large = true;
       return false;
     }
@@ -705,13 +708,13 @@ bool ReadInput(const std::string& path, std::string& out, std::string& error) {
     }
     if (!ReadStdin(out, too_large)) {
       error = too_large ? "standard input exceeds the maximum of " +
-                              std::to_string(kMaxInputBytes) + " bytes"
+                              std::to_string(kMaxDocumentBytes) + " bytes"
                         : "cannot read standard input";
       return false;
     }
   } else if (!ReadFile(path, out, too_large)) {
     error = too_large ? "file '" + path + "' exceeds the maximum of " +
-                            std::to_string(kMaxInputBytes) + " bytes"
+                            std::to_string(kMaxDocumentBytes) + " bytes"
                       : "cannot open file '" + path + "'";
     return false;
   }
@@ -879,38 +882,6 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
   return true;
 }
 
-/// @brief Parse parameters and run structural validation.
-///
-/// Wraps ParseParameters with model::ValidateParameters so the CLI rejects
-/// empty names, empty value lists, duplicate values within a parameter, and
-/// duplicate parameter names — the same checks the WASM/JS surfaces enforce.
-/// @return true on success; on failure sets error and returns false.
-bool ParseAndValidateParameters(const JsonValue& json,
-                                std::vector<coverwise::model::Parameter>& params,
-                                std::string& error) {
-  if (!ParseParameters(json, params, error)) {
-    return false;
-  }
-  // Boundary-configured parameters may start with no explicit values because
-  // their range supplies the value set. Use a temporary identity solely for
-  // structural validation; the actual range is validated and expanded later.
-  auto validation_params = params;
-  for (size_t i = 0; i < validation_params.size(); ++i) {
-    const auto& parameter_json = json.array_val[i];
-    if (validation_params[i].values.empty() &&
-        (parameter_json.HasKey("type") || parameter_json.HasKey("range") ||
-         parameter_json.HasKey("step"))) {
-      validation_params[i].values.push_back("__coverwise_boundary_placeholder__");
-    }
-  }
-  auto validation = coverwise::model::ValidateParameters(validation_params);
-  if (!validation.ok()) {
-    error = validation.message;
-    return false;
-  }
-  return true;
-}
-
 /// @brief Parse boundary value configs from parameter JSON.
 ///
 /// For each parameter with "type" ("integer" or "float") and "range" ([min, max]),
@@ -951,79 +922,122 @@ bool ParseBoundaryConfigs(const JsonValue& json,
 
     if (type_val.string_val == "integer") {
       config.type = coverwise::model::BoundaryConfig::Type::kInteger;
-      config.step = 1.0;
     } else if (type_val.string_val == "float") {
       config.type = coverwise::model::BoundaryConfig::Type::kFloat;
-      const auto& step_val = p["step"];
-      if (p.HasKey("step") && step_val.type != JsonType::kNumber) {
-        error = "parameter '" + name_val.string_val + "' boundary step must be a number";
-        return false;
-      }
-      if (step_val.type == JsonType::kNumber) {
-        config.step = step_val.number_val;
-      } else {
-        config.step = 1.0;
-      }
     } else {
       error = "parameter '" + name_val.string_val + "' has unknown boundary type";
       return false;
     }
+    // `step` is carried through for both types, including integer, where the
+    // acceptance rules reject anything other than 1. Defaulting it here instead
+    // would drop the caller's request and silently generate a value set they
+    // did not ask for.
+    const auto& step_val = p["step"];
+    if (p.HasKey("step") && step_val.type != JsonType::kNumber) {
+      error = "parameter '" + name_val.string_val + "' boundary step must be a number";
+      return false;
+    }
+    config.step = step_val.type == JsonType::kNumber ? step_val.number_val : 1.0;
 
     configs[name_val.string_val] = config;
   }
   return true;
 }
 
-/// @brief Expand numeric boundary parameters up front and clear the configs.
+/// @brief Parse the parameter array into @p options and expand its value space.
 ///
-/// Boundary expansion must happen before generation so that a single Parameter
-/// object (with expanded values) is the source of truth for both generation and
-/// rendering. Otherwise test cases — which carry value indices — render against
-/// the unexpanded parameters and produce empty/garbage values. After expanding,
-/// the configs are cleared so core::Generate does not expand a second time.
-bool ApplyBoundaryExpansion(coverwise::model::GenerateOptions& options, std::string& error) {
-  if (options.boundary_configs.empty()) return true;
-  auto validation = coverwise::model::ValidateGenerateOptions(options);
-  if (!validation.ok()) {
-    error = validation.message + (validation.detail.empty() ? "" : ": " + validation.detail);
+/// Boundary expansion must happen before anything resolves a value name to an
+/// index: test cases carry indices, so rows parsed against the declared values
+/// would point into the wrong list once expansion sorts and inserts values.
+/// Expanding here also means the acceptance rules judge the value space
+/// generation actually uses — a boundary parameter whose only spelled-out value
+/// is an invalid sentinel is well-formed, because expansion supplies the valid
+/// ones.
+/// @return true on success; on failure sets error and returns false.
+bool ParseModelParameters(const JsonValue& parameters_json,
+                          coverwise::model::GenerateOptions& options, std::string& error) {
+  if (!ParseParameters(parameters_json, options.parameters, error)) return false;
+  if (!ParseBoundaryConfigs(parameters_json, options.boundary_configs, error)) return false;
+  auto expansion = coverwise::model::ExpandBoundaries(options);
+  if (!expansion.ok()) {
+    error = expansion.message + (expansion.detail.empty() ? "" : ": " + expansion.detail);
     return false;
   }
-  for (auto& param : options.parameters) {
-    auto it = options.boundary_configs.find(param.name);
-    if (it != options.boundary_configs.end()) {
-      param = coverwise::model::ExpandBoundaryValues(param, it->second);
-    }
+  auto validation = coverwise::model::ValidateParameters(options.parameters);
+  if (!validation.ok()) {
+    error = validation.message;
+    return false;
   }
-  options.boundary_configs.clear();
   return true;
 }
 
-/// @brief Parse test cases from a JSON array of objects with string values.
-/// Each test object maps parameter names to value strings.
-/// Returns value indices matching the parameter definitions.
+/// @brief How strictly a row array is held to the declared parameter set.
+enum class TestRowPolicy {
+  /// @brief `seeds`: the row's key set must equal the declared parameter names
+  /// and every value must resolve, because a seed is asserted to be a real test
+  /// case that generation will build on.
+  kSeed,
+  /// @brief `tests` / `existing`: a row that no longer matches the model is
+  /// carried through with the mismatching positions left unassigned. The
+  /// coverage validator classifies it and reports it as an invalid row, so a
+  /// single drifted row costs its own coverage rather than the whole run.
+  kRecorded,
+};
+
+/// @brief Parse test cases from a JSON array of objects with scalar values.
+/// Each test object maps parameter names to values; the result carries value
+/// indices matching the parameter definitions, or model::kUnassigned where a
+/// kRecorded row does not match the model.
 bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Parameter>& params,
+                TestRowPolicy policy, const char* field,
                 std::vector<coverwise::model::TestCase>& tests, std::string& error) {
   if (json.type != JsonType::kArray) {
-    error = "tests must be a JSON array";
+    error = std::string(field) + " must be a JSON array";
     return false;
   }
   if (json.array_val.size() > kMaxTests) {
-    error = "tests exceed maximum of " + std::to_string(kMaxTests);
+    error = std::string(field) + " exceed maximum of " + std::to_string(kMaxTests);
     return false;
   }
   for (size_t i = 0; i < json.array_val.size(); ++i) {
     const auto& t = json.array_val[i];
     if (t.type != JsonType::kObject) {
-      error = "test " + std::to_string(i) + " must be an object";
+      error = std::string(field) + " " + std::to_string(i) + " must be an object";
       return false;
     }
+    if (policy == TestRowPolicy::kSeed) {
+      for (const auto& key : t.object_keys) {
+        bool declared = false;
+        for (const auto& param : params) {
+          if (param.name == key) {
+            declared = true;
+            break;
+          }
+        }
+        if (!declared) {
+          error =
+              std::string(field) + " " + std::to_string(i) + " has unknown parameter '" + key + "'";
+          return false;
+        }
+      }
+    }
+
     coverwise::model::TestCase tc;
-    tc.values.resize(params.size(), UINT32_MAX);
+    tc.values.resize(params.size(), coverwise::model::kUnassigned);
+
+    // Filled on first drift only: a row that matches the model costs nothing,
+    // and a row that does not keeps the caller's own text for the diagnostic.
+    auto record_unresolved = [&tc, &params](size_t pi, std::string text) {
+      if (tc.unresolved.empty()) tc.unresolved.resize(params.size());
+      tc.unresolved[pi] = std::move(text);
+    };
 
     for (size_t pi = 0; pi < params.size(); ++pi) {
       const auto& val = t[params[pi].name];
       if (val.IsNull()) {
-        error = "test " + std::to_string(i) + " missing parameter '" + params[pi].name + "'";
+        if (policy == TestRowPolicy::kRecorded) continue;
+        error = std::string(field) + " " + std::to_string(i) + " missing parameter '" +
+                params[pi].name + "'";
         return false;
       }
       // Convert value to string for lookup.
@@ -1035,15 +1049,21 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
       } else if (val.type == JsonType::kBool) {
         val_str = val.bool_val ? "true" : "false";
       } else {
-        error = "test " + std::to_string(i) + " parameter '" + params[pi].name +
+        // A non-scalar member is structurally malformed on every policy: there
+        // is no value to record, drifted or otherwise.
+        error = std::string(field) + " " + std::to_string(i) + " parameter '" + params[pi].name +
                 "' has non-scalar value";
         return false;
       }
 
       // Find the value index (checking primary values and aliases).
       uint32_t val_idx = params[pi].find_value_index(val_str);
-      if (val_idx == UINT32_MAX) {
-        error = "test " + std::to_string(i) + " parameter '" + params[pi].name +
+      if (val_idx == coverwise::model::kUnassigned) {
+        if (policy == TestRowPolicy::kRecorded) {
+          record_unresolved(pi, std::move(val_str));
+          continue;
+        }
+        error = std::string(field) + " " + std::to_string(i) + " parameter '" + params[pi].name +
                 "' has unknown value '" + val_str + "'";
         return false;
       }
@@ -1178,20 +1198,48 @@ bool ParseWeights(const JsonValue& json, coverwise::model::WeightConfig& weights
 // Write coverwise output as JSON.
 // ---------------------------------------------------------------------------
 
-void WriteGenerateResult(const coverwise::model::GenerateResult& result,
-                         const std::vector<coverwise::model::Parameter>& params,
-                         uint32_t strength) {
-  JsonWriter w(std::cout);
-  w.BeginObject();
-  w.Key("schemaVersion");
-  w.WriteNumber(1);
+/// @brief Write a parsed scalar JSON value back out unchanged.
+void WriteScalar(JsonWriter& w, const JsonValue& value) {
+  switch (value.type) {
+    case JsonType::kString:
+      w.WriteString(value.string_val);
+      return;
+    case JsonType::kNumber:
+      w.WriteNumber(value.number_val);
+      return;
+    case JsonType::kBool:
+      w.WriteBool(value.bool_val);
+      return;
+    default:
+      w.WriteNull();
+      return;
+  }
+}
 
-  // tests
-  w.Key("tests");
-  w.BeginArray();
+/// @brief Write the result's tests, echoing a preserved prefix verbatim.
+///
+/// @param preserved_rows Rows the caller handed to extend, or nullptr. Extend
+///        keeps them byte-for-byte, including members the model no longer
+///        declares, so they are echoed from the input rather than rendered from
+///        value indices — rendering would drop exactly the parts that make a
+///        drifted row recognizable.
+void WriteResultTests(JsonWriter& w, const coverwise::model::GenerateResult& result,
+                      const std::vector<coverwise::model::Parameter>& params,
+                      const JsonValue* preserved_rows) {
+  const size_t preserved_count = preserved_rows == nullptr ? 0 : preserved_rows->array_val.size();
   for (size_t ti = 0; ti < result.tests.size(); ++ti) {
-    const auto& tc = result.tests[ti];
     w.Sep();
+    if (ti < preserved_count) {
+      const auto& row = preserved_rows->array_val[ti];
+      w.BeginObject();
+      for (size_t k = 0; k < row.object_keys.size(); ++k) {
+        w.Key(row.object_keys[k]);
+        WriteScalar(w, row.object_vals[k]);
+      }
+      w.EndObject();
+      continue;
+    }
+    const auto& tc = result.tests[ti];
     w.BeginObject();
     for (size_t i = 0; i < params.size() && i < tc.values.size(); ++i) {
       if (tc.values[i] >= params[i].size()) continue;
@@ -1200,6 +1248,22 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
     }
     w.EndObject();
   }
+}
+
+/// @param preserved_rows The raw `existing` rows extend must echo unchanged, or
+///        nullptr for subcommands that render every row from the model.
+void WriteGenerateResult(const coverwise::model::GenerateResult& result,
+                         const std::vector<coverwise::model::Parameter>& params, uint32_t strength,
+                         const JsonValue* preserved_rows = nullptr) {
+  JsonWriter w(std::cout);
+  w.BeginObject();
+  w.Key("schemaVersion");
+  w.WriteNumber(1);
+
+  // tests
+  w.Key("tests");
+  w.BeginArray();
+  WriteResultTests(w, result, params, preserved_rows);
   w.EndArray();
   w.Key("uncoveredCount");
   w.WriteNumber(static_cast<double>(result.uncovered_count));
@@ -1345,9 +1409,7 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
     w.Key("code");
     w.WriteNumber(static_cast<double>(static_cast<int>(result.error.code)));
     w.Key("message");
-    std::string msg = result.error.message;
-    if (!result.error.detail.empty()) msg += ": " + result.error.detail;
-    w.WriteString(msg);
+    w.WriteString(SurfaceError(result.error).text());
     w.EndObject();
   }
 
@@ -1359,10 +1421,8 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
 /// reason visible on the error stream (not just buried in the JSON warnings),
 /// consistent with the analyze subcommand and the WASM surface.
 void ReportResultError(const coverwise::model::GenerateResult& result) {
-  if (result.error.code == coverwise::model::Error::Code::kOk) return;
-  std::cerr << "error: " << result.error.message;
-  if (!result.error.detail.empty()) std::cerr << ": " << result.error.detail;
-  std::cerr << "\n";
+  if (result.error.ok()) return;
+  std::cerr << "error: " << SurfaceError(result.error).text() << "\n";
 }
 
 void WriteCoverageReport(const coverwise::validator::CoverageReport& report) {
@@ -1444,114 +1504,98 @@ void WriteCoverageReport(const coverwise::validator::CoverageReport& report) {
 // Command implementations.
 // ---------------------------------------------------------------------------
 
-int RunGenerate(int argc, char* argv[]) {
+ExitStatus RunGenerate(int argc, char* argv[]) {
   if (argc != 3) {
-    std::cerr << "Usage: coverwise generate <input.json>\n";
-    return kExitInvalidInput;
+    return UsageError("Usage: coverwise generate <input.json>\n");
   }
 
   std::string content;
   std::string read_error;
   if (!ReadInput(argv[2], content, read_error)) {
-    std::cerr << "error: " << read_error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(read_error);
   }
 
   JsonParser parser(content);
   auto json = parser.Parse();
   if (!parser.error().empty()) {
-    std::cerr << "error: invalid JSON: " << parser.error() << "\n";
-    return kExitInvalidInput;
+    return InvalidInput("invalid JSON: " + parser.error());
   }
   if (json.type != JsonType::kObject) {
-    std::cerr << "error: input must be a JSON object\n";
-    return kExitInvalidInput;
+    return InvalidInput("input must be a JSON object");
   }
 
-  // Parse parameters.
+  // Parse parameters and expand their boundary value space.
   std::string error;
   coverwise::model::GenerateOptions options;
-  if (!ParseAndValidateParameters(json["parameters"], options.parameters, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
-  }
-
-  // Parse boundary value configs from parameters.
-  if (!ParseBoundaryConfigs(json["parameters"], options.boundary_configs, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+  if (!ParseModelParameters(json["parameters"], options, error)) {
+    return InvalidInput(error);
   }
 
   // Parse optional fields.
   if (!ParseOptionalUint32(json, "strength", 1, options.strength, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
   uint32_t seed = 0;
   if (!ParseOptionalUint32(json, "seed", 0, seed, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
   options.seed = seed;
   if (!ParseOptionalUint32(json, "maxTests", 0, options.max_tests, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
 
   // Parse constraints (array of strings).
   if (!ParseConstraintExpressions(json["constraints"], options.constraint_expressions, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
 
   // Parse weights: {"param_name": {"value_name": weight, ...}, ...}
   if (!ParseWeights(json["weights"], options.weights, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
 
   // Parse sub-models (mixed-strength parameter groups).
   if (!ParseSubModels(json["subModels"], options.sub_models, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
 
-  // Expand numeric boundary parameters up front so the same Parameter objects
-  // drive both generation and rendering. Seed tests are parsed afterward so
-  // their value indices match the expanded value lists.
-  if (!ApplyBoundaryExpansion(options, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
-  }
-
-  // Parse seed tests (existing tests to build upon).
+  // Parse seed tests (existing tests to build upon). Their value indices point
+  // into the already-expanded value lists.
   const auto& seeds_val = json["seeds"];
   if (!seeds_val.IsNull()) {
-    if (!ParseTests(seeds_val, options.parameters, options.seeds, error)) {
-      std::cerr << "error: " << error << "\n";
-      return kExitInvalidInput;
+    if (!ParseTests(seeds_val, options.parameters, TestRowPolicy::kSeed, "seeds", options.seeds,
+                    error)) {
+      return InvalidInput(error);
     }
   }
 
+  const uint32_t strength = options.strength;
+  auto accepted = coverwise::model::AcceptOptions(std::move(options));
+  if (!accepted.ok()) {
+    return Fail(accepted.error());
+  }
+
   // Generate.
-  auto result = coverwise::core::Generate(options);
+  auto result = coverwise::core::Generate(accepted->get());
 
-  const auto& effective_params = result.parameters.empty() ? options.parameters : result.parameters;
+  const auto& effective_params =
+      result.parameters.empty() ? accepted->get().parameters : result.parameters;
 
-  // Determine exit code: constraint error (1) > insufficient coverage (2) > OK.
-  int exit_code = ResultExitCode(result);
+  // Determine status: constraint error (1) > insufficient coverage (2) > OK.
+  ExitStatus status = ResultStatus(result);
 
-  WriteGenerateResult(result, effective_params, options.strength);
+  WriteGenerateResult(result, effective_params, strength);
   ReportResultError(result);
-  return exit_code;
+  return status;
 }
 
-int RunAnalyze(int argc, char* argv[]) {
+ExitStatus RunAnalyze(int argc, char* argv[]) {
   // Parse flags.
   std::string params_path;
   std::string tests_path;
   std::string constraints_path;
   uint32_t strength = 2;
+  bool strength_from_flag = false;
 
   for (int i = 2; i < argc; ++i) {
     std::string arg = argv[i];
@@ -1566,24 +1610,19 @@ int RunAnalyze(int argc, char* argv[]) {
       char* end = nullptr;
       long parsed = std::strtol(value.c_str(), &end, 10);
       if (end == value.c_str() || *end != '\0' || parsed < 1 || parsed > UINT32_MAX) {
-        std::cerr << "error: --strength must be a positive integer (>= 1)\n";
-        return kExitInvalidInput;
+        return InvalidInput("--strength must be a positive integer (>= 1)");
       }
       strength = static_cast<uint32_t>(parsed);
+      strength_from_flag = true;
     } else {
-      std::cerr << "error: unknown argument '" << arg << "'\n";
-      return kExitInvalidInput;
+      return InvalidInput("unknown argument '" + arg + "'");
     }
   }
 
   if (params_path.empty() || tests_path.empty()) {
-    std::cerr << "Usage: coverwise analyze --params <params.json> --tests <tests.json>"
-              << " [--strength <n>] [--constraints <file.json>]\n";
-    return kExitInvalidInput;
-  }
-
-  if (!ValidateStrength(strength)) {
-    return kExitInvalidInput;
+    return UsageError(
+        "Usage: coverwise analyze --params <params.json> --tests <tests.json>"
+        " [--strength <n>] [--constraints <file.json>]\n");
   }
 
   // Read and parse params. The params file may be either a bare array of
@@ -1592,92 +1631,117 @@ int RunAnalyze(int argc, char* argv[]) {
   std::string params_content;
   std::string read_error;
   if (!ReadInput(params_path, params_content, read_error)) {
-    std::cerr << "error: " << read_error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(read_error);
   }
   JsonParser params_parser(params_content);
   auto params_json = params_parser.Parse();
   if (!params_parser.error().empty()) {
-    std::cerr << "error: invalid params JSON: " << params_parser.error() << "\n";
-    return kExitInvalidInput;
+    return InvalidInput("invalid params JSON: " + params_parser.error());
   }
 
   std::string error;
-  std::vector<coverwise::model::Parameter> params;
   const JsonValue* params_array = &params_json;
   std::vector<std::string> constraint_expressions;
   if (params_json.type == JsonType::kObject) {
     params_array = &params_json["parameters"];
     if (!ParseConstraintExpressions(params_json["constraints"], constraint_expressions, error)) {
-      std::cerr << "error: " << error << "\n";
-      return kExitInvalidInput;
+      return InvalidInput(error);
     }
-  }
-  if (!ParseAndValidateParameters(*params_array, params, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    // The documented pipeline pipes one model through generate and then
+    // analyze, so a field of that model which defines the coverage universe has
+    // to reach the measurement. An explicit --strength wins, because it is an
+    // analysis knob the caller chose for this run.
+    if (!strength_from_flag && !ParseOptionalUint32(params_json, "strength", 1, strength, error)) {
+      return InvalidInput(error);
+    }
+    // Sub-models give parts of the model their own strength, which the coverage
+    // validator has no way to express: it measures one universe at one strength.
+    // Measuring such a model as if the sub-models were absent would report a
+    // ratio for a universe the caller never described, so it is refused before
+    // any report is written. Analyze one sub-model at a time with --strength.
+    if (!params_json["subModels"].IsNull()) {
+      return InvalidInput(
+          "analyze cannot measure a model with 'subModels'; analyze each group separately with"
+          " --strength");
+    }
   }
 
   // Analyze uses the same effective boundary-expanded value space as generate.
-  coverwise::model::GenerateOptions boundary_options;
-  boundary_options.parameters = std::move(params);
-  boundary_options.strength = strength;
-  if (!ParseBoundaryConfigs(*params_array, boundary_options.boundary_configs, error) ||
-      !ApplyBoundaryExpansion(boundary_options, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+  // Its --strength is an analysis parameter rather than a property of the
+  // model: a suite may be analyzed at a strength above the parameter count,
+  // where the tuple universe is simply empty, and analyzeCoverage on the JS
+  // surfaces allows that too. Submit the model at strength 1 so the gate judges
+  // the model alone; ValidateCoverage receives the requested strength.
+  coverwise::model::GenerateOptions model_options;
+  model_options.strength = 1;
+  if (!ParseModelParameters(*params_array, model_options, error)) {
+    return InvalidInput(error);
   }
-  params = std::move(boundary_options.parameters);
+  std::vector<coverwise::model::Parameter> params = model_options.parameters;
 
   // Read constraints from a dedicated file if provided. A constraints file is a
   // JSON object with a "constraints" array (or a bare array of strings).
   if (!constraints_path.empty()) {
     std::string constraints_content;
     if (!ReadInput(constraints_path, constraints_content, read_error)) {
-      std::cerr << "error: " << read_error << "\n";
-      return kExitInvalidInput;
+      return InvalidInput(read_error);
     }
     JsonParser constraints_parser(constraints_content);
     auto constraints_json = constraints_parser.Parse();
     if (!constraints_parser.error().empty()) {
-      std::cerr << "error: invalid constraints JSON: " << constraints_parser.error() << "\n";
-      return kExitInvalidInput;
+      return InvalidInput("invalid constraints JSON: " + constraints_parser.error());
+    }
+    // An explicit --constraints replaces whatever --params declared, so a
+    // document this reader cannot turn into a constraint list would erase the
+    // model's constraints instead of failing. `jq '.constraints'` emits bare
+    // null for a model that has none, which is exactly how such a document
+    // reaches here, and a silently unconstrained run reports a coverage
+    // shortfall that the caller has no error output to explain.
+    if (constraints_json.type != JsonType::kArray && constraints_json.type != JsonType::kObject) {
+      return InvalidInput(
+          "constraints file must be a JSON array of expressions or an object with a 'constraints'"
+          " array");
     }
     if (constraints_json.type == JsonType::kObject &&
         (!constraints_json.HasKey("constraints") ||
          constraints_json["constraints"].type != JsonType::kArray)) {
-      std::cerr << "error: constraints file object must have a 'constraints' JSON array\n";
-      return kExitInvalidInput;
+      return InvalidInput("constraints file object must have a 'constraints' JSON array");
     }
     const JsonValue& constraints_node = constraints_json.type == JsonType::kObject
                                             ? constraints_json["constraints"]
                                             : constraints_json;
     constraint_expressions.clear();
     if (!ParseConstraintExpressions(constraints_node, constraint_expressions, error)) {
-      std::cerr << "error: " << error << "\n";
-      return kExitInvalidInput;
+      return InvalidInput(error);
     }
   }
 
   // Read and parse tests.
   std::string tests_content;
   if (!ReadInput(tests_path, tests_content, read_error)) {
-    std::cerr << "error: " << read_error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(read_error);
   }
   JsonParser tests_parser(tests_content);
   auto tests_json = tests_parser.Parse();
   if (!tests_parser.error().empty()) {
-    std::cerr << "error: invalid tests JSON: " << tests_parser.error() << "\n";
-    return kExitInvalidInput;
+    return InvalidInput("invalid tests JSON: " + tests_parser.error());
   }
 
+  // Rows that no longer match the model are carried through with the
+  // mismatching positions unassigned; ValidateCoverage classifies them into
+  // invalidTests so the report covers the whole suite instead of stopping at
+  // the first drifted row.
   std::vector<coverwise::model::TestCase> tests;
   const JsonValue* tests_array = nullptr;
   if (!ExtractTestsArray(tests_json, tests_array, error) ||
-      !ParseTests(*tests_array, params, tests, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+      !ParseTests(*tests_array, params, TestRowPolicy::kRecorded, "tests", tests, error)) {
+    return InvalidInput(error);
+  }
+
+  model_options.constraint_expressions = constraint_expressions;
+  auto accepted = coverwise::model::AcceptOptions(std::move(model_options));
+  if (!accepted.ok()) {
+    return Fail(accepted.error());
   }
 
   // Parse constraint expressions into AST so the validator can exclude
@@ -1687,17 +1751,14 @@ int RunAnalyze(int argc, char* argv[]) {
   for (const auto& expr : constraint_expressions) {
     auto parse_result = coverwise::model::ParseConstraint(expr, params);
     if (!parse_result.error.ok()) {
-      std::cerr << "error: " << parse_result.error.message << ": " << parse_result.error.detail
-                << "\n";
-      return kExitConstraintError;
+      return Fail(coverwise::model::AnnotateConstraintError(expr, parse_result.error));
     }
     constraints.push_back(std::move(parse_result.constraint));
   }
 
   auto report = coverwise::validator::ValidateCoverage(params, tests, strength, constraints);
   if (!report.error.ok()) {
-    std::cerr << "error: " << report.error.message << ": " << report.error.detail << "\n";
-    return ErrorExitCode(report.error.code);
+    return Fail(report.error);
   }
 
   WriteCoverageReport(report);
@@ -1707,17 +1768,17 @@ int RunAnalyze(int argc, char* argv[]) {
   // even when the valid subset covers everything. The details are still in the
   // JSON body (invalidTests). This takes precedence over the coverage shortfall.
   if (!report.invalid_tests.empty()) {
-    std::cerr << "error: " << report.invalid_tests.size()
-              << " invalid test(s) in the analyzed suite\n";
-    return kExitInvalidInput;
+    return InvalidInput(std::to_string(report.invalid_tests.size()) +
+                        " invalid test(s) in the analyzed suite");
   }
   if (report.coverage_ratio < 1.0) {
-    return kExitInsufficientCoverage;
+    return SurfaceError(
+        {coverwise::model::Error::Code::kInsufficientCoverage, "Coverage is below 100%", ""});
   }
-  return kExitOk;
+  return ExitStatus::Success();
 }
 
-int RunExtend(int argc, char* argv[]) {
+ExitStatus RunExtend(int argc, char* argv[]) {
   // Parse --existing flag and input file.
   std::string existing_path;
   std::string input_path;
@@ -1729,196 +1790,171 @@ int RunExtend(int argc, char* argv[]) {
     } else if (input_path.empty() && (IsStdinPath(arg) || (!arg.empty() && arg[0] != '-'))) {
       input_path = arg;
     } else {
-      std::cerr << "error: unknown argument '" << arg << "'\n";
-      return kExitInvalidInput;
+      return InvalidInput("unknown argument '" + arg + "'");
     }
   }
 
   if (existing_path.empty() || input_path.empty()) {
-    std::cerr << "Usage: coverwise extend --existing <tests.json> <input.json>\n";
-    return kExitInvalidInput;
+    return UsageError("Usage: coverwise extend --existing <tests.json> <input.json>\n");
   }
 
   // Read and parse input.
   std::string input_content;
   std::string read_error;
   if (!ReadInput(input_path, input_content, read_error)) {
-    std::cerr << "error: " << read_error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(read_error);
   }
   JsonParser input_parser(input_content);
   auto input_json = input_parser.Parse();
   if (!input_parser.error().empty()) {
-    std::cerr << "error: invalid input JSON: " << input_parser.error() << "\n";
-    return kExitInvalidInput;
+    return InvalidInput("invalid input JSON: " + input_parser.error());
   }
   if (input_json.type != JsonType::kObject) {
-    std::cerr << "error: input must be a JSON object\n";
-    return kExitInvalidInput;
+    return InvalidInput("input must be a JSON object");
   }
 
+  // Parse parameters and expand up front so generation and rendering share the
+  // same expanded Parameter objects. Seeds and existing tests are parsed
+  // afterward so their value indices match.
   std::string error;
   coverwise::model::GenerateOptions options;
-  if (!ParseAndValidateParameters(input_json["parameters"], options.parameters, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
-  }
-
-  // Parse boundary value configs and expand up front so generation and
-  // rendering share the same expanded Parameter objects. Seeds and existing
-  // tests are parsed afterward so their value indices match.
-  if (!ParseBoundaryConfigs(input_json["parameters"], options.boundary_configs, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+  if (!ParseModelParameters(input_json["parameters"], options, error)) {
+    return InvalidInput(error);
   }
 
   if (!ParseOptionalUint32(input_json, "strength", 1, options.strength, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
   uint32_t seed = 0;
   if (!ParseOptionalUint32(input_json, "seed", 0, seed, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
   options.seed = seed;
   if (!ParseOptionalUint32(input_json, "maxTests", 0, options.max_tests, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
 
   // Parse constraints (array of strings).
   if (!ParseConstraintExpressions(input_json["constraints"], options.constraint_expressions,
                                   error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
 
   // Parse weights: {"param_name": {"value_name": weight, ...}, ...}
   if (!ParseWeights(input_json["weights"], options.weights, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
 
   // Parse sub-models (mixed-strength parameter groups).
   if (!ParseSubModels(input_json["subModels"], options.sub_models, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
-  }
-
-  if (!ApplyBoundaryExpansion(options, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
 
   // Parse seed tests from the input JSON (in addition to --existing tests).
   const auto& seeds_val = input_json["seeds"];
   if (!seeds_val.IsNull()) {
-    if (!ParseTests(seeds_val, options.parameters, options.seeds, error)) {
-      std::cerr << "error: " << error << "\n";
-      return kExitInvalidInput;
+    if (!ParseTests(seeds_val, options.parameters, TestRowPolicy::kSeed, "seeds", options.seeds,
+                    error)) {
+      return InvalidInput(error);
     }
   }
 
   // Read and parse existing tests.
   std::string existing_content;
   if (!ReadInput(existing_path, existing_content, read_error)) {
-    std::cerr << "error: " << read_error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(read_error);
   }
   JsonParser existing_parser(existing_content);
   auto existing_json = existing_parser.Parse();
   if (!existing_parser.error().empty()) {
-    std::cerr << "error: invalid existing tests JSON: " << existing_parser.error() << "\n";
-    return kExitInvalidInput;
+    return InvalidInput("invalid existing tests JSON: " + existing_parser.error());
   }
 
+  // A recorded suite drifts from the model it was written against: a value gets
+  // renamed, a parameter is added. Filling the gap in the model is the whole
+  // point of extend, so a drifted row is carried through rather than failing the
+  // run. Extend keeps the row as written, the core records why it could not be
+  // counted, and the coverage figure is computed without it.
   std::vector<coverwise::model::TestCase> existing;
   const JsonValue* existing_array = nullptr;
   if (!ExtractTestsArray(existing_json, existing_array, error) ||
-      !ParseTests(*existing_array, options.parameters, existing, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+      !ParseTests(*existing_array, options.parameters, TestRowPolicy::kRecorded, "existing",
+                  existing, error)) {
+    return InvalidInput(error);
   }
 
-  auto result = coverwise::core::Extend(existing, options);
+  const uint32_t strength = options.strength;
+  auto accepted = coverwise::model::AcceptOptions(std::move(options));
+  if (!accepted.ok()) {
+    return Fail(accepted.error());
+  }
 
-  const auto& effective_params = result.parameters.empty() ? options.parameters : result.parameters;
+  auto result = coverwise::core::Extend(existing, accepted->get());
 
-  // Determine exit code: constraint error (1) > insufficient coverage (2) > OK.
-  int exit_code = ResultExitCode(result);
+  const auto& effective_params =
+      result.parameters.empty() ? accepted->get().parameters : result.parameters;
 
-  WriteGenerateResult(result, effective_params, options.strength);
+  // Determine status: constraint error (1) > insufficient coverage (2) > OK.
+  ExitStatus status = ResultStatus(result);
+
+  WriteGenerateResult(result, effective_params, strength, existing_array);
   ReportResultError(result);
-  return exit_code;
+  return status;
 }
 
-int RunStats(int argc, char* argv[]) {
+ExitStatus RunStats(int argc, char* argv[]) {
   if (argc != 3) {
-    std::cerr << "Usage: coverwise stats <input.json>\n";
-    return kExitInvalidInput;
+    return UsageError("Usage: coverwise stats <input.json>\n");
   }
 
   std::string content;
   std::string read_error;
   if (!ReadInput(argv[2], content, read_error)) {
-    std::cerr << "error: " << read_error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(read_error);
   }
 
   JsonParser parser(content);
   auto json = parser.Parse();
   if (!parser.error().empty()) {
-    std::cerr << "error: invalid JSON: " << parser.error() << "\n";
-    return kExitInvalidInput;
+    return InvalidInput("invalid JSON: " + parser.error());
   }
   if (json.type != JsonType::kObject) {
-    std::cerr << "error: input must be a JSON object\n";
-    return kExitInvalidInput;
+    return InvalidInput("input must be a JSON object");
   }
 
   std::string error;
   coverwise::model::GenerateOptions options;
-  if (!ParseAndValidateParameters(json["parameters"], options.parameters, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
-  }
-
-  // Parse boundary value configs from parameters.
-  if (!ParseBoundaryConfigs(json["parameters"], options.boundary_configs, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+  if (!ParseModelParameters(json["parameters"], options, error)) {
+    return InvalidInput(error);
   }
 
   if (!ParseOptionalUint32(json, "strength", 1, options.strength, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
   uint32_t seed = 0;
   if (!ParseOptionalUint32(json, "seed", 0, seed, error) ||
       !ParseOptionalUint32(json, "maxTests", 0, options.max_tests, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
   options.seed = seed;
 
   if (!ParseConstraintExpressions(json["constraints"], options.constraint_expressions, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
 
   if (!ParseSubModels(json["subModels"], options.sub_models, error) ||
       !ParseWeights(json["weights"], options.weights, error)) {
-    std::cerr << "error: " << error << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error);
   }
 
-  auto stats = coverwise::core::EstimateModel(options);
+  auto accepted = coverwise::model::AcceptOptions(std::move(options));
+  if (!accepted.ok()) {
+    return Fail(accepted.error());
+  }
+
+  auto stats = coverwise::core::EstimateModel(accepted->get());
   if (!stats.error.ok()) {
-    std::cerr << "error: " << stats.error.message;
-    if (!stats.error.detail.empty()) std::cerr << ": " << stats.error.detail;
-    std::cerr << "\n";
-    return kExitInvalidInput;
+    return Fail(stats.error);
   }
 
   JsonWriter w(std::cout);
@@ -1966,24 +2002,24 @@ int RunStats(int argc, char* argv[]) {
   w.EndObject();
   std::cout << '\n';
 
-  return kExitOk;
+  return ExitStatus::Success();
 }
 
-void PrintUsage() {
-  std::cerr << "Usage:\n"
-            << "  coverwise generate <input.json>\n"
-            << "  coverwise analyze --params <params.json> --tests <tests.json>"
-               " [--strength <n>] [--constraints <file.json>]\n"
-            << "  coverwise extend --existing <tests.json> <input.json>\n"
-            << "  coverwise stats <input.json>\n"
-            << "\n"
-            << "Any input path may be '-' to read that JSON from standard input.\n"
-            << "\n"
-            << "Exit codes:\n"
-            << "  0 = OK (coverage 100%)\n"
-            << "  1 = Constraint error\n"
-            << "  2 = Insufficient coverage\n"
-            << "  3 = Invalid input\n";
+const char* UsageText() {
+  return "Usage:\n"
+         "  coverwise generate <input.json>\n"
+         "  coverwise analyze --params <params.json> --tests <tests.json>"
+         " [--strength <n>] [--constraints <file.json>]\n"
+         "  coverwise extend --existing <tests.json> <input.json>\n"
+         "  coverwise stats <input.json>\n"
+         "\n"
+         "Any input path may be '-' to read that JSON from standard input.\n"
+         "\n"
+         "Exit codes:\n"
+         "  0 = OK (coverage 100%)\n"
+         "  1 = Constraint error\n"
+         "  2 = Insufficient coverage\n"
+         "  3 = Invalid input\n";
 }
 
 }  // namespace
@@ -1991,41 +2027,37 @@ void PrintUsage() {
 int main(int argc, char* argv[]) {
   try {
     if (argc < 2) {
-      PrintUsage();
-      return kExitInvalidInput;
+      return UsageError(UsageText()).exit_code();
     }
 
     std::string command = argv[1];
 
     if (command == "--help" || command == "-h") {
-      PrintUsage();
-      return kExitOk;
+      std::cerr << UsageText();
+      return ExitStatus::Success().exit_code();
     }
 
     if (command == "generate") {
-      return RunGenerate(argc, argv);
+      return RunGenerate(argc, argv).exit_code();
     }
 
     if (command == "analyze") {
-      return RunAnalyze(argc, argv);
+      return RunAnalyze(argc, argv).exit_code();
     }
 
     if (command == "extend") {
-      return RunExtend(argc, argv);
+      return RunExtend(argc, argv).exit_code();
     }
 
     if (command == "stats") {
-      return RunStats(argc, argv);
+      return RunStats(argc, argv).exit_code();
     }
 
     std::cerr << "Unknown command: " << command << "\n";
-    PrintUsage();
-    return kExitInvalidInput;
+    return UsageError(UsageText()).exit_code();
   } catch (const std::exception& error) {
-    std::cerr << "error: " << error.what() << "\n";
-    return kExitInvalidInput;
+    return InvalidInput(error.what()).exit_code();
   } catch (...) {
-    std::cerr << "error: unexpected failure\n";
-    return kExitInvalidInput;
+    return InvalidInput("unexpected failure").exit_code();
   }
 }
