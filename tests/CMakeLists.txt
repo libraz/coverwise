@@ -30,19 +30,23 @@ endfunction()
 coverwise_add_test(bitset_test util/bitset_test.cpp)
 coverwise_add_test(rng_test util/rng_test.cpp)
 coverwise_add_test(combinatorics_test util/combinatorics_test.cpp)
+coverwise_add_test(combinatorics_alloc_test util/combinatorics_alloc_test.cpp)
 coverwise_add_test(string_util_test util/string_util_test.cpp)
 
 # Model tests
 coverwise_add_test(boundary_test model/boundary_test.cpp)
+coverwise_add_test(options_validation_test model/options_validation_test.cpp)
 coverwise_add_test(parameter_test model/parameter_test.cpp)
 coverwise_add_test(test_case_test model/test_case_test.cpp)
 
 coverwise_add_test(constraint_parser_test model/constraint_parser_test.cpp)
+coverwise_add_test(constraint_atom_cost_test model/constraint_atom_cost_test.cpp)
 
 # Algo tests
 coverwise_add_test(greedy_test algo/greedy_test.cpp)
 
 # Core tests
+coverwise_add_test(constraint_solver_test core/constraint_solver_test.cpp)
 coverwise_add_test(coverage_engine_test core/coverage_engine_test.cpp)
 coverwise_add_test(generator_test core/generator_test.cpp)
 
@@ -55,6 +59,12 @@ coverwise_add_test(equivalence_class_test validator/equivalence_class_test.cpp)
 coverwise_add_test(integration_test integration/generate_and_validate_test.cpp)
 coverwise_add_test(benchmark_test integration/benchmark_test.cpp)
 
+# Documentation contract test: reads the shipped markdown and the sources it
+# describes, so it needs the source tree rather than the build tree.
+coverwise_add_test(docs_contract_test integration/docs_contract_test.cpp)
+target_compile_definitions(docs_contract_test
+  PRIVATE COVERWISE_REPO_ROOT="${PROJECT_SOURCE_DIR}")
+
 # CLI integration test drives the built coverwise binary via popen.
 # Requires the CLI target, which only exists for native (non-WASM) builds.
 if(COVERWISE_BUILD_CLI AND NOT COVERWISE_BUILD_WASM)
@@ -62,6 +72,19 @@ if(COVERWISE_BUILD_CLI AND NOT COVERWISE_BUILD_WASM)
   target_compile_definitions(cli_test
     PRIVATE COVERWISE_CLI_PATH="$<TARGET_FILE:coverwise>")
   add_dependencies(cli_test coverwise)
+
+  coverwise_add_test(negative_coverage_test integration/negative_coverage_test.cpp)
+  target_compile_definitions(negative_coverage_test
+    PRIVATE COVERWISE_CLI_PATH="$<TARGET_FILE:coverwise>")
+  add_dependencies(negative_coverage_test coverwise)
+
+  # Runs the worked examples of the CLI reference, so it needs both the source
+  # tree that holds them and the binary they document.
+  coverwise_add_test(docs_cli_examples_test integration/docs_cli_examples_test.cpp)
+  target_compile_definitions(docs_cli_examples_test
+    PRIVATE COVERWISE_CLI_PATH="$<TARGET_FILE:coverwise>"
+            COVERWISE_REPO_ROOT="${PROJECT_SOURCE_DIR}")
+  add_dependencies(docs_cli_examples_test coverwise)
 endif()
 
 add_test(NAME cmake_add_subdirectory_fixture
