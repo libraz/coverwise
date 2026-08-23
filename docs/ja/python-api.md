@@ -2,7 +2,7 @@
 
 ## インストール
 
-PyPI の `coverwise` パッケージは、native command-line tool と、それを駆動する薄い Python API を同梱します。ジェネレータの別の Python 実装は持たないため、結果・JSON の形・エラー分類は C++ CLI および JavaScript API と完全に一致します。
+PyPI の `coverwise` パッケージは、native command-line tool と、それを駆動する薄い Python API を同梱します。ジェネレータの別の Python 実装は持たないため、結果と JSON の形は C++ CLI および JavaScript API と完全に一致します。エラー分類は CLI の終了コード契約に従うため、JavaScript 側より少しだけ粗くなります。[エラー](#エラー) を参照してください。
 
 ```bash
 pip install coverwise
@@ -48,6 +48,8 @@ coverwise.generate(
     ]
 )
 ```
+
+mapping の値は、1 個であっても必ず list で書きます。`{"env": "prod"}` は `p`・`r`・`o`・`d` の 4 値としてではなく `TypeError` として拒否されるので、`{"env": ["prod"]}` と書いてください。
 
 モデルのフィールドは keyword 引数でも、1 つの mapping でも、両方の併用でも渡せます。keyword 引数が mapping を上書きするため、保存済みモデルの再利用が簡単になります。
 
@@ -126,9 +128,27 @@ def test_login(os, browser, locale):
 
 上の全組み合わせは 18 ケースですが、pairwise スイートはすべてのペアをはるかに少ないケースで網羅します。各ケースには読みやすい id (`os=macOS-browser=Chrome-locale=ja`) が付きます。
 
-パラメータ名はテスト引数になるため、Python の識別子として妥当な名前である必要があります。`strength`、`seed`、`maxTests`、`weights`、`subModels` といったモデルのフィールドはそのまま渡されます。`"invalid": true` を付けた値は既定で除外され、`include_negative=True` を渡すと生成された negative test も実行されます。
+パラメータ名はテスト引数になるため、Python の識別子として妥当で、かつ Python のキーワードでない名前である必要があります。引数にできない名前は、pytest が収集を始める前に `ValueError` として拒否されます。`strength`、`seed`、`maxTests`、`weights`、`subModels` といったモデルのフィールドはそのまま渡されます。`"invalid": true` を付けた値は既定で除外され、`include_negative=True` を渡すと生成された negative test も実行されます。
 
 pytest はこのパッケージの dependency ではありません。decorator が pytest を必要とするのは、テストを実行する環境だけです。その環境にまとめて入れる場合は `pip install coverwise[pytest]` が使えます。
+
+## 入力の上限
+
+この API はモデルを JSON へ直列化して native の実行ファイルへ渡すため、上限は CLI のものと同じです。いずれかを超えた場合は `code == "INVALID_INPUT"`、`exit_code == 3` の `CoverwiseError` を送出します。
+
+| 項目 | 上限 |
+|------|------|
+| 1 モデルのパラメータ数 | 1,024 |
+| 1 パラメータの値の数 | 16,384 |
+| `tests`・`seeds`・`existing` の行数 | 100,000 |
+| 制約式の数 | 256 |
+| 1 つの文字列の UTF-8 バイト数 | 65,536（64 KiB） |
+| モデル中の文字列の合計 UTF-8 バイト数 | 1,048,576（1 MiB） |
+| 直列化した 1 つの JSON 文書のバイト数 | 67,108,864（64 MiB） |
+
+合計バイト数の対象は、モデルを記述する文字列です。パラメータ名、値、エイリアス、クラス名、制約式、サブモデルのパラメータ名が含まれます。パラメータ数の上限は、制約の充足可能性探索を有限に保つためのものです。探索は 1 階層につき 1 パラメータを進むため、探索の深さを抑えるものはパラメータ数のほかにありません。
+
+最後の行は、実行ファイルへ渡る各文書に掛かります。標準入力へ書き込む文書と、入力を 2 つ取る呼び出しがもう一方のために書き出す一時ファイルの両方です。これは API が受け付ける入力の条件ではなくメモリ保護であり、上記の上限を満たすモデルに必要な大きさより十分に大きく取ってあります。したがって実際のモデルは先に上記のいずれかへ到達し、超えた上限そのものを理由に拒否されます。
 
 ## エラー
 
@@ -141,9 +161,24 @@ except coverwise.CoverwiseError as error:
     error.code       # "CONSTRAINT_ERROR"
     error.exit_code  # 1 (CLI の終了コード契約と同じ)
     error.stderr     # CLI の診断出力そのまま
+    error.report     # 失敗前に CLI が書き出した JSON レポート、なければ None
 ```
 
-`code` は JavaScript API と同じ語彙 (`CONSTRAINT_ERROR`、`INVALID_INPUT`) です。カバレッジ不足はエラーではありません。上の `generate` を参照してください。
+`code` は `CONSTRAINT_ERROR` か `INVALID_INPUT` のどちらかで、`exit_code` は必ず [CLI リファレンス](cli.md) が定める終了コードのいずれかになります。JavaScript API にはもう 1 つ `TUPLE_EXPLOSION` という分類がありますが、CLI はそれを `INVALID_INPUT` にまとめており、このパッケージは CLI が報告したとおりを報告します。カバレッジ不足はエラーではありません。上の `generate` を参照してください。
+
+失敗の内容がメッセージではなくレポートに書かれている場合もあります。`analyze` はスイートを測定してから、不正な行を含むことを理由に拒否するため、その行を指し示すレポートは例外に残ります。
+
+```python
+try:
+    coverwise.analyze_coverage(PARAMS, tests, constraints=CONSTRAINTS)
+except coverwise.CoverwiseError as error:
+    for invalid in error.report["invalidTests"]:
+        print(invalid["testIndex"], invalid["reason"])  # 1 violates constraint #1 ...
+```
+
+CLI が何も書き出す前に失敗した場合、`report` は `None` になります。解析できないモデルや制約がこれにあたります。
+
+native 実行ファイルのクラッシュはモデルのエラーではないため、`CoverwiseError` にはなりません。シグナル名または終了ステータスを示す素の `RuntimeError` が送出されるので、segfault が入力エラーとして提示されることはありません。
 
 ## Command-line interface
 
@@ -167,4 +202,10 @@ result = coverwise.run(["generate", "input.json"], text=True, capture_output=Tru
 print(result.stdout)
 ```
 
+`coverwise.run()` は keyword 引数をそのまま `subprocess.run` に渡すため、キャプチャした出力が text と bytes のどちらになるかを決めるのは `subprocess.run` です。`stdout` が `str` になるのは `text=True` を渡した形だけです。
+
 `COVERWISE_BINARY` を設定すると、どちらも別の実行ファイルを指します。ローカルビルドした CLI で開発するための仕組みで、インストール済み wheel では不要です。
+
+## 型検査
+
+パッケージは注釈をインラインで同梱し、PEP 561 のマーカーも持ちます。そのため mypy や pyright は、stub パッケージを追加せずに実際のシグネチャで呼び出しを検査します。

@@ -38,19 +38,22 @@ std::vector<Parameter> MakeUniformParams(uint32_t count, uint32_t values_per_par
 
 /// @brief Validate all properties of a benchmark generation result.
 ///
-/// Checks coverage completeness, test count bounds, structural validity,
+/// Checks coverage completeness, the exact test count, structural validity,
 /// duplicate absence, and cross-validates with the independent coverage validator.
+///
+/// The suite size is pinned rather than bounded because these configurations are
+/// the ones the README and the introduction publish, and a published count that
+/// no longer matches the shipping engine is a defect in its own right.
 void ValidateBenchmarkResult(const GenerateOptions& opts, const GenerateResult& result,
-                             uint32_t expected_tuples, uint32_t min_tests, uint32_t max_tests) {
+                             uint32_t expected_tuples, uint32_t expected_tests) {
   // 1. Coverage completeness via generator stats
   EXPECT_DOUBLE_EQ(result.coverage, 1.0);
   EXPECT_TRUE(result.uncovered.empty());
   EXPECT_EQ(result.stats.total_tuples, expected_tuples);
   EXPECT_EQ(result.stats.covered_tuples, expected_tuples);
 
-  // 2. Test count bounds
-  EXPECT_GE(result.tests.size(), min_tests) << "Too few tests: expected at least " << min_tests;
-  EXPECT_LE(result.tests.size(), max_tests) << "Too many tests: expected at most " << max_tests;
+  // 2. Exact suite size for seed 42
+  EXPECT_EQ(result.tests.size(), expected_tests);
 
   // 3. Structural validity: every test case has all params, values in range
   for (size_t ti = 0; ti < result.tests.size(); ++ti) {
@@ -89,7 +92,7 @@ TEST(BenchmarkTest, Uniform_5x3) {
 
   auto result = Generate(opts);
   // C(5,2) * 3^2 = 10 * 9 = 90
-  ValidateBenchmarkResult(opts, result, 90, 9, 18);
+  ValidateBenchmarkResult(opts, result, 90, 15);
 }
 
 TEST(BenchmarkTest, Uniform_10x3) {
@@ -100,7 +103,7 @@ TEST(BenchmarkTest, Uniform_10x3) {
 
   auto result = Generate(opts);
   // C(10,2) * 3^2 = 45 * 9 = 405
-  ValidateBenchmarkResult(opts, result, 405, 9, 25);
+  ValidateBenchmarkResult(opts, result, 405, 21);
 }
 
 TEST(BenchmarkTest, Uniform_13x3) {
@@ -111,7 +114,7 @@ TEST(BenchmarkTest, Uniform_13x3) {
 
   auto result = Generate(opts);
   // C(13,2) * 3^2 = 78 * 9 = 702
-  ValidateBenchmarkResult(opts, result, 702, 9, 30);
+  ValidateBenchmarkResult(opts, result, 702, 22);
 }
 
 TEST(BenchmarkTest, Uniform_10x5) {
@@ -122,7 +125,7 @@ TEST(BenchmarkTest, Uniform_10x5) {
 
   auto result = Generate(opts);
   // C(10,2) * 5^2 = 45 * 25 = 1125
-  ValidateBenchmarkResult(opts, result, 1125, 25, 55);
+  ValidateBenchmarkResult(opts, result, 1125, 52);
 }
 
 TEST(BenchmarkTest, Uniform_20x2) {
@@ -133,7 +136,7 @@ TEST(BenchmarkTest, Uniform_20x2) {
 
   auto result = Generate(opts);
   // C(20,2) * 2^2 = 190 * 4 = 760
-  ValidateBenchmarkResult(opts, result, 760, 4, 13);
+  ValidateBenchmarkResult(opts, result, 760, 13);
 }
 
 TEST(BenchmarkTest, Uniform_15x4) {
@@ -144,7 +147,7 @@ TEST(BenchmarkTest, Uniform_15x4) {
 
   auto result = Generate(opts);
   // C(15,2) * 4^2 = 105 * 16 = 1680
-  ValidateBenchmarkResult(opts, result, 1680, 16, 44);
+  ValidateBenchmarkResult(opts, result, 1680, 41);
 }
 
 // --- Mixed parameter benchmarks ---
@@ -165,7 +168,7 @@ TEST(BenchmarkTest, Mixed_3pow4_2pow3) {
   auto result = Generate(opts);
   // C(4,2)*3*3 + C(3,2)*2*2 + 4*3*3*2 = 6*9 + 3*4 + 12*6 = 54 + 12 + 72 = 138
   // (pairs within 3-val group) + (pairs within 2-val group) + (cross-group pairs)
-  ValidateBenchmarkResult(opts, result, 138, 9, 25);
+  ValidateBenchmarkResult(opts, result, 138, 15);
 }
 
 TEST(BenchmarkTest, Mixed_5_333_2222) {
@@ -189,7 +192,7 @@ TEST(BenchmarkTest, Mixed_5_333_2222) {
   //        3-3: C(3,2)=3 pairs * 3*3=9 each = 27, 3-2: 3*4=12 pairs * 3*2=6 each = 72,
   //        2-2: C(4,2)=6 pairs * 2*2=4 each = 24
   // Total: 45 + 40 + 27 + 72 + 24 = 208
-  ValidateBenchmarkResult(opts, result, 208, 15, 50);
+  ValidateBenchmarkResult(opts, result, 208, 22);
 }
 
 // --- Coverage monotonicity test ---

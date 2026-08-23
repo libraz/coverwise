@@ -4,8 +4,9 @@
 
 The `coverwise` PyPI package ships the native command-line tool plus a thin
 Python API that drives it. There is no separate Python implementation of the
-generator, so results, JSON shapes, and error categories match the C++ CLI and
-the JavaScript API exactly.
+generator, so results and JSON shapes match the C++ CLI and the JavaScript API
+exactly. Error categories follow the CLI's exit-code contract, which is slightly
+coarser than the JavaScript one — see [Errors](#errors).
 
 ```bash
 pip install coverwise
@@ -58,6 +59,10 @@ coverwise.generate(
     ]
 )
 ```
+
+A mapping entry always holds a list, even for one value: `{"env": "prod"}` is
+rejected with a `TypeError` rather than read as the four values `p`, `r`, `o`,
+`d`. Write `{"env": ["prod"]}`.
 
 Model fields can be passed as keyword arguments, as a single mapping, or both —
 keyword arguments override the mapping, which makes a stored model easy to reuse:
@@ -147,14 +152,43 @@ def test_login(os, browser, locale):
 The full cross-product above is 18 cases; the pairwise suite covers every pair
 in far fewer, and each case gets a readable id (`os=macOS-browser=Chrome-locale=ja`).
 
-Parameter names become test arguments, so they must be valid Python identifiers.
-Any further model field (`strength`, `seed`, `maxTests`, `weights`, `subModels`)
+Parameter names become test arguments, so they must be valid Python identifiers
+and must not be Python keywords; a name that cannot be one raises a `ValueError`
+before pytest collects anything. Any further model field (`strength`, `seed`, `maxTests`, `weights`, `subModels`)
 is passed through. Values marked `"invalid": true` are excluded unless
 `include_negative=True` is given, which also runs the generated negative tests.
 
 pytest is not a dependency of this package; the decorator only needs it in the
 environment where tests run. `pip install coverwise[pytest]` installs both when
 that environment is the same one.
+
+## Input limits
+
+The API serializes a model to JSON and hands it to the native executable, so the
+limits are the CLI's limits. Exceeding one raises `CoverwiseError` with
+`code == "INVALID_INPUT"` and `exit_code == 3`:
+
+| Limit | Value |
+|-------|-------|
+| Parameters per model | 1,024 |
+| Values per parameter | 16,384 |
+| Rows in `tests`, `seeds`, or `existing` | 100,000 |
+| Constraint expressions | 256 |
+| UTF-8 bytes in one string | 65,536 (64 KiB) |
+| UTF-8 bytes in a model's strings, combined | 1,048,576 (1 MiB) |
+| Bytes of one serialized JSON document | 67,108,864 (64 MiB) |
+
+The combined-bytes budget covers the strings that describe the model —
+parameter names, values, aliases, class names, constraint expressions and
+sub-model parameter names. The parameter count is what keeps constraint
+feasibility search bounded: the search walks one parameter per level, so nothing
+else limits how deep it can go.
+
+The last row bounds each document that reaches the executable — the one written
+to its standard input, and the temporary file a two-input call writes for the
+other. It is a memory guard rather than part of what the API accepts: it is sized
+well above what a model meeting the limits above needs, so a real model reaches
+one of those limits first and is rejected by the limit it actually exceeded.
 
 ## Errors
 
@@ -167,10 +201,33 @@ except coverwise.CoverwiseError as error:
     error.code       # "CONSTRAINT_ERROR"
     error.exit_code  # 1, matching the CLI exit-code contract
     error.stderr     # the CLI's full diagnostic output
+    error.report     # the JSON report the CLI wrote before failing, or None
 ```
 
-`code` uses the same vocabulary as the JavaScript API (`CONSTRAINT_ERROR`,
-`INVALID_INPUT`). Insufficient coverage is not an error — see `generate` above.
+`code` is `CONSTRAINT_ERROR` or `INVALID_INPUT`, and `exit_code` is always one of
+the codes the [CLI reference](cli.md) documents. The JavaScript API reports one
+further category, `TUPLE_EXPLOSION`; the CLI folds it into `INVALID_INPUT`, and
+this package reports what the CLI reports. Insufficient coverage is not an error
+— see `generate` above.
+
+Some failures are diagnosed by a report rather than by a message. `analyze`
+measures a suite and only then rejects it for containing invalid rows, so the
+report naming those rows survives on the exception:
+
+```python
+try:
+    coverwise.analyze_coverage(PARAMS, tests, constraints=CONSTRAINTS)
+except coverwise.CoverwiseError as error:
+    for invalid in error.report["invalidTests"]:
+        print(invalid["testIndex"], invalid["reason"])  # 1 violates constraint #1 ...
+```
+
+`report` is `None` when the CLI failed before writing anything, which is the case
+for an unparsable model or constraint.
+
+A crash of the native executable is not a model error and does not raise
+`CoverwiseError`: it raises a plain `RuntimeError` naming the signal or exit
+status, so a segfault is never presented as an invalid input.
 
 ## Command-line interface
 
@@ -197,5 +254,14 @@ result = coverwise.run(["generate", "input.json"], text=True, capture_output=Tru
 print(result.stdout)
 ```
 
+`coverwise.run()` passes keyword arguments straight to `subprocess.run`, so it is
+`subprocess.run` that decides whether the captured output is text or bytes:
+`text=True` is the form whose `stdout` is a `str`.
+
 Setting `COVERWISE_BINARY` points both at a different executable. It exists for
 developing against a locally built CLI; an installed wheel never needs it.
+
+## Type checking
+
+The package is annotated inline and ships a PEP 561 marker, so mypy and pyright
+check calls against the real signatures with no stub package to install.

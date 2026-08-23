@@ -64,11 +64,11 @@ Only `parameters` is required. All other fields are optional.
     { "os": "Linux", "browser": "Chrome" },
     { "os": "macOS", "browser": "Firefox" }
   ],
-  "negativeTests": [],
-  "coverage": 1.0,
-  "uncovered": [],
   "uncoveredCount": 0,
   "omittedUncovered": 0,
+  "negativeTests": [],
+  "coverage": 1,
+  "uncovered": [],
   "stats": {
     "totalTuples": 8,
     "coveredTuples": 8,
@@ -80,10 +80,13 @@ Only `parameters` is required. All other fields are optional.
 }
 ```
 
-This is the exact result of the shown input with the bundled generator. The
+This is the exact result of the shown input with the bundled generator, wrapped
+across lines for readability — the CLI writes each output as a single line. The
 constraint makes `os=Windows, browser=Safari` infeasible, leaving eight
-requested-strength pairs. Output ordering is deterministic for a fixed input
-and seed, but should not be used as a cross-version ordering contract.
+requested-strength pairs. `coverage` is a JSON number in shortest round-trip
+form, so full coverage arrives as `1` rather than `1.0`. Output ordering is
+deterministic for a fixed input and seed, but should not be used as a
+cross-version ordering contract.
 
 Values marked `"invalid": true` are excluded from positive coverage and are
 handled as separate negative tests. When invalid values are present, output also
@@ -102,10 +105,53 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
 
 - `--params` — JSON file with parameter definitions
 - `--tests` — JSON file with test cases
-- `--strength` — Interaction strength (default: 2)
-- `--constraints` — JSON file with constraint strings (optional). A tuple is excluded from the coverage universe only when it has no completion to a full assignment of valid values satisfying all constraints. Thus a fully covered constrained suite reports 100% without treating a merely partial constraint evaluation as a violation.
+- `--strength` — Interaction strength (default: the `strength` of the `--params` model, otherwise 2)
+- `--constraints` — JSON file with constraint strings (optional), replacing the constraints the `--params` model declares. A tuple is excluded from the coverage universe only when it has no completion to a full assignment of valid values satisfying all constraints. Thus a fully covered constrained suite reports 100% without treating a merely partial constraint evaluation as a violation.
 
 `--tests` and `--existing` accept either a bare test array or the schema-v1 envelope emitted by `generate`, so `coverwise generate input.json > tests.json` can be passed to the downstream commands unchanged.
+
+**Where the strength comes from.** When `--params` is a model object rather than a bare parameter
+array, its `strength` field defines the coverage universe and is used for the measurement, so the
+same model can be piped through `generate` and then `analyze` without restating it. An explicit
+`--strength` wins over the model's, because it is an analysis knob chosen for the run rather than a
+property of the model. Neither present means pairwise.
+
+A model that declares `subModels` is rejected with exit code `3`. Sub-models give parts of a model
+their own strength, which a coverage report cannot express: it measures one universe at one
+strength. Analyze each group separately, naming its strength with `--strength`.
+
+**What `--constraints` does to the model's constraints.** An explicit `--constraints` file
+*replaces* the constraints declared in `--params`; the two are never merged, so the file always
+describes the complete constraint set the measurement uses. The file is either a bare array of
+expressions or an object with a `constraints` array. Any other top-level document is rejected with
+exit code `3` — including the bare `null` that `jq '.constraints'` writes for a model that has none.
+Reading such a document as "no constraints" would measure an unconstrained universe and report a
+coverage shortfall with no error output to explain it.
+
+**`--params` file:**
+
+```json
+{
+  "parameters": [
+    { "name": "os", "values": ["Windows", "macOS", "Linux"] },
+    { "name": "browser", "values": ["Chrome", "Firefox", "Safari"] }
+  ]
+}
+```
+
+**`--tests` file:**
+
+```json
+[
+  { "os": "Windows", "browser": "Chrome" },
+  { "os": "Windows", "browser": "Firefox" },
+  { "os": "macOS", "browser": "Firefox" },
+  { "os": "macOS", "browser": "Safari" },
+  { "os": "Linux", "browser": "Chrome" },
+  { "os": "Linux", "browser": "Firefox" },
+  { "os": "Linux", "browser": "Safari" }
+]
+```
 
 **Output:**
 
@@ -114,7 +160,7 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
   "schemaVersion": 1,
   "totalTuples": 9,
   "coveredTuples": 7,
-  "coverageRatio": 0.778,
+  "coverageRatio": 0.7777777777777778,
   "uncovered": [
     {
       "tuple": ["os=Windows", "browser=Safari"],
@@ -122,6 +168,13 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
       "indices": [[0, 0], [1, 2]],
       "reason": "never covered",
       "display": "os=Windows, browser=Safari"
+    },
+    {
+      "tuple": ["os=macOS", "browser=Chrome"],
+      "params": ["os", "browser"],
+      "indices": [[0, 1], [1, 0]],
+      "reason": "never covered",
+      "display": "os=macOS, browser=Chrome"
     }
   ],
   "uncoveredCount": 2,
@@ -129,6 +182,13 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
   "invalidTests": []
 }
 ```
+
+Seven of the nine pairs appear in the suite, so `analyze` exits with code `2`.
+`uncoveredCount` counts every uncovered tuple, while the `uncovered` array stops
+at a fixed diagnostic cap and `omittedUncovered` reports how many were left out;
+the array therefore always holds exactly `uncoveredCount - omittedUncovered`
+entries. `coverageRatio` is written in shortest round-trip form rather than
+rounded for display.
 
 ### `extend`
 
@@ -151,6 +211,22 @@ Preview model statistics without running generation.
 coverwise stats <input.json>
 ```
 
+**Input:**
+
+```json
+{
+  "parameters": [
+    { "name": "os", "values": ["Windows", "macOS", "Linux"] },
+    { "name": "browser", "values": ["Chrome", "Firefox", "Safari"] },
+    { "name": "theme", "values": ["light", "dark"] }
+  ],
+  "strength": 2,
+  "constraints": [
+    "IF os = Windows THEN browser != Safari"
+  ]
+}
+```
+
 **Output:**
 
 ```json
@@ -159,8 +235,8 @@ coverwise stats <input.json>
   "parameterCount": 3,
   "totalValues": 8,
   "strength": 2,
-  "totalTuples": 29,
-  "estimatedTests": 10,
+  "totalTuples": 21,
+  "estimatedTests": 18,
   "subModelCount": 0,
   "constraintCount": 1,
   "parameters": [
@@ -170,6 +246,11 @@ coverwise stats <input.json>
   ]
 }
 ```
+
+`totalTuples` counts the pairs before constraint exclusion: 3·3 + 3·2 + 3·2.
+`estimatedTests` is a conservative upper bound derived from the largest value
+count and the strength, not a prediction — running `generate` on this model
+produces fewer test cases.
 
 ## Exit Codes
 
@@ -192,13 +273,44 @@ Values can be simple strings or objects:
       "values": [
         "Chrome",
         { "value": "IE", "invalid": true },
-        { "value": "Chromium", "aliases": ["Chrome", "Edge"] },
+        { "value": "Chromium", "aliases": ["chromium-browser", "cr"] },
         { "value": "Firefox", "class": "gecko" }
       ]
     }
   ]
 }
 ```
+
+Within one parameter, every value and every alias must resolve to a distinct
+name once ASCII case is folded. Listing `Chrome` as both a value and an alias of
+`Chromium` — or listing `chrome` alongside `Chrome` — is rejected with exit code
+`3`, because case-insensitive lookup would have no single answer. The same rule
+applies across parameter names.
+
+## Input Limits
+
+Every command applies the same limits to what it reads, and exceeding any of them is exit code `3`:
+
+| Limit | Value |
+|-------|-------|
+| Parameters per model | 1,024 |
+| Values per parameter | 16,384 |
+| Rows in a `tests`, `seeds`, or `existing` array | 100,000 |
+| Constraint expressions | 256 |
+| UTF-8 bytes in one string | 65,536 (64 KiB) |
+| UTF-8 bytes in a model's strings, combined | 1,048,576 (1 MiB) |
+| Bytes of one JSON document read from a file or standard input | 67,108,864 (64 MiB) |
+
+The combined-bytes budget covers the strings that describe the model — parameter names, values,
+aliases, class names, constraint expressions and sub-model parameter names.
+
+The parameter count is what keeps constraint feasibility search bounded: the search walks one
+parameter per level, so nothing else limits how deep it can go.
+
+The document bound is a memory guard on reading a file or draining standard input, not part of what
+the CLI accepts. It is sized well above what a document meeting the limits above needs, so a real
+input reaches one of those limits first and is rejected by the limit it actually exceeded; the
+document bound stops a runaway or truncated stream from being read into memory without end.
 
 ## Piping
 

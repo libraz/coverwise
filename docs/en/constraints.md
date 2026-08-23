@@ -19,7 +19,32 @@ const cw = await Coverwise.create();
 IF os = Windows THEN browser != Safari
 ```
 
-Parameter names and values are **case-insensitive** for matching.
+Parameter names and values are **case-insensitive** for matching. Resolution
+folds ASCII case, so a model may not contain two parameter names that differ only
+by case, nor two values or aliases of one parameter that differ only by case:
+`os = WINDOWS` would then have no single answer. Such a model is rejected as
+invalid input before generation starts.
+
+### Quoted Values
+
+A bare token may contain ASCII letters and digits, `_`, `-`, `.`, and any
+non-ASCII character. A value built from anything else — a space, `+`, `%`, `@`,
+`/`, `(`, `)` — must be written as a quoted string, in double or single quotes:
+
+```
+IF os = macOS THEN filesystem = "HFS+"
+IF language = "C++" THEN build_system != 'make (BSD)'
+IF release = "1.0 (beta)" THEN channel = preview
+```
+
+Inside a quoted string, `\"` escapes the quote character and `\\` escapes a
+backslash. A quoted token is always a literal value: it is never read as a
+keyword and never as a parameter name, so a value spelled `AND`, or one that
+collides with a parameter name, is unambiguous once quoted.
+
+The JavaScript builder quotes on your behalf — `when('filesystem').eq('HFS+')`
+emits `filesystem = "HFS+"` — so quoting is a concern only for hand-written
+constraint strings.
 
 ### IF / THEN / ELSE
 
@@ -30,6 +55,18 @@ IF os = macOS THEN browser = Safari ELSE browser != Safari
 
 `ELSE` is optional.
 
+### IMPLIES
+
+`A IMPLIES B` states the same rule as `IF A THEN B`:
+
+```
+os = Linux IMPLIES arch != arm32
+```
+
+`IMPLIES` binds more loosely than every other operator, and an expression holds
+at most one of them; write `IF` / `THEN` with parentheses for anything more
+deeply nested.
+
 ### Logical Operators
 
 ```
@@ -38,7 +75,7 @@ IF os = macOS OR os = iOS THEN browser = Safari
 IF NOT os = Linux THEN arch = x64 OR arch = arm64
 ```
 
-Precedence: `NOT` > `AND` > `OR`. Use parentheses to override:
+Precedence: `NOT` > `AND` > `OR` > `IMPLIES`. Use parentheses to override:
 
 ```
 IF (os = Windows OR os = Linux) AND device = desktop THEN browser != Safari
@@ -73,9 +110,14 @@ Pattern matching with wildcards:
 ```
 IF browser LIKE Chrome* THEN engine = blink
 IF version LIKE *.0.0 THEN is_major = true
+IF code LIKE v?.0 THEN generation = first
 ```
 
-`*` matches any sequence of characters.
+`*` matches any sequence of characters, including the empty sequence; `?` matches
+exactly one character. Both count Unicode codepoints rather than bytes, and both
+keep their wildcard meaning inside a quoted pattern — there is no escape for a
+literal `*` or `?`, so a value that really contains one has to be compared with
+`=` instead. A pattern with no wildcard is an ordinary equality test.
 
 ### Parameter Comparison
 
@@ -85,6 +127,27 @@ Compare two parameters directly:
 IF source = target THEN mode = copy
 IF input_format != output_format THEN convert = true
 ```
+
+## Keyword and Wildcard Reference
+
+| Keyword | Role |
+|---------|------|
+| `IF` | Opens a conditional constraint. |
+| `THEN` | Introduces the consequence of an `IF`. |
+| `ELSE` | Optional alternative branch of an `IF`. |
+| `IMPLIES` | Infix form of `IF ... THEN ...`. |
+| `AND` | Conjunction. |
+| `OR` | Disjunction. |
+| `NOT` | Negation. |
+| `IN` | Membership in a set literal. |
+| `LIKE` | Glob pattern match. |
+
+Keywords are case-insensitive; quote a value that is spelled like one.
+
+| Wildcard | Matches |
+|----------|---------|
+| `*` | Any sequence of characters, including the empty sequence. |
+| `?` | Exactly one character. |
 
 ## Combining Constraints
 
@@ -103,18 +166,16 @@ cw.generate({
 
 ## Unconditional Constraints
 
-Omit `IF` for constraints that always apply:
+Omit `IF` for constraints that always apply. The expression itself is the rule,
+and every generated test case must satisfy it:
 
 ```
 browser != IE
 os = Windows OR os = macOS
 ```
 
-These are equivalent to:
-
-```
-IF true THEN browser != IE
-```
+The grammar has no boolean literal, so an always-true antecedent cannot be
+spelled out — drop the `IF` clause instead of writing one.
 
 ## Complex Examples
 
@@ -129,7 +190,7 @@ IF browser = Safari THEN os = macOS OR os = iOS
 
 ```
 IF os = Windows THEN filesystem IN {NTFS, FAT32}
-IF os = macOS THEN filesystem IN {APFS, HFS+}
+IF os = macOS THEN filesystem IN {APFS, "HFS+"}
 IF os = Linux THEN filesystem IN {ext4, btrfs, xfs}
 ```
 
@@ -154,11 +215,14 @@ If constraints are contradictory (no valid combination exists), generation retur
 
 Build constraints programmatically with the fluent API. Builder objects produce valid constraint strings via `toString()`.
 
+String operands are always emitted quoted, so any value is safe to pass through
+the builder without escaping it yourself.
+
 ### Basic Comparisons
 
 ```typescript
-when('os').eq('Windows')           // os = Windows
-when('browser').ne('Safari')       // browser != Safari
+when('os').eq('Windows')           // os = "Windows"
+when('browser').ne('Safari')       // browser != "Safari"
 when('version').gt(3)              // version > 3
 when('version').gte(10)            // version >= 10
 when('priority').lt(5)             // priority < 5
@@ -170,6 +234,7 @@ when('priority').lte(1)            // priority <= 1
 ```typescript
 when('env').in('staging', 'prod')  // env IN {staging, prod}
 when('browser').like('chrome*')    // browser LIKE chrome*
+when('code').like('v?.0')          // code LIKE v?.0
 ```
 
 ### Parameter-to-Parameter
@@ -178,34 +243,65 @@ when('browser').like('chrome*')    // browser LIKE chrome*
 when('start_date').lt('end_date')  // start_date < end_date
 ```
 
-### IF / THEN / ELSE
+### IF / THEN / ELSE and IMPLIES
 
 ```typescript
 when('os').eq('Windows')
   .then(when('browser').ne('Safari'))
-// IF os = Windows THEN browser != Safari
+// IF os = "Windows" THEN browser != "Safari"
 
 when('os').eq('mac')
   .then(when('browser').ne('ie'))
   .else(when('arch').ne('arm'))
-// IF os = mac THEN browser != ie ELSE arch != arm
+// IF os = "mac" THEN browser != "ie" ELSE arch != "arm"
+
+when('os').eq('linux')
+  .implies(when('arch').ne('arm'))
+// os = "linux" IMPLIES arch != "arm"
 ```
+
+`else()` is available only on the result of `then()`, because the grammar gives
+no reading to a second `ELSE`.
 
 ### Logical Composition
 
 ```typescript
 // AND
 allOf(when('os').eq('win'), when('arch').eq('x64'))
-// os = win AND arch = x64
+when('os').eq('win').and(when('arch').eq('x64'))
+// os = "win" AND arch = "x64"
 
 // OR
 anyOf(when('os').eq('win'), when('os').eq('linux'))
-// os = win OR os = linux
+when('os').eq('win').or(when('os').eq('linux'))
+// os = "win" OR os = "linux"
 
 // NOT
 not(allOf(when('os').eq('win'), when('browser').eq('safari')))
-// NOT (os = win AND browser = safari)
+// NOT (os = "win" AND browser = "safari")
 ```
+
+`allOf()` and `anyOf()` fold any number of conditions with `and()` and `or()`
+respectively, and reject an empty argument list.
+
+### Method Reference
+
+| Method | Emits |
+|--------|-------|
+| `eq(value)` | `param = "value"` |
+| `ne(value)` | `param != "value"` |
+| `gt(n)` | `param > n` |
+| `gte(n)` | `param >= n` |
+| `lt(n)` | `param < n` |
+| `lte(n)` | `param <= n` |
+| `in(...values)` | `param IN {…}` |
+| `like(pattern)` | `param LIKE pattern` |
+| `and(other)` | `… AND …` |
+| `or(other)` | `… OR …` |
+| `then(consequence)` | `IF … THEN …` |
+| `implies(consequence)` | `… IMPLIES …` |
+| `else(alternative)` | `… ELSE …`, available only after `then()` |
+| `toString()` | The constraint string to pass to `generate()`. |
 
 ### Using with generate()
 

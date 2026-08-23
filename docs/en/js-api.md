@@ -90,11 +90,15 @@ interface ParameterValue {
   values: [
     'Chrome',
     { value: 'IE', invalid: true },
-    { value: 'Chromium', aliases: ['Chrome', 'Edge'] },
+    { value: 'Chromium', aliases: ['chromium-browser', 'cr'] },
     { value: 'Firefox', class: 'gecko' },
   ],
 }
 ```
+
+Within one parameter, every value and every alias must resolve to a distinct name
+once ASCII case is folded, so `Chrome` cannot be both a value and an alias of
+`Chromium`, and `chrome` cannot sit alongside `Chrome`.
 
 **Numeric and boolean values:**
 
@@ -332,6 +336,8 @@ The Pure TypeScript API validates inputs and throws descriptive errors for:
 - `seed`: Must be a uint32 integer in `[0, 4294967295]`.
 - `maxTests`: Must be a uint32 integer in `[0, 4294967295]`; `0` means no limit.
 - `parameters`: Must be a non-empty array.
+- Parameter names: Must be unique, and must stay unique once ASCII case is folded — `os` and `OS` cannot coexist.
+- Values and aliases: Within one parameter, the values and all of their aliases must remain distinct once ASCII case is folded. Both rules exist because value lookup is case-insensitive, so a case-only difference would leave `os = WINDOWS` without a single answer.
 - Resource limits apply to public input: at most 1,024 parameters, 16,384 values per parameter, 100,000 test rows, 256 constraints, 64 KiB per string, and 1 MiB of aggregate string data.
 
 The WASM API performs equivalent validation at the C++ boundary.

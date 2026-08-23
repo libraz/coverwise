@@ -167,8 +167,12 @@ Error ValidateParameters(const std::vector<Parameter>& parameters);
 
 `invalid`、エイリアス、同値クラスのベクタは値ごとのメタデータです。存在する場合は
 `values` と同じ長さでなければなりません。`find_value_index` はエイリアスも検索します。
-`ValidateParameters` は空または重複したパラメータ名、値を持たないパラメータ、同一
-パラメータ内の重複値、不正なメタデータを拒否します。
+`ValidateParameters` は空または重複したパラメータ名、ASCII の大小文字だけが異なる
+パラメータ名、値を持たないパラメータ、同一パラメータ内の重複値、ASCII の大小文字を
+畳み込むと曖昧になる値・エイリアス、不正なメタデータを拒否します。大小文字に関する
+2 つの規則は、大文字小文字を区別しない解決に由来します。`case_sensitive = false`
+での `find_value_index` と制約パーサーは、いずれもある名前に対して一意の答えを
+返せなければなりません。
 
 ### `model::BoundaryConfig`
 

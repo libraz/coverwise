@@ -169,8 +169,12 @@ Error ValidateParameters(const std::vector<Parameter>& parameters);
 The `invalid`, alias, and equivalence-class vectors are per-value metadata:
 when present, each must have the same length as `values`. `find_value_index`
 also searches aliases. `ValidateParameters` rejects empty or duplicate parameter
-names, parameters with no values, duplicate values within a parameter, and
-malformed metadata.
+names, parameter names that differ only by ASCII case, parameters with no values,
+duplicate values within a parameter, values or aliases of one parameter that are
+ambiguous once ASCII case is folded, and malformed metadata. The two case-folding
+rules follow from case-insensitive lookup: `find_value_index` with
+`case_sensitive = false` and the constraint parser must each have a single answer
+for a given name.
 
 ### `model::BoundaryConfig`
 
