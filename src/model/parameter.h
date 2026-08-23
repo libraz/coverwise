@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "model/error.h"
+#include "model/limits.h"
 
 namespace coverwise {
 namespace model {
@@ -127,9 +128,10 @@ inline bool HasInvalidValues(const std::vector<Parameter>& params) {
 /// Catches input that would otherwise corrupt coverage accounting or silently
 /// drop data: an empty parameter name, a parameter with no values, a value that
 /// repeats within a single parameter (inflates the tuple denominator and is
-/// never coverable past its first occurrence), or two parameters sharing a name
-/// (their output-map keys collide). The messages are kept byte-identical to the
-/// TypeScript validator so every surface reports the same text.
+/// never coverable past its first occurrence), two parameters sharing a name
+/// (their output-map keys collide), or more parameters than kMaxParameters. The
+/// messages are kept byte-identical to the TypeScript validator so every
+/// surface reports the same text.
 ///
 /// @return An Error with code kInvalidInput on the first violation, or an ok
 ///         Error when the collection is well-formed.

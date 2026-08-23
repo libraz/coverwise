@@ -2,10 +2,17 @@
 
 import { isNumeric } from '../util/string_util.js';
 import type { BoundaryConfig } from './boundary.js';
-import { BoundaryType } from './boundary.js';
+import { BoundaryType, expandBoundaryValues } from './boundary.js';
 import { ErrorCode, type ErrorInfo, okError } from './error.js';
+import {
+  MAX_AGGREGATE_STRING_BYTES,
+  MAX_CONSTRAINTS,
+  MAX_STRING_BYTES,
+  MAX_TESTS,
+} from './limits.js';
 import { Parameter, validateParameters } from './parameter.js';
 import type { TestCase } from './test-case.js';
+import { utf8ByteLength } from './utf8.js';
 
 /**
  * A sub-model: a subset of parameters with a specific coverage strength.
@@ -91,112 +98,136 @@ export function createGenerateOptions(params?: Partial<GenerateOptions>): Genera
     seeds: params?.seeds ?? [],
     subModels: params?.subModels ?? [],
     weights: params?.weights ?? createWeightConfig(),
-    boundaryConfigs: params?.boundaryConfigs ?? {},
+    boundaryConfigs:
+      params?.boundaryConfigs ?? (Object.create(null) as Record<string, BoundaryConfig>),
   };
+}
+
+/**
+ * Look up a parameter's boundary config as an own property.
+ *
+ * `boundaryConfigs` may be a caller-supplied plain object, so a bare index would
+ * resolve inherited `Object.prototype` members and mistake a parameter named
+ * `constructor` / `toString` / `valueOf` for a boundary parameter.
+ */
+export function getBoundaryConfig(
+  options: GenerateOptions,
+  paramName: string,
+): BoundaryConfig | undefined {
+  return Object.hasOwn(options.boundaryConfigs, paramName)
+    ? options.boundaryConfigs[paramName]
+    : undefined;
+}
+
+/** Whether any parameter opts into boundary expansion. */
+export function hasBoundaryConfigs(options: GenerateOptions): boolean {
+  return Object.keys(options.boundaryConfigs).length > 0;
 }
 
 function invalid(message: string, detail = ''): ErrorInfo {
   return { code: ErrorCode.InvalidInput, message, detail };
 }
 
-/** Validate generation options before expansion or resource allocation. */
-export function validateGenerateOptions(options: GenerateOptions): ErrorInfo {
-  const params = options.parameters.map((input) => {
-    const param = input.invalid
-      ? new Parameter(input.name, input.values, input.invalid)
-      : new Parameter(input.name, input.values);
-    if (input.aliases) {
-      param.setAliases(input.aliases);
+/**
+ * Charge every string in the model against the documented byte budgets.
+ *
+ * Both the per-string and the aggregate bound are documented input limits, so
+ * they belong to the acceptance contract rather than to any one surface's
+ * reader. Mirrors validateStringBudget in the C++ model layer.
+ */
+function validateStringBudget(options: GenerateOptions, params: Parameter[]): ErrorInfo {
+  let aggregate = 0;
+  const account = (value: string, context: string): ErrorInfo => {
+    const bytes = utf8ByteLength(value);
+    if (bytes > MAX_STRING_BYTES) {
+      return invalid(`${context} exceeds ${MAX_STRING_BYTES} UTF-8 bytes`);
     }
-    if (input.equivalenceClasses) {
-      param.setEquivalenceClasses(input.equivalenceClasses);
+    aggregate += bytes;
+    if (aggregate > MAX_AGGREGATE_STRING_BYTES) {
+      return invalid(`Input strings exceed ${MAX_AGGREGATE_STRING_BYTES} UTF-8 bytes`);
     }
-    return param;
-  });
-  const validationParams = params.map((param) => {
-    if (param.values.length > 0 || options.boundaryConfigs[param.name] === undefined) {
-      return param;
-    }
-    return new Parameter(param.name, ['__coverwise_boundary_placeholder__']);
-  });
+    return okError();
+  };
+
   for (const param of params) {
+    let error = account(param.name, `Parameter name '${param.name}'`);
+    if (error.code !== ErrorCode.Ok) {
+      return error;
+    }
+    for (let index = 0; index < param.values.length; ++index) {
+      error = account(param.values[index], `${param.name}[${index}]`);
+      if (error.code !== ErrorCode.Ok) {
+        return error;
+      }
+    }
+    for (const valueAliases of param.allAliases) {
+      for (const alias of valueAliases) {
+        error = account(alias, `Alias in parameter '${param.name}'`);
+        if (error.code !== ErrorCode.Ok) {
+          return error;
+        }
+      }
+    }
+    for (const equivalenceClass of param.equivalenceClasses) {
+      error = account(equivalenceClass, `Class in parameter '${param.name}'`);
+      if (error.code !== ErrorCode.Ok) {
+        return error;
+      }
+    }
+  }
+  for (const expression of options.constraintExpressions) {
+    const error = account(expression, 'Constraint expression');
+    if (error.code !== ErrorCode.Ok) {
+      return error;
+    }
+  }
+  for (const subModel of options.subModels) {
+    for (const name of subModel.parameterNames) {
+      const error = account(name, 'Sub-model parameter name');
+      if (error.code !== ErrorCode.Ok) {
+        return error;
+      }
+    }
+  }
+  for (const [paramName, valueWeights] of Object.entries(options.weights.entries)) {
+    let error = account(paramName, 'Weight parameter name');
+    if (error.code !== ErrorCode.Ok) {
+      return error;
+    }
+    for (const valueName of Object.keys(valueWeights)) {
+      error = account(valueName, 'Weight value name');
+      if (error.code !== ErrorCode.Ok) {
+        return error;
+      }
+    }
+  }
+  return okError();
+}
+
+/**
+ * Validate every boundary config against the declared value list.
+ *
+ * Runs before expansion because the checks are about the configured range and
+ * the values the caller wrote down — after expansion the generated boundary
+ * values would mask, for instance, a duplicate numeric identity.
+ */
+function validateBoundaryConfigs(
+  boundaryConfigs: Record<string, BoundaryConfig>,
+  params: Parameter[],
+): ErrorInfo {
+  const byName = new Map(params.map((param) => [param.name, param]));
+  for (const [paramName, config] of Object.entries(boundaryConfigs)) {
+    const param = byName.get(paramName);
+    if (!param) {
+      return invalid(`Unknown parameter in boundary config: ${paramName}`);
+    }
     if (
       param.values.length === 0 &&
-      options.boundaryConfigs[param.name] !== undefined &&
       (param.invalid.length > 0 ||
         param.allAliases.length > 0 ||
         param.equivalenceClasses.length > 0)
     ) {
-      return invalid(`Metadata requires explicit values for boundary parameter ${param.name}`);
-    }
-  }
-  const parameterError = validateParameters(validationParams);
-  if (parameterError.length > 0) {
-    return invalid(parameterError);
-  }
-  if (params.length === 0) {
-    return invalid('At least one parameter is required');
-  }
-  if (
-    !Number.isInteger(options.strength) ||
-    options.strength < 1 ||
-    options.strength > params.length
-  ) {
-    return invalid(
-      'Strength must be between 1 and parameter count',
-      `strength=${options.strength}, parameters=${params.length}`,
-    );
-  }
-  if (!Number.isInteger(options.seed) || options.seed < 0 || options.seed > 0xffffffff) {
-    return invalid('Seed must be an integer in [0, 4294967295]');
-  }
-  if (!Number.isInteger(options.maxTests) || options.maxTests < 0) {
-    return invalid('maxTests must be a non-negative integer');
-  }
-
-  const byName = new Map(params.map((param) => [param.name, param]));
-  for (const subModel of options.subModels) {
-    if (subModel.parameterNames.length === 0) {
-      return invalid('Sub-model must contain at least one parameter');
-    }
-    const seen = new Set<string>();
-    for (const name of subModel.parameterNames) {
-      if (seen.has(name)) {
-        return invalid(`Duplicate parameter in sub-model: ${name}`);
-      }
-      if (!byName.has(name)) {
-        return invalid(`Unknown parameter in sub-model: ${name}`);
-      }
-      seen.add(name);
-    }
-    if (
-      !Number.isInteger(subModel.strength) ||
-      subModel.strength < 1 ||
-      subModel.strength > subModel.parameterNames.length
-    ) {
-      return invalid('Sub-model strength must be between 1 and its parameter count');
-    }
-  }
-
-  for (const [paramName, valueWeights] of Object.entries(options.weights.entries)) {
-    const param = byName.get(paramName);
-    if (!param) {
-      return invalid(`Unknown parameter in weights: ${paramName}`);
-    }
-    for (const [valueName, weight] of Object.entries(valueWeights)) {
-      if (param.findValueIndex(valueName) === 0xffffffff) {
-        return invalid(`Unknown value in weights: ${paramName}=${valueName}`);
-      }
-      if (!Number.isFinite(weight) || weight <= 0) {
-        return invalid(`Weight must be finite and positive: ${paramName}=${valueName}`);
-      }
-    }
-  }
-
-  for (const [paramName, config] of Object.entries(options.boundaryConfigs)) {
-    const param = byName.get(paramName);
-    if (!param) {
-      return invalid(`Unknown parameter in boundary config: ${paramName}`);
+      return invalid(`Metadata requires explicit values for boundary parameter ${paramName}`);
     }
     if (
       !Number.isFinite(config.minValue) ||
@@ -247,6 +278,12 @@ export function validateGenerateOptions(options: GenerateOptions): ErrorInfo {
         return invalid(`Boundary step must be finite and positive for parameter ${paramName}`);
       }
     } else {
+      // Integer expansion always steps by one, so a caller asking for anything
+      // else is asking for a value set the engine will not produce. Rejecting is
+      // the only answer that keeps the model JSON meaning one thing everywhere.
+      if (config.step !== 1) {
+        return invalid(`Integer boundary step must be 1 for parameter ${paramName}`);
+      }
       if (!Number.isSafeInteger(config.minValue) || !Number.isSafeInteger(config.maxValue)) {
         return invalid(`Integer boundary endpoints must be safe integers for ${paramName}`);
       }
@@ -262,6 +299,140 @@ export function validateGenerateOptions(options: GenerateOptions): ErrorInfo {
             `Integer boundary parameter contains a non-integral or out-of-range value: ${paramName}=${value}`,
           );
         }
+      }
+    }
+  }
+  return okError();
+}
+
+/**
+ * Validate every boundary config and expand the parameters it covers.
+ *
+ * Surfaces call this before resolving `seeds` / `existing` rows, which need the
+ * final value list to map a value name to an index, and before judging the
+ * parameter set — the rules apply to the value space the engine will use, not to
+ * the shorter list the caller wrote down. Mirrors ExpandBoundaries in the C++
+ * model layer.
+ *
+ * @param params - Parameters to expand; not modified.
+ * @param boundaryConfigs - Config per parameter name.
+ * @returns The expanded parameters, and an error describing the first malformed
+ *   config (in which case the parameters are returned unchanged).
+ */
+export function expandBoundaries(
+  params: Parameter[],
+  boundaryConfigs: Record<string, BoundaryConfig>,
+): { params: Parameter[]; error: ErrorInfo } {
+  if (Object.keys(boundaryConfigs).length === 0) {
+    return { params, error: okError() };
+  }
+  const configError = validateBoundaryConfigs(boundaryConfigs, params);
+  if (configError.code !== ErrorCode.Ok) {
+    return { params, error: configError };
+  }
+  const expanded = params.map((param) =>
+    Object.hasOwn(boundaryConfigs, param.name)
+      ? expandBoundaryValues(param, boundaryConfigs[param.name])
+      : param,
+  );
+  return { params: expanded, error: okError() };
+}
+
+/** Validate generation options before expansion or resource allocation. */
+export function validateGenerateOptions(options: GenerateOptions): ErrorInfo {
+  const params = options.parameters.map((input) => {
+    const param = input.invalid
+      ? new Parameter(input.name, input.values, input.invalid)
+      : new Parameter(input.name, input.values);
+    if (input.aliases) {
+      param.setAliases(input.aliases);
+    }
+    if (input.equivalenceClasses) {
+      param.setEquivalenceClasses(input.equivalenceClasses);
+    }
+    return param;
+  });
+  const budgetError = validateStringBudget(options, params);
+  if (budgetError.code !== ErrorCode.Ok) {
+    return budgetError;
+  }
+  const boundaryError = validateBoundaryConfigs(options.boundaryConfigs, params);
+  if (boundaryError.code !== ErrorCode.Ok) {
+    return boundaryError;
+  }
+  const validationParams = params.map((param) => {
+    if (param.values.length > 0 || getBoundaryConfig(options, param.name) === undefined) {
+      return param;
+    }
+    return new Parameter(param.name, ['__coverwise_boundary_placeholder__']);
+  });
+  const parameterError = validateParameters(validationParams);
+  if (parameterError.length > 0) {
+    return invalid(parameterError);
+  }
+  if (params.length === 0) {
+    return invalid('At least one parameter is required');
+  }
+  if (
+    !Number.isInteger(options.strength) ||
+    options.strength < 1 ||
+    options.strength > params.length
+  ) {
+    return invalid(
+      'Strength must be between 1 and parameter count',
+      `strength=${options.strength}, parameters=${params.length}`,
+    );
+  }
+  if (!Number.isInteger(options.seed) || options.seed < 0 || options.seed > 0xffffffff) {
+    return invalid('Seed must be an integer in [0, 4294967295]');
+  }
+  if (!Number.isInteger(options.maxTests) || options.maxTests < 0) {
+    return invalid('maxTests must be a non-negative integer');
+  }
+  if (options.constraintExpressions.length > MAX_CONSTRAINTS) {
+    return invalid(
+      `Constraint count ${options.constraintExpressions.length} exceeds maximum of ${MAX_CONSTRAINTS}`,
+    );
+  }
+  if (options.seeds.length > MAX_TESTS) {
+    return invalid(`Seed test count ${options.seeds.length} exceeds maximum of ${MAX_TESTS}`);
+  }
+
+  const byName = new Map(params.map((param) => [param.name, param]));
+  for (const subModel of options.subModels) {
+    if (subModel.parameterNames.length === 0) {
+      return invalid('Sub-model must contain at least one parameter');
+    }
+    const seen = new Set<string>();
+    for (const name of subModel.parameterNames) {
+      if (seen.has(name)) {
+        return invalid(`Duplicate parameter in sub-model: ${name}`);
+      }
+      if (!byName.has(name)) {
+        return invalid(`Unknown parameter in sub-model: ${name}`);
+      }
+      seen.add(name);
+    }
+    if (
+      !Number.isInteger(subModel.strength) ||
+      subModel.strength < 1 ||
+      subModel.strength > subModel.parameterNames.length
+    ) {
+      return invalid('Sub-model strength must be between 1 and its parameter count');
+    }
+  }
+
+  for (const [paramName, valueWeights] of Object.entries(options.weights.entries)) {
+    const param = byName.get(paramName);
+    if (!param) {
+      return invalid(`Unknown parameter in weights: ${paramName}`);
+    }
+    for (const [valueName, weight] of Object.entries(valueWeights)) {
+      if (param.findValueIndex(valueName) === 0xffffffff) {
+        return invalid(`Unknown value in weights: ${paramName}=${valueName}`);
+      }
+      if (!Number.isFinite(weight) || weight <= 0) {
+        return invalid(`Weight must be finite and positive: ${paramName}=${valueName}`);
       }
     }
   }

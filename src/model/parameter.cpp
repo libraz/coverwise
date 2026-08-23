@@ -134,6 +134,14 @@ std::vector<std::string> Parameter::unique_classes() const {
 }
 
 Error ValidateParameters(const std::vector<Parameter>& params) {
+  // Checked before the per-parameter rules so an oversized model is rejected up
+  // front, in particular before any caller starts a feasibility search over it.
+  if (params.size() > kMaxParameters) {
+    return {Error::Code::kInvalidInput,
+            "Parameter count " + std::to_string(params.size()) + " exceeds maximum of " +
+                std::to_string(kMaxParameters),
+            ""};
+  }
   std::unordered_set<std::string> seen_names;
   std::unordered_set<std::string> seen_folded_names;
   for (const auto& p : params) {
@@ -149,6 +157,12 @@ Error ValidateParameters(const std::vector<Parameter>& params) {
     }
     if (p.values.empty()) {
       return {Error::Code::kInvalidInput, "Parameter '" + p.name + "' must have at least one value",
+              ""};
+    }
+    if (p.values.size() > kMaxValuesPerParameter) {
+      return {Error::Code::kInvalidInput,
+              "Parameter '" + p.name + "' has too many values (maximum " +
+                  std::to_string(kMaxValuesPerParameter) + ")",
               ""};
     }
     std::unordered_set<std::string> seen_values;

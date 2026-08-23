@@ -21,6 +21,16 @@ namespace model {
 /// values[i] is the index into Parameter[i].values.
 struct TestCase {
   std::vector<uint32_t> values;
+
+  /// @brief Text the caller supplied for a position that did not resolve.
+  ///
+  /// Empty for a row the engine produced, and for a recorded row every member
+  /// of which resolved. Otherwise unresolved[i] is what the caller wrote for
+  /// parameter i, or empty if the row carried no member for it. A position that
+  /// does not resolve keeps kUnassigned in `values`, so this is the only place
+  /// the caller's own text survives: a diagnostic about such a row must name
+  /// that text rather than an internal index.
+  std::vector<std::string> unresolved{};
 };
 
 /// @brief A human-readable representation of an uncovered tuple.

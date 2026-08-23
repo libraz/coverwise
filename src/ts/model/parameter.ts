@@ -1,6 +1,7 @@
 /// Parameter definition for combinatorial test generation.
 
 import { asciiCaseInsensitiveEqual } from '../util/string_util.js';
+import { MAX_PARAMETERS, MAX_VALUES_PER_PARAMETER } from './limits.js';
 import { UNASSIGNED } from './test-case.js';
 
 export { UNASSIGNED };
@@ -191,20 +192,28 @@ function foldAsciiName(value: string): string {
   return value.replace(/[A-Z]/g, (char) => char.toLowerCase());
 }
 
+export { MAX_PARAMETERS };
+
 /**
  * Validate the semantic well-formedness of a parameter collection.
  *
  * Catches input that would otherwise corrupt coverage accounting or silently
  * drop data: an empty parameter name, a parameter with no values, a value that
  * repeats within a single parameter (inflates the tuple denominator and is
- * never coverable past its first occurrence), or two parameters sharing a name
- * (their output-map keys collide). Messages are kept byte-identical to the C++
- * validateParameters so every surface reports the same text.
+ * never coverable past its first occurrence), two parameters sharing a name
+ * (their output-map keys collide), or more parameters than MAX_PARAMETERS.
+ * Messages are kept byte-identical to the C++ validateParameters so every
+ * surface reports the same text.
  *
  * @returns An error message string on the first violation, or an empty string
  *   when the collection is well-formed.
  */
 export function validateParameters(params: Parameter[]): string {
+  // Checked before the per-parameter rules so an oversized model is rejected up
+  // front, in particular before any caller starts a feasibility search over it.
+  if (params.length > MAX_PARAMETERS) {
+    return `Parameter count ${params.length} exceeds maximum of ${MAX_PARAMETERS}`;
+  }
   const seenNames = new Set<string>();
   const seenFoldedNames = new Set<string>();
   for (const p of params) {
@@ -222,6 +231,9 @@ export function validateParameters(params: Parameter[]): string {
     seenFoldedNames.add(foldedName);
     if (p.values.length === 0) {
       return `Parameter '${p.name}' must have at least one value`;
+    }
+    if (p.values.length > MAX_VALUES_PER_PARAMETER) {
+      return `Parameter '${p.name}' has too many values (maximum ${MAX_VALUES_PER_PARAMETER})`;
     }
     const seenValues = new Set<string>();
     for (const v of p.values) {
