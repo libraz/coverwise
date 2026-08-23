@@ -67,3 +67,24 @@ def test_negative_tests_are_excluded_unless_requested() -> None:
 def test_parameter_names_must_be_python_identifiers() -> None:
     with pytest.raises(ValueError, match="valid Python identifiers"):
         coverwise.parametrize({"os version": ["11", "12"], "browser": ["chrome", "safari"]})
+
+
+def test_parameter_names_must_not_be_python_keywords() -> None:
+    """A keyword is a valid identifier, but no test can declare it as an argument."""
+
+    with pytest.raises(ValueError, match=r"rename \['class', 'lambda'\]"):
+        coverwise.parametrize(
+            {
+                "class": ["a", "b"],
+                "lambda": ["x", "y"],
+                "browser": ["chrome", "safari"],
+            }
+        )
+
+
+def test_soft_keywords_are_usable_parameter_names() -> None:
+    """``type`` and ``match`` are ordinary argument names outside their syntax."""
+
+    mark = coverwise.parametrize({"type": ["a", "b"], "match": ["x", "y"]})
+
+    assert mark.mark.args[0] == "type,match"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import keyword
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -20,15 +21,28 @@ def _require_pytest() -> Any:
     return pytest
 
 
+def _is_usable_argument_name(name: str) -> bool:
+    """Report whether a name can stand as an argument of a test function.
+
+    ``str.isidentifier`` alone is not enough: ``"class".isidentifier()`` is
+    true, yet no test function can declare ``class`` as an argument, and pytest
+    surfaces that only as an opaque collection failure. Soft keywords such as
+    ``type`` are deliberately allowed, because they are ordinary argument names
+    everywhere outside the syntax that gives them meaning.
+    """
+
+    return name.isidentifier() and not keyword.iskeyword(name)
+
+
 def _argument_names(parameters: Sequence[Mapping[str, Any]]) -> list[str]:
     """Extract parameter names, rejecting any that cannot be a test argument."""
 
     names = [str(parameter["name"]) for parameter in parameters]
-    invalid = [name for name in names if not name.isidentifier()]
+    invalid = [name for name in names if not _is_usable_argument_name(name)]
     if invalid:
         raise ValueError(
             "parameter names used by coverwise.parametrize must be valid Python "
-            f"identifiers; rename {invalid}"
+            f"identifiers and must not be Python keywords; rename {invalid}"
         )
     return names
 
@@ -47,8 +61,8 @@ def parametrize(
 
     Args:
         parameters: The parameter definitions, as either the JSON list form or a
-            name-to-values mapping. Names must be valid Python identifiers,
-            since they become test arguments.
+            name-to-values mapping. Names must be valid Python identifiers that
+            are not keywords, since they become test arguments.
         include_negative: Also run the generated negative tests, which exercise
             values marked ``"invalid": true``. Off by default, so a suite stays
             positive-only unless negative cases are asked for.
@@ -61,7 +75,7 @@ def parametrize(
         A ``pytest.mark.parametrize`` marker.
 
     Raises:
-        ValueError: A parameter name is not a valid Python identifier.
+        ValueError: A parameter name cannot be a test argument.
         CoverwiseError: The model is invalid or a constraint could not be parsed.
 
     Example:

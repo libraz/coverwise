@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import tempfile
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, NamedTuple
 
 from .cli import native_binary
 
@@ -24,14 +25,16 @@ __all__ = [
 ]
 
 # Exit codes the native CLI documents. Insufficient coverage is deliberately
-# absent: it reports a real, complete result whose coverage is below 1.0, so the
-# API returns it instead of raising.
+# absent from the failing set: it reports a real, complete result whose coverage
+# is below 1.0, so the API returns it instead of raising.
 _EXIT_OK = 0
+_EXIT_CONSTRAINT_ERROR = 1
 _EXIT_INSUFFICIENT_COVERAGE = 2
+_EXIT_INVALID_INPUT = 3
 
 _ERROR_CODES = {
-    1: "CONSTRAINT_ERROR",
-    3: "INVALID_INPUT",
+    _EXIT_CONSTRAINT_ERROR: "CONSTRAINT_ERROR",
+    _EXIT_INVALID_INPUT: "INVALID_INPUT",
 }
 
 
@@ -42,15 +45,44 @@ class CoverwiseError(RuntimeError):
         code: Surface-independent category, matching the JavaScript API's
             ``CoverwiseError.code`` vocabulary (``CONSTRAINT_ERROR``,
             ``INVALID_INPUT``).
-        exit_code: The CLI exit code, per the documented exit-code contract.
+        exit_code: The CLI exit code, per the documented exit-code contract;
+            always one of the codes that contract defines.
         stderr: The CLI's full diagnostic output.
+        report: The JSON document the CLI wrote before it failed, or ``None``
+            when it wrote none. ``analyze`` writes its full coverage report
+            before rejecting a suite that contains invalid rows, so
+            ``report["invalidTests"]`` names those rows and their reasons.
     """
 
-    def __init__(self, code: str, message: str, exit_code: int, stderr: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        exit_code: int,
+        stderr: str,
+        report: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.exit_code = exit_code
         self.stderr = stderr
+        self.report = report
+
+
+def _parameter_values(name: Any, values: Any) -> list[Any]:
+    """Take the value list a mapping entry declares, refusing to invent one.
+
+    A bare string is iterable, so ``{"env": "prod"}`` would otherwise silently
+    become the four-value parameter ``["p", "r", "o", "d"]`` and produce a suite
+    that has nothing to do with the model the caller wrote.
+    """
+
+    if isinstance(values, (str, bytes, Mapping)) or not isinstance(values, Iterable):
+        raise TypeError(
+            f"values for parameter {name!r} must be a list of values, not "
+            f"{type(values).__name__}; write [{values!r}] for a single value"
+        )
+    return list(values)
 
 
 def _normalize_parameters(parameters: Any) -> list[dict[str, Any]]:
@@ -63,7 +95,10 @@ def _normalize_parameters(parameters: Any) -> list[dict[str, Any]]:
     """
 
     if isinstance(parameters, Mapping):
-        return [{"name": name, "values": list(values)} for name, values in parameters.items()]
+        return [
+            {"name": name, "values": _parameter_values(name, values)}
+            for name, values in parameters.items()
+        ]
     if isinstance(parameters, str) or not isinstance(parameters, Iterable):
         raise TypeError(
             "parameters must be a list of parameter objects or a name-to-values mapping"
@@ -87,11 +122,43 @@ def _build_model(model: Mapping[str, Any] | None, fields: Mapping[str, Any]) -> 
     return merged
 
 
-def _run(args: Sequence[str], stdin_text: str) -> dict[str, Any]:
+class _Outcome(NamedTuple):
+    """Everything a CLI invocation reported, with nothing dropped.
+
+    ``report`` holds the parsed stdout document whenever the CLI wrote a
+    well-formed one, independently of ``returncode``. Several subcommands write
+    their report and only then exit non-zero — ``analyze`` does it for a suite
+    containing invalid rows — and that body is the only place the reason is
+    recorded, so the exit status alone must never decide whether it survives.
+    """
+
+    report: dict[str, Any] | None
+    stdout: str
+    returncode: int
+    stderr: str
+
+
+def _relabel(text: str, path_labels: Mapping[str, str]) -> str:
+    """Rewrite internal temporary paths into the argument the caller passed.
+
+    The CLI reports a read failure by interpolating the path it was given, which
+    for a side input is a temporary file this module created and has already
+    deleted; the caller never saw it and cannot act on it.
+    """
+
+    for path, label in path_labels.items():
+        text = text.replace(f"file '{path}'", label).replace(f"'{path}'", label)
+        text = text.replace(path, label)
+    return text
+
+
+def _invoke(args: Sequence[str], stdin_text: str, path_labels: Mapping[str, str]) -> _Outcome:
     """Run the native CLI, feeding it JSON on standard input.
 
     UTF-8 is pinned on both directions so non-ASCII parameter values survive a
-    process boundary regardless of the ambient locale.
+    process boundary regardless of the ambient locale. Both streams are carried
+    out whole: this is the only function that sees the child's stdout, and it
+    has no failure branch that can throw it away.
     """
 
     completed = subprocess.run(
@@ -102,21 +169,67 @@ def _run(args: Sequence[str], stdin_text: str) -> dict[str, Any]:
         encoding="utf-8",
         check=False,
     )
-    if completed.returncode not in (_EXIT_OK, _EXIT_INSUFFICIENT_COVERAGE):
-        stderr = completed.stderr.strip()
-        message = stderr.splitlines()[0] if stderr else "coverwise failed"
-        raise CoverwiseError(
-            _ERROR_CODES.get(completed.returncode, "INVALID_INPUT"),
-            message.removeprefix("error: "),
-            completed.returncode,
-            completed.stderr,
-        )
     try:
-        return json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:  # pragma: no cover - a broken bundled binary
-        raise RuntimeError(
-            f"coverwise produced output that is not JSON: {completed.stdout[:200]!r}"
-        ) from exc
+        parsed = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        parsed = None
+    return _Outcome(
+        parsed if isinstance(parsed, dict) else None,
+        completed.stdout,
+        completed.returncode,
+        _relabel(completed.stderr, path_labels),
+    )
+
+
+def _abnormal_exit(returncode: int) -> str:
+    """Describe a child exit that is not one of the documented CLI exit codes."""
+
+    if returncode < 0:
+        try:
+            name = signal.Signals(-returncode).name
+        except ValueError:  # pragma: no cover - a signal number Python does not name
+            name = f"signal {-returncode}"
+        return f"was terminated by {name}"
+    return f"exited with status {returncode}"
+
+
+def _failure(outcome: _Outcome) -> Exception:
+    """Build the exception for a non-zero exit, keeping the report reachable."""
+
+    stderr = outcome.stderr.strip()
+    message = stderr.splitlines()[0].removeprefix("error: ") if stderr else "coverwise failed"
+    code = _ERROR_CODES.get(outcome.returncode)
+    if code is None:
+        # A crashed or signal-killed executable never classified anything, so
+        # reporting it as a model error would send the caller to debug an input
+        # that the engine may well have accepted.
+        detail = f": {message}" if stderr else ""
+        return RuntimeError(
+            f"the coverwise executable {_abnormal_exit(outcome.returncode)} instead of "
+            f"reporting a result{detail}"
+        )
+    return CoverwiseError(code, message, outcome.returncode, outcome.stderr, outcome.report)
+
+
+def _run(
+    args: Sequence[str], stdin_text: str, path_labels: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """Run a subcommand and hand its JSON document back to the caller.
+
+    Whether a run raises is decided here, from the exit status; what the caller
+    can see is decided by :func:`_invoke`, which never discards a report. A
+    non-zero exit therefore still carries the report the CLI wrote, as
+    ``CoverwiseError.report``.
+    """
+
+    outcome = _invoke(args, stdin_text, path_labels or {})
+    if outcome.returncode in (_EXIT_OK, _EXIT_INSUFFICIENT_COVERAGE):
+        if outcome.report is None:  # pragma: no cover - a broken bundled binary
+            raise RuntimeError(
+                f"coverwise produced output that is not JSON: {outcome.stdout[:200]!r}"
+            )
+        return outcome.report
+    raise _failure(outcome)
 
 
 def _dumps(payload: Any) -> str:
@@ -126,21 +239,30 @@ def _dumps(payload: Any) -> str:
 
 
 def _run_with_side_input(
-    args_before: Sequence[str], side_payload: Any, args_after: Sequence[str], stdin_payload: Any
+    args_before: Sequence[str],
+    side_payload: Any,
+    side_label: str,
+    args_after: Sequence[str],
+    stdin_payload: Any,
 ) -> dict[str, Any]:
     """Run a subcommand that needs two JSON inputs.
 
     Standard input can carry only one of them, so the other goes through a
     temporary file that is removed before the result is returned. The temp file
     is written and closed before the child starts, because the CLI reads it by
-    path.
+    path. ``side_label`` names the argument that file stands for, so diagnostics
+    about it point at something the caller passed.
     """
 
     handle, side_path = tempfile.mkstemp(prefix="coverwise-", suffix=".json")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as side_file:
             side_file.write(_dumps(side_payload))
-        return _run([*args_before, side_path, *args_after, "-"], _dumps(stdin_payload))
+        return _run(
+            [*args_before, side_path, *args_after, "-"],
+            _dumps(stdin_payload),
+            {side_path: side_label},
+        )
     finally:
         os.unlink(side_path)
 
@@ -191,10 +313,14 @@ def analyze_coverage(
 
     Returns:
         The CLI's ``analyze`` report, including ``coverageRatio`` and
-        ``uncovered``.
+        ``uncovered``. A suite that leaves tuples uncovered is returned rather
+        than raised.
 
     Raises:
-        CoverwiseError: The parameters, tests, or constraints are invalid.
+        CoverwiseError: The parameters, tests, or constraints are invalid. A
+            suite whose rows are rejected is still measured, so the report
+            naming them in ``invalidTests`` is available as
+            ``CoverwiseError.report``.
     """
 
     params_payload: dict[str, Any] = {
@@ -203,7 +329,11 @@ def analyze_coverage(
     if constraints is not None:
         params_payload["constraints"] = list(constraints)
     return _run_with_side_input(
-        ["analyze", "--strength", str(strength), "--tests"], tests, ["--params"], params_payload
+        ["analyze", "--strength", str(strength), "--tests"],
+        tests,
+        "the 'tests' argument",
+        ["--params"],
+        params_payload,
     )
 
 
@@ -229,7 +359,13 @@ def extend_tests(
         CoverwiseError: The model or the existing tests are invalid.
     """
 
-    return _run_with_side_input(["extend", "--existing"], existing, [], _build_model(model, fields))
+    return _run_with_side_input(
+        ["extend", "--existing"],
+        existing,
+        "the 'existing' argument",
+        [],
+        _build_model(model, fields),
+    )
 
 
 def estimate_model(model: Mapping[str, Any] | None = None, **fields: Any) -> dict[str, Any]:

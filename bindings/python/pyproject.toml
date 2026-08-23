@@ -28,6 +28,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
 ]
 keywords = [
     "combinatorial-testing",
@@ -49,6 +50,7 @@ pytest = [
 ]
 dev = [
     "build>=1.2",
+    "mypy>=1.11",
     "pytest>=8.0",
     "ruff>=0.8",
     "wheel>=0.45",
@@ -62,6 +64,11 @@ Issues = "https://github.com/libraz/coverwise/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/coverwise"]
+# The native CLI is a build product rather than a tracked source file, so it is
+# the one payload the package sources do not already carry. The PEP 561 marker
+# rides along with them, and the wheel is inspected for it by the test suite:
+# without the marker in the wheel, every annotation this package ships reads as
+# Any at the consumer's type checker.
 artifacts = ["src/coverwise/_bin/coverwise"]
 
 [tool.hatch.build.targets.sdist]
@@ -84,9 +91,14 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM"]
 
+[tool.mypy]
+python_version = "3.10"
+strict = true
+
 [tool.rye]
 dev-dependencies = [
     "build>=1.2",
+    "mypy>=1.11",
     "pytest>=8.0",
     "ruff>=0.8",
     "wheel>=0.45",

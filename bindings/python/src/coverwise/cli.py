@@ -7,7 +7,7 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, Literal, NoReturn, overload
 
 
 def native_binary() -> Path:
@@ -38,15 +38,30 @@ def native_binary() -> Path:
     return binary
 
 
-def run(args: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+@overload
+def run(
+    args: Sequence[str], *, text: Literal[True], **kwargs: Any
+) -> subprocess.CompletedProcess[str]: ...
+
+
+@overload
+def run(args: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]: ...
+
+
+def run(args: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     """Run the bundled CLI and return its completed process result.
 
     This is a small programmatic convenience for automation. For normal command
     line use, invoke ``coverwise`` directly so it preserves native signals and
     standard I/O without a Python subprocess in the middle.
+
+    Keyword arguments go straight to :func:`subprocess.run`, which decides
+    whether ``stdout`` and ``stderr`` are text or bytes. ``text=True`` is
+    therefore the only form whose captured output is typed as ``str``; every
+    other call reports the loose type ``subprocess.run`` itself would report.
     """
 
-    return subprocess.run([str(native_binary()), *args], **kwargs)  # type: ignore[arg-type]
+    return subprocess.run([str(native_binary()), *args], **kwargs)
 
 
 def main() -> NoReturn:
