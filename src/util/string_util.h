@@ -21,6 +21,11 @@ bool CaseInsensitiveEqual(const std::string& a, const std::string& b);
 bool IsNumeric(const std::string& s);
 
 /// @brief Parse a string as a double. Undefined behavior if !IsNumeric(s).
+///
+/// Returns the same double as JavaScript's Number(s) on every platform and
+/// build configuration, including subnormals (which are parsed exactly), a
+/// decimal that overflows (+/-infinity) and one that underflows to +/-0.
+///
 /// @param s The string to parse.
 /// @return The parsed double value.
 double ToDouble(const std::string& s);
@@ -29,6 +34,9 @@ double ToDouble(const std::string& s);
 ///
 /// Unlike ToDouble this validates its input, so it is the entry point for
 /// callers that accept arbitrary text and reject anything unrepresentable.
+/// Subnormals are representable and therefore accepted; a decimal that
+/// overflows to infinity or underflows to zero is rejected, which is the rule
+/// the TypeScript surfaces apply as well.
 ///
 /// @param s The string to parse.
 /// @param out Receives the parsed value on success; untouched otherwise.

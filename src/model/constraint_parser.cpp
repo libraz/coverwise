@@ -889,8 +889,8 @@ class Parser {
     }
     const Token& pattern_tok = Advance();
 
-    return MakeNode(
-        std::make_unique<LikeNode>(param_idx, pattern_tok.text, params_[param_idx].values));
+    return MakeNode(std::make_unique<LikeNode>(param_idx, pattern_tok.text,
+                                               params_[param_idx].values, options_.case_sensitive));
   }
 
   ParseResult ParseRelationalRhs(const Token& param_tok, TokenType op_type) {

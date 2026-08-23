@@ -1,6 +1,6 @@
 /// AST-based constraint representation for combinatorial test generation.
 
-import { asciiCaseInsensitiveEqual, isNumeric, toDouble } from '../util/string_util.js';
+import { asciiToUpper, isNumeric, toDouble } from '../util/string_util.js';
 import { UNASSIGNED } from './test-case.js';
 
 export { UNASSIGNED };
@@ -420,6 +420,8 @@ export class InNode implements ConstraintNode {
  * LIKE pattern matching: param LIKE pattern.
  *
  * Supports `*` (any string) and `?` (single character) wildcards.
+ * Matching honors caseSensitive so it is consistent with the other
+ * value-matching operators (case-insensitive by default).
  * Matching results are precomputed at construction time for efficiency.
  */
 export class LikeNode implements ConstraintNode {
@@ -427,10 +429,20 @@ export class LikeNode implements ConstraintNode {
   private readonly pattern: string;
   private readonly matches: boolean[];
 
-  constructor(paramIndex: number, pattern: string, paramValues: string[]) {
+  constructor(paramIndex: number, pattern: string, paramValues: string[], caseSensitive = false) {
     this.paramIndex = paramIndex;
     this.pattern = pattern;
-    this.matches = paramValues.map((v) => globMatch(pattern, v));
+    // Case-insensitive matching folds the pattern and every value once here, so
+    // evaluate stays a precomputed lookup. Folding is ASCII-only, the same
+    // policy as asciiCaseInsensitiveEqual.
+    //
+    // The pattern is decomposed into codepoints once, so construction costs
+    // (sum of value lengths + pattern length) rather than
+    // (value count x pattern length).
+    const patternCodepoints = Array.from(caseSensitive ? pattern : asciiToUpper(pattern));
+    this.matches = paramValues.map((v) =>
+      globMatchCodepoints(patternCodepoints, Array.from(caseSensitive ? v : asciiToUpper(v))),
+    );
   }
 
   evaluate(assignment: number[]): ConstraintResult {
@@ -454,8 +466,16 @@ export class LikeNode implements ConstraintNode {
 
 /** Test whether a string matches a glob pattern (* and ?). */
 export function globMatch(pattern: string, text: string): boolean {
-  const patternCodepoints = Array.from(pattern);
-  const textCodepoints = Array.from(text);
+  return globMatchCodepoints(Array.from(pattern), Array.from(text));
+}
+
+/**
+ * Test whether pre-decomposed text matches a pre-decomposed pattern.
+ *
+ * Callers that match one pattern against many values decompose the pattern once
+ * and reuse it.
+ */
+function globMatchCodepoints(patternCodepoints: string[], textCodepoints: string[]): boolean {
   let pi = 0;
   let ti = 0;
   let starPi = -1;
@@ -488,6 +508,43 @@ export function globMatch(pattern: string, text: string): boolean {
 }
 
 /**
+ * Comparison keys for one parameter's value strings.
+ *
+ * Entry `i` is the key of value index `i`. Two values compare equal exactly when
+ * their keys are equal, so a key pair produced by a single internValuePair()
+ * call may only be compared against its partner.
+ */
+type ValueKeys = Uint32Array;
+
+/**
+ * Intern two parameters' value strings into a comparable key pair.
+ *
+ * Folding follows caseSensitive, so the policy is baked into the keys and
+ * comparisons never look at the strings again.
+ */
+function internValuePair(
+  leftValues: string[],
+  rightValues: string[],
+  caseSensitive: boolean,
+): [ValueKeys, ValueKeys] {
+  const table = new Map<string, number>();
+  const intern = (values: string[]): ValueKeys => {
+    const keys = new Uint32Array(values.length);
+    for (let i = 0; i < values.length; i++) {
+      const folded = caseSensitive ? values[i] : asciiToUpper(values[i]);
+      let key = table.get(folded);
+      if (key === undefined) {
+        key = table.size;
+        table.set(folded, key);
+      }
+      keys[i] = key;
+    }
+    return keys;
+  };
+  return [intern(leftValues), intern(rightValues)];
+}
+
+/**
  * Parameter-to-parameter equality comparison.
  *
  * Compares the string values of two parameters. Equal if the string
@@ -495,13 +552,21 @@ export function globMatch(pattern: string, text: string): boolean {
  * value-to-literal comparisons (case-insensitive by default).
  */
 export class ParamEqualsNode implements ConstraintNode {
+  // Value strings are interned at construction, the same way RelationalNode
+  // precomputes its numeric conversions, so evaluate compares two integers and
+  // never touches a value string.
+  private readonly leftKeys: ValueKeys;
+  private readonly rightKeys: ValueKeys;
+
   constructor(
     private readonly leftParam: number,
     private readonly rightParam: number,
-    private readonly leftValues: string[],
-    private readonly rightValues: string[],
-    private readonly caseSensitive = false,
-  ) {}
+    leftValues: string[],
+    rightValues: string[],
+    caseSensitive = false,
+  ) {
+    [this.leftKeys, this.rightKeys] = internValuePair(leftValues, rightValues, caseSensitive);
+  }
 
   evaluate(assignment: number[]): ConstraintResult {
     if (this.leftParam >= assignment.length || this.rightParam >= assignment.length) {
@@ -512,13 +577,12 @@ export class ParamEqualsNode implements ConstraintNode {
     if (lv === UNASSIGNED || rv === UNASSIGNED) {
       return ConstraintResult.Unknown;
     }
-    if (lv >= this.leftValues.length || rv >= this.rightValues.length) {
+    if (lv >= this.leftKeys.length || rv >= this.rightKeys.length) {
       return ConstraintResult.False;
     }
-    const equal = this.caseSensitive
-      ? this.leftValues[lv] === this.rightValues[rv]
-      : asciiCaseInsensitiveEqual(this.leftValues[lv], this.rightValues[rv]);
-    return equal ? ConstraintResult.True : ConstraintResult.False;
+    return this.leftKeys[lv] === this.rightKeys[rv]
+      ? ConstraintResult.True
+      : ConstraintResult.False;
   }
 
   toString(): string {
@@ -534,13 +598,18 @@ export class ParamEqualsNode implements ConstraintNode {
  * value-to-literal comparisons (case-insensitive by default).
  */
 export class ParamNotEqualsNode implements ConstraintNode {
+  private readonly leftKeys: ValueKeys;
+  private readonly rightKeys: ValueKeys;
+
   constructor(
     private readonly leftParam: number,
     private readonly rightParam: number,
-    private readonly leftValues: string[],
-    private readonly rightValues: string[],
-    private readonly caseSensitive = false,
-  ) {}
+    leftValues: string[],
+    rightValues: string[],
+    caseSensitive = false,
+  ) {
+    [this.leftKeys, this.rightKeys] = internValuePair(leftValues, rightValues, caseSensitive);
+  }
 
   evaluate(assignment: number[]): ConstraintResult {
     if (this.leftParam >= assignment.length || this.rightParam >= assignment.length) {
@@ -551,13 +620,12 @@ export class ParamNotEqualsNode implements ConstraintNode {
     if (lv === UNASSIGNED || rv === UNASSIGNED) {
       return ConstraintResult.Unknown;
     }
-    if (lv >= this.leftValues.length || rv >= this.rightValues.length) {
+    if (lv >= this.leftKeys.length || rv >= this.rightKeys.length) {
       return ConstraintResult.False;
     }
-    const equal = this.caseSensitive
-      ? this.leftValues[lv] === this.rightValues[rv]
-      : asciiCaseInsensitiveEqual(this.leftValues[lv], this.rightValues[rv]);
-    return equal ? ConstraintResult.False : ConstraintResult.True;
+    return this.leftKeys[lv] === this.rightKeys[rv]
+      ? ConstraintResult.False
+      : ConstraintResult.True;
   }
 
   toString(): string {

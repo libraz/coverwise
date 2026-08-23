@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "util/string_util.h"
@@ -220,15 +221,28 @@ class InNode : public ConstraintNode {
 ///
 /// Supports `*` (any string) and `?` (single character) wildcards.
 /// The pattern is matched against the string value of the parameter.
+/// Matching honors @p case_sensitive so it is consistent with the other
+/// value-matching operators (case-insensitive by default).
 /// Matching results are precomputed at construction time for efficiency.
 class LikeNode : public ConstraintNode {
  public:
   /// @param param_index Index of the parameter.
   /// @param pattern The glob-like pattern string.
   /// @param param_values The string values of the parameter (used to precompute matches).
+  /// @param case_sensitive When false (default), pattern and values match case-insensitively.
   LikeNode(uint32_t param_index, const std::string& pattern,
-           const std::vector<std::string>& param_values);
+           const std::vector<std::string>& param_values, bool case_sensitive = false);
   ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override;
+
+  /// @brief Test whether pre-decomposed text matches a pre-decomposed pattern.
+  ///
+  /// This overload carries the matching loop. Callers that match one pattern
+  /// against many values decompose the pattern once and reuse it.
+  /// @param pattern_codepoints The pattern, as Unicode codepoints.
+  /// @param text_codepoints The text to test, as Unicode codepoints.
+  /// @return true if the text matches the pattern.
+  static bool GlobMatch(const std::vector<uint32_t>& pattern_codepoints,
+                        const std::vector<uint32_t>& text_codepoints);
 
   /// @brief Test whether a string matches a glob pattern (* and ?).
   /// @param pattern The pattern to match against.
@@ -241,6 +255,14 @@ class LikeNode : public ConstraintNode {
   std::string pattern_;
   std::vector<bool> matches_;
 };
+
+/// @brief Comparison keys for one parameter's value strings.
+///
+/// Entry @c i is the key of value index @c i. Two values compare equal exactly
+/// when their keys are equal. Both parameters of a comparison are interned
+/// together, so keys are only meaningful against the partner they were built
+/// with.
+using ValueKeys = std::vector<uint32_t>;
 
 /// @brief Parameter-to-parameter equality comparison.
 ///
@@ -262,9 +284,11 @@ class ParamEqualsNode : public ConstraintNode {
  private:
   uint32_t left_param_;
   uint32_t right_param_;
-  bool case_sensitive_;
-  std::vector<std::string> left_values_;
-  std::vector<std::string> right_values_;
+  // Value strings are interned at construction, the same way RelationalNode
+  // precomputes its numeric conversions, so Evaluate compares two integers and
+  // never touches a value string.
+  ValueKeys left_keys_;
+  ValueKeys right_keys_;
 };
 
 /// @brief Parameter-to-parameter inequality comparison.
@@ -287,9 +311,8 @@ class ParamNotEqualsNode : public ConstraintNode {
  private:
   uint32_t left_param_;
   uint32_t right_param_;
-  bool case_sensitive_;
-  std::vector<std::string> left_values_;
-  std::vector<std::string> right_values_;
+  ValueKeys left_keys_;
+  ValueKeys right_keys_;
 };
 
 }  // namespace model

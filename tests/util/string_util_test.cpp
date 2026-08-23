@@ -4,6 +4,8 @@
 
 #include <clocale>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
@@ -12,8 +14,33 @@ using coverwise::util::CaseInsensitiveEqual;
 using coverwise::util::IsNumeric;
 using coverwise::util::JsNumberToString;
 using coverwise::util::ToDouble;
+using coverwise::util::TryParseFiniteDouble;
 
 namespace {
+
+constexpr bool kAcceptLiteral = true;
+constexpr bool kRejectLiteral = false;
+
+/// @brief One decimal and the double every surface must parse it into.
+struct NumericParseCase {
+  const char* text;
+  uint64_t bits;  ///< IEEE-754 bit pattern of JavaScript's Number(text).
+  bool accepts_literal;
+};
+
+// The corpus is shared with the TypeScript tests, which read the same file, so
+// the decimals and their expected doubles exist only once for all surfaces.
+const NumericParseCase kNumericParseCases[] = {
+#define COVERWISE_NUMERIC_CASE(text, bits, disposition) {text, bits, disposition},
+#include "numeric_parse_corpus.inc"
+#undef COVERWISE_NUMERIC_CASE
+};
+
+uint64_t DoubleToBits(double value) {
+  uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
 
 // Byte-equality corpus for JsNumberToString. Every expected string is exactly
 // what JavaScript String(value) / Number.prototype.toString() produces, so the
@@ -70,6 +97,37 @@ TEST(StringUtilTest, IsNumericSharedCorpus) {
   };
   for (const auto& [input, expected] : corpus) {
     EXPECT_EQ(IsNumeric(input), expected) << "input: '" << input << "'";
+  }
+}
+
+// Bit-exact parsing is what makes a model reproducible: the standard library
+// backends this file can compile against disagree about which decimals are
+// "out of range", so a subnormal must not be allowed to depend on the platform
+// or on which backend was available at build time. Comparing bit patterns
+// rather than values also keeps the two signed zeros apart.
+TEST(StringUtilTest, ToDoubleMatchesJavaScriptOnEveryCorpusDecimal) {
+  for (const auto& numeric_case : kNumericParseCases) {
+    ASSERT_TRUE(IsNumeric(numeric_case.text)) << "input: " << numeric_case.text;
+    EXPECT_EQ(DoubleToBits(ToDouble(numeric_case.text)), numeric_case.bits)
+        << "input: " << numeric_case.text;
+  }
+}
+
+// The same corpus drives the constraint-literal entry point, which the parser
+// uses for every relational literal: a representable decimal (subnormals
+// included) is accepted with its exact value, and only overflow or underflow
+// to zero is rejected.
+TEST(StringUtilTest, TryParseFiniteDoubleClassifiesEveryCorpusDecimal) {
+  for (const auto& numeric_case : kNumericParseCases) {
+    constexpr double kUntouched = 12345.0;
+    double parsed = kUntouched;
+    EXPECT_EQ(TryParseFiniteDouble(numeric_case.text, &parsed), numeric_case.accepts_literal)
+        << "input: " << numeric_case.text;
+    if (numeric_case.accepts_literal) {
+      EXPECT_EQ(DoubleToBits(parsed), numeric_case.bits) << "input: " << numeric_case.text;
+    } else {
+      EXPECT_EQ(parsed, kUntouched) << "input: " << numeric_case.text;
+    }
   }
 }
 

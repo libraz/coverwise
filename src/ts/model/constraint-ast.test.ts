@@ -322,6 +322,16 @@ describe('LikeNode', () => {
     const node = new LikeNode(0, '*', ['a']);
     expect(node.evaluate([5])).toBe(False);
   });
+
+  it('matches case-insensitively by default and exactly when caseSensitive', () => {
+    const insensitive = new LikeNode(0, 'chrome*', ['Chrome', 'Firefox']);
+    expect(insensitive.evaluate([0])).toBe(True);
+    expect(insensitive.evaluate([1])).toBe(False);
+
+    const sensitive = new LikeNode(0, 'chrome*', ['Chrome', 'Firefox'], true);
+    expect(sensitive.evaluate([0])).toBe(False);
+    expect(new LikeNode(0, 'Chrome*', ['Chrome', 'Firefox'], true).evaluate([0])).toBe(True);
+  });
 });
 
 describe('ParamEqualsNode', () => {
@@ -466,5 +476,79 @@ describe('ConstraintNode.toString', () => {
     );
     expect(new ParamEqualsNode(0, 1, ['a'], ['a']).toString()).toBe('p0 = p1');
     expect(new ParamNotEqualsNode(0, 1, ['a'], ['b']).toString()).toBe('p0 != p1');
+  });
+});
+
+describe('atom construction and evaluation cost', () => {
+  function makeValues(count: number, length: number): string[] {
+    return Array.from({ length: count }, (_, i) => 'v'.repeat(length) + i);
+  }
+
+  /** Run work `repetitions` times and return the fastest run, in milliseconds. */
+  function fastestMs(repetitions: number, work: () => void): number {
+    let best = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < repetitions; i++) {
+      const start = performance.now();
+      work();
+      best = Math.min(best, performance.now() - start);
+    }
+    return best;
+  }
+
+  it('builds a LIKE node without redoing the pattern for every value', () => {
+    // Both patterns fail on the first codepoint of every value, so matching
+    // costs the same for either one and the only pattern-length-dependent work
+    // left is decomposing the pattern. Decomposing it once per value instead of
+    // once per node made the long pattern orders of magnitude slower to build.
+    const values = makeValues(20000, 8);
+    const shortPattern = 'z*';
+    const longPattern = `${'z'.repeat(4000)}*`;
+
+    const shortMs = fastestMs(3, () => {
+      new LikeNode(0, shortPattern, values);
+    });
+    const longMs = fastestMs(3, () => {
+      new LikeNode(0, longPattern, values);
+    });
+
+    expect(longMs).toBeLessThan(shortMs * 4 + 2);
+  });
+
+  it('evaluates a parameter comparison without looking at the value strings', () => {
+    // Interning the values at construction is what makes these two runs cost
+    // the same; comparing the strings themselves made the long-value run scale
+    // with how long the values happen to be.
+    const measure = (valueLength: number): number => {
+      const node = new ParamEqualsNode(
+        0,
+        1,
+        makeValues(64, valueLength),
+        makeValues(64, valueLength),
+      );
+      const assignment = [0, 0];
+      return fastestMs(5, () => {
+        for (let i = 0; i < 200000; i++) {
+          assignment[0] = i % 64;
+          assignment[1] = (i * 7) % 64;
+          node.evaluate(assignment);
+        }
+      });
+    };
+
+    const shortMs = measure(2);
+    const longMs = measure(512);
+
+    expect(longMs).toBeLessThan(shortMs * 4 + 5);
+  });
+
+  it('keeps the case-folding policy in the interned values', () => {
+    const left = ['Alpha', 'beta'];
+    const right = ['alpha', 'GAMMA'];
+
+    expect(new ParamEqualsNode(0, 1, left, right).evaluate([0, 0])).toBe(True);
+    expect(new ParamEqualsNode(0, 1, left, right, true).evaluate([0, 0])).toBe(False);
+    expect(new ParamNotEqualsNode(0, 1, left, right).evaluate([0, 0])).toBe(False);
+    expect(new ParamEqualsNode(0, 1, left, right).evaluate([1, 1])).toBe(False);
+    expect(new ParamNotEqualsNode(0, 1, left, right).evaluate([1, 1])).toBe(True);
   });
 });

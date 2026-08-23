@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -12,8 +13,8 @@ namespace model {
 
 namespace {
 
-std::vector<uint32_t> Utf8Codepoints(const std::string& value) {
-  std::vector<uint32_t> result;
+void Utf8Codepoints(const std::string& value, std::vector<uint32_t>& result) {
+  result.clear();
   result.reserve(value.size());
   for (size_t i = 0; i < value.size();) {
     const auto first = static_cast<unsigned char>(value[i]);
@@ -51,7 +52,23 @@ std::vector<uint32_t> Utf8Codepoints(const std::string& value) {
       i += length;
     }
   }
+}
+
+std::vector<uint32_t> Utf8Codepoints(const std::string& value) {
+  std::vector<uint32_t> result;
+  Utf8Codepoints(value, result);
   return result;
+}
+
+/// @brief Fold a string to lower case, ASCII letters only.
+std::string FoldAsciiString(const std::string& value) {
+  std::string folded = value;
+  for (char& c : folded) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c + ('a' - 'A'));
+    }
+  }
+  return folded;
 }
 
 }  // namespace
@@ -303,11 +320,24 @@ ConstraintResult InNode::Evaluate(const std::vector<uint32_t>& assignment) const
 // --- LikeNode ---
 
 LikeNode::LikeNode(uint32_t param_index, const std::string& pattern,
-                   const std::vector<std::string>& param_values)
+                   const std::vector<std::string>& param_values, bool case_sensitive)
     : param_index_(param_index), pattern_(pattern) {
+  // Case-insensitive matching folds the pattern and every value once here, so
+  // Evaluate stays a precomputed lookup. Folding is ASCII-only (same policy as
+  // util::CaseInsensitiveEqual) and byte-wise folding is safe on UTF-8 because
+  // no byte of a multi-byte sequence falls in the 'A'-'Z' range.
+  //
+  // The pattern is decomposed into codepoints once and each value reuses one
+  // scratch buffer, so construction costs (sum of value lengths + pattern
+  // length) rather than (value count x pattern length).
+  const std::vector<uint32_t> pattern_codepoints =
+      Utf8Codepoints(case_sensitive ? pattern : FoldAsciiString(pattern));
+  std::vector<uint32_t> value_codepoints;
   matches_.resize(param_values.size());
   for (size_t i = 0; i < param_values.size(); ++i) {
-    matches_[i] = GlobMatch(pattern_, param_values[i]);
+    Utf8Codepoints(case_sensitive ? param_values[i] : FoldAsciiString(param_values[i]),
+                   value_codepoints);
+    matches_[i] = GlobMatch(pattern_codepoints, value_codepoints);
   }
 }
 
@@ -325,9 +355,8 @@ ConstraintResult LikeNode::Evaluate(const std::vector<uint32_t>& assignment) con
   return matches_[val] ? ConstraintResult::kTrue : ConstraintResult::kFalse;
 }
 
-bool LikeNode::GlobMatch(const std::string& pattern, const std::string& text) {
-  const auto pattern_codepoints = Utf8Codepoints(pattern);
-  const auto text_codepoints = Utf8Codepoints(text);
+bool LikeNode::GlobMatch(const std::vector<uint32_t>& pattern_codepoints,
+                         const std::vector<uint32_t>& text_codepoints) {
   size_t pi = 0;
   size_t ti = 0;
   size_t star_pi = std::string::npos;
@@ -358,16 +387,49 @@ bool LikeNode::GlobMatch(const std::string& pattern, const std::string& text) {
   return pi == pattern_codepoints.size();
 }
 
+bool LikeNode::GlobMatch(const std::string& pattern, const std::string& text) {
+  return GlobMatch(Utf8Codepoints(pattern), Utf8Codepoints(text));
+}
+
+// --- Parameter-to-parameter comparison ---
+
+namespace {
+
+/// @brief Intern two parameters' value strings into a comparable key pair.
+///
+/// Folding follows @p case_sensitive, so the policy is baked into the keys and
+/// comparisons never look at the strings again.
+std::pair<ValueKeys, ValueKeys> InternValuePair(const std::vector<std::string>& left_values,
+                                                const std::vector<std::string>& right_values,
+                                                bool case_sensitive) {
+  std::unordered_map<std::string, uint32_t> table;
+  table.reserve(left_values.size() + right_values.size());
+  const auto intern = [&](const std::vector<std::string>& values) {
+    ValueKeys keys(values.size());
+    for (size_t i = 0; i < values.size(); ++i) {
+      const std::string folded = case_sensitive ? values[i] : FoldAsciiString(values[i]);
+      const auto next = static_cast<uint32_t>(table.size());
+      keys[i] = table.emplace(folded, next).first->second;
+    }
+    return keys;
+  };
+  ValueKeys left = intern(left_values);
+  ValueKeys right = intern(right_values);
+  return {std::move(left), std::move(right)};
+}
+
+}  // namespace
+
 // --- ParamEqualsNode ---
 
 ParamEqualsNode::ParamEqualsNode(uint32_t left_param, uint32_t right_param,
                                  const std::vector<std::string>& left_values,
                                  const std::vector<std::string>& right_values, bool case_sensitive)
-    : left_param_(left_param),
-      right_param_(right_param),
-      case_sensitive_(case_sensitive),
-      left_values_(left_values),
-      right_values_(right_values) {}
+    : left_param_(left_param), right_param_(right_param) {
+  auto keys = InternValuePair(left_values, right_values, case_sensitive);
+  left_keys_ = std::move(keys.first);
+  right_keys_ = std::move(keys.second);
+}
 
 ConstraintResult ParamEqualsNode::Evaluate(const std::vector<uint32_t>& assignment) const {
   if (left_param_ >= assignment.size() || right_param_ >= assignment.size()) {
@@ -378,13 +440,10 @@ ConstraintResult ParamEqualsNode::Evaluate(const std::vector<uint32_t>& assignme
   if (lv == kUnassigned || rv == kUnassigned) {
     return ConstraintResult::kUnknown;
   }
-  if (lv >= left_values_.size() || rv >= right_values_.size()) {
+  if (lv >= left_keys_.size() || rv >= right_keys_.size()) {
     return ConstraintResult::kFalse;
   }
-  const bool equal = case_sensitive_
-                         ? (left_values_[lv] == right_values_[rv])
-                         : util::CaseInsensitiveEqual(left_values_[lv], right_values_[rv]);
-  return equal ? ConstraintResult::kTrue : ConstraintResult::kFalse;
+  return left_keys_[lv] == right_keys_[rv] ? ConstraintResult::kTrue : ConstraintResult::kFalse;
 }
 
 // --- ParamNotEqualsNode ---
@@ -393,11 +452,11 @@ ParamNotEqualsNode::ParamNotEqualsNode(uint32_t left_param, uint32_t right_param
                                        const std::vector<std::string>& left_values,
                                        const std::vector<std::string>& right_values,
                                        bool case_sensitive)
-    : left_param_(left_param),
-      right_param_(right_param),
-      case_sensitive_(case_sensitive),
-      left_values_(left_values),
-      right_values_(right_values) {}
+    : left_param_(left_param), right_param_(right_param) {
+  auto keys = InternValuePair(left_values, right_values, case_sensitive);
+  left_keys_ = std::move(keys.first);
+  right_keys_ = std::move(keys.second);
+}
 
 ConstraintResult ParamNotEqualsNode::Evaluate(const std::vector<uint32_t>& assignment) const {
   if (left_param_ >= assignment.size() || right_param_ >= assignment.size()) {
@@ -408,13 +467,10 @@ ConstraintResult ParamNotEqualsNode::Evaluate(const std::vector<uint32_t>& assig
   if (lv == kUnassigned || rv == kUnassigned) {
     return ConstraintResult::kUnknown;
   }
-  if (lv >= left_values_.size() || rv >= right_values_.size()) {
+  if (lv >= left_keys_.size() || rv >= right_keys_.size()) {
     return ConstraintResult::kFalse;
   }
-  const bool equal = case_sensitive_
-                         ? (left_values_[lv] == right_values_[rv])
-                         : util::CaseInsensitiveEqual(left_values_[lv], right_values_[rv]);
-  return equal ? ConstraintResult::kFalse : ConstraintResult::kTrue;
+  return left_keys_[lv] == right_keys_[rv] ? ConstraintResult::kFalse : ConstraintResult::kTrue;
 }
 
 }  // namespace model

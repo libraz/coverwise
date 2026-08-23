@@ -40,11 +40,18 @@ struct ParseOptions {
 ///   "env IN {staging, prod}"
 ///   "browser LIKE chrome*"
 ///   "start_date < end_date"   (parameter-to-parameter comparison)
+///   "filesystem IN {APFS, \"HFS+\"}"   (quoted value)
 ///
 /// Keywords (case-insensitive): IF, THEN, ELSE, IMPLIES, AND, OR, NOT, IN, LIKE
 /// Operators: = != > >= < <=
 /// Parentheses: ( )
 /// Set literals: { value1, value2, ... }
+/// Glob wildcards (LIKE patterns): * (any sequence) and ? (exactly one codepoint)
+/// String literals: "..." or '...', with \" and \\ escapes. A bare token holds
+///   only ASCII alphanumerics, '_', '-', '.', and non-ASCII bytes, so a value
+///   containing anything else (space, '+', '%', '@', '/', parentheses) has to be
+///   quoted. A quoted token is always a literal value, never a keyword and never
+///   a parameter reference.
 ///
 /// @param expression The constraint string to parse.
 /// @param params The parameter definitions (used to resolve names to indices).

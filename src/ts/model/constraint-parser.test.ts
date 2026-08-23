@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { NUMERIC_PARSE_CORPUS } from '../../../tests/util/numeric-parse-corpus.js';
 import { ConstraintResult } from './constraint-ast.js';
 import { parseConstraint } from './constraint-parser.js';
 import { ErrorCode } from './error.js';
@@ -99,6 +100,36 @@ describe('constraint parser safety limits', () => {
     expect(eqCs.constraint?.evaluate([0, 0])).toBe(ConstraintResult.False);
   });
 
+  // The corpus is shared with the C++ tests, which read the same file, so the
+  // literal path of every surface accepts and rejects the same decimals.
+  it('classifies every decimal in the shared corpus the same way as the core', () => {
+    const params = [new Parameter('n', ['0', '1'])];
+    for (const numericCase of NUMERIC_PARSE_CORPUS) {
+      const result = parseConstraint(`n > ${numericCase.text}`, params);
+      if (numericCase.acceptsLiteral) {
+        expect(result.error.code, numericCase.text).toBe(ErrorCode.Ok);
+      } else {
+        expect(result.error.code, numericCase.text).toBe(ErrorCode.ConstraintError);
+        expect(result.error.message, numericCase.text).toContain('out-of-range decimal literal');
+      }
+    }
+  });
+
+  it('keeps subnormal literals and values apart from zero and from each other', () => {
+    const params = [new Parameter('n', ['0', '5e-324', '1e-310'])];
+
+    const positive = parseConstraint('n > 0', params);
+    expect(positive.error.code).toBe(ErrorCode.Ok);
+    expect(positive.constraint?.evaluate([0])).toBe(ConstraintResult.False);
+    expect(positive.constraint?.evaluate([1])).toBe(ConstraintResult.True);
+    expect(positive.constraint?.evaluate([2])).toBe(ConstraintResult.True);
+
+    const belowLiteral = parseConstraint('n < 1e-310', params);
+    expect(belowLiteral.error.code).toBe(ErrorCode.Ok);
+    expect(belowLiteral.constraint?.evaluate([1])).toBe(ConstraintResult.True);
+    expect(belowLiteral.constraint?.evaluate([2])).toBe(ConstraintResult.False);
+  });
+
   it('reads a LIKE pattern starting with a digit as a pattern', () => {
     // Regression: a version glob like `1.*` must be a pattern, not a decimal
     // literal that then chokes on the glob character.
@@ -108,6 +139,60 @@ describe('constraint parser safety limits', () => {
     expect(result.constraint?.evaluate([0])).toBe(ConstraintResult.True); // 1.0
     expect(result.constraint?.evaluate([1])).toBe(ConstraintResult.True); // 1.5
     expect(result.constraint?.evaluate([2])).toBe(ConstraintResult.False); // 2.0
+  });
+
+  it('matches a LIKE pattern case-insensitively by default, honoring caseSensitive', () => {
+    const params = [new Parameter('browser', ['Chrome', 'Chromium', 'Firefox'])];
+
+    const result = parseConstraint('browser LIKE chrom*', params);
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.constraint?.evaluate([0])).toBe(ConstraintResult.True); // Chrome
+    expect(result.constraint?.evaluate([1])).toBe(ConstraintResult.True); // Chromium
+    expect(result.constraint?.evaluate([2])).toBe(ConstraintResult.False); // Firefox
+
+    const sensitive = parseConstraint('browser LIKE chrom*', params, { caseSensitive: true });
+    expect(sensitive.error.code).toBe(ErrorCode.Ok);
+    expect(sensitive.constraint?.evaluate([0])).toBe(ConstraintResult.False);
+    expect(sensitive.constraint?.evaluate([1])).toBe(ConstraintResult.False);
+
+    // In case-sensitive mode the pattern still matches when the case agrees.
+    const exact = parseConstraint('browser LIKE Chrom*', params, { caseSensitive: true });
+    expect(exact.constraint?.evaluate([0])).toBe(ConstraintResult.True);
+    expect(exact.constraint?.evaluate([2])).toBe(ConstraintResult.False);
+  });
+
+  it('folds LIKE patterns with the ASCII-only case policy', () => {
+    // Non-ASCII characters keep comparing exactly, as they do for = / != / IN.
+    const params = [new Parameter('label', ['CAFE', 'CAFÉ'])];
+
+    const ascii = parseConstraint('label LIKE cafe*', params);
+    expect(ascii.error.code).toBe(ErrorCode.Ok);
+    expect(ascii.constraint?.evaluate([0])).toBe(ConstraintResult.True);
+
+    const accented = parseConstraint('label LIKE café', params);
+    expect(accented.error.code).toBe(ErrorCode.Ok);
+    expect(accented.constraint?.evaluate([1])).toBe(ConstraintResult.False);
+  });
+
+  it('excludes the same combinations a LIKE constraint excludes in the C++ core', () => {
+    const params = [
+      new Parameter('browser', ['Chrome', 'Chromium', 'Firefox']),
+      new Parameter('engine', ['blink', 'gecko']),
+    ];
+
+    const result = parseConstraint('IF browser LIKE chrom* THEN engine = blink', params);
+    expect(result.error.code).toBe(ErrorCode.Ok);
+
+    const excluded: string[] = [];
+    for (let b = 0; b < params[0].values.length; b++) {
+      for (let e = 0; e < params[1].values.length; e++) {
+        if (result.constraint?.evaluate([b, e]) === ConstraintResult.False) {
+          excluded.push(`${params[0].values[b]}/${params[1].values[e]}`);
+        }
+      }
+    }
+
+    expect(excluded).toEqual(['Chrome/gecko', 'Chromium/gecko']);
   });
 
   it('never throws for a deterministic malformed-input corpus', () => {

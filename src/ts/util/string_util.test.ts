@@ -1,4 +1,9 @@
 import {
+  bitsToHex,
+  doubleToBits,
+  NUMERIC_PARSE_CORPUS,
+} from '../../../tests/util/numeric-parse-corpus.js';
+import {
   asciiCaseInsensitiveEqual,
   asciiToUpper,
   isNumeric,
@@ -112,6 +117,22 @@ describe('toDouble', () => {
 
   it('parses scientific notation', () => {
     expect(toDouble('1e3')).toBe(1000);
+  });
+
+  // The corpus is shared with the C++ test, which reads the same file. Every
+  // surface has to land on the same bit pattern for these decimals, so a model
+  // using a subnormal produces one suite rather than one per platform.
+  it('matches the shared decimal corpus bit for bit', () => {
+    for (const numericCase of NUMERIC_PARSE_CORPUS) {
+      expect(isNumeric(numericCase.text)).toBe(true);
+      expect(bitsToHex(doubleToBits(toDouble(numericCase.text))), numericCase.text).toBe(
+        bitsToHex(numericCase.bits),
+      );
+      // The corpus claims to record Number(text); hold it to that claim.
+      expect(bitsToHex(doubleToBits(Number(numericCase.text))), numericCase.text).toBe(
+        bitsToHex(numericCase.bits),
+      );
+    }
   });
 });
 

@@ -1,4 +1,6 @@
+import { BINOMIAL_CORPUS } from '../../../tests/util/binomial-corpus.js';
 import {
+  checkedBinomial,
   decodeMixedRadix,
   encodeMixedRadix,
   generateCombinations,
@@ -78,6 +80,51 @@ describe('generateCombinations', () => {
 describe('generateCombinationsFlat', () => {
   it('matches lexicographic nested order without inner arrays', () => {
     expect(generateCombinationsFlat(4, 2)).toEqual([0, 1, 0, 2, 0, 3, 1, 2, 1, 3, 2, 3]);
+  });
+});
+
+describe('checkedBinomial', () => {
+  // The same corpus the C++ CheckedBinomial test drives. The two guard the same
+  // allocation-size checks but bound their arithmetic differently — 64-bit
+  // overflow there, the double safe-integer range here — so agreement over every
+  // budget a call site passes has to be asserted rather than assumed.
+  it.each(BINOMIAL_CORPUS.map((c) => [c.n, c.k, c.limit, c.accepted, c.value] as const))(
+    'C(%i, %i) under limit %i',
+    (n, k, limit, accepted, value) => {
+      const result = checkedBinomial(n, k, limit);
+      if (accepted) {
+        expect(result).toBe(value);
+      } else {
+        expect(result).toBeNull();
+      }
+    },
+  );
+
+  it('returns exact small values', () => {
+    expect(checkedBinomial(5, 2, 1000)).toBe(10);
+    expect(checkedBinomial(6, 3, 1000)).toBe(20);
+    expect(checkedBinomial(52, 5, 5_000_000)).toBe(2_598_960);
+  });
+
+  it('answers k > n with zero and C(n, n) with one', () => {
+    expect(checkedBinomial(3, 5, 1000)).toBe(0);
+    expect(checkedBinomial(5, 5, 1000)).toBe(1);
+    expect(checkedBinomial(5, 0, 1000)).toBe(1);
+  });
+
+  it('accepts a count that lands exactly on the limit and rejects the next one', () => {
+    expect(checkedBinomial(5, 2, 10)).toBe(10);
+    expect(checkedBinomial(5, 2, 9)).toBeNull();
+    expect(checkedBinomial(1000, 2, 1_000_000)).toBe(499_500);
+    expect(checkedBinomial(1415, 2, 1_000_000)).toBeNull();
+  });
+
+  it('rejects a count that leaves the safe-integer range', () => {
+    // The product would need more than 53 bits of mantissa, so the value that
+    // came out of the division cannot be trusted to compare against the limit.
+    expect(checkedBinomial(4_000_000_000, 2, 0xffffffff)).toBeNull();
+    expect(checkedBinomial(4_000_000_000, 2, Number.MAX_VALUE)).toBeNull();
+    expect(checkedBinomial(200, 100, Number.MAX_VALUE)).toBeNull();
   });
 });
 

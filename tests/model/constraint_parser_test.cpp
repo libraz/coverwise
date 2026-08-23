@@ -394,6 +394,65 @@ TEST(ConstraintParserTest, LikeQuestionWildcard) {
   EXPECT_EQ(result.constraint->Evaluate({4}), ConstraintResult::kFalse);
 }
 
+TEST(ConstraintParserTest, LikeMatchesCaseInsensitivelyByDefault) {
+  std::vector<Parameter> params = {{"browser", {"Chrome", "Chromium", "Firefox"}, {}}};
+
+  auto result = ParseConstraint("browser LIKE chrom*", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_EQ(result.constraint->Evaluate({0}), ConstraintResult::kTrue);   // Chrome
+  EXPECT_EQ(result.constraint->Evaluate({1}), ConstraintResult::kTrue);   // Chromium
+  EXPECT_EQ(result.constraint->Evaluate({2}), ConstraintResult::kFalse);  // Firefox
+
+  coverwise::model::ParseOptions cs;
+  cs.case_sensitive = true;
+  auto sensitive = ParseConstraint("browser LIKE chrom*", params, cs);
+  ASSERT_TRUE(sensitive.error.ok()) << sensitive.error.message;
+  EXPECT_EQ(sensitive.constraint->Evaluate({0}), ConstraintResult::kFalse);
+  EXPECT_EQ(sensitive.constraint->Evaluate({1}), ConstraintResult::kFalse);
+
+  // In case-sensitive mode the pattern still matches when the case agrees.
+  auto exact = ParseConstraint("browser LIKE Chrom*", params, cs);
+  ASSERT_TRUE(exact.error.ok()) << exact.error.message;
+  EXPECT_EQ(exact.constraint->Evaluate({0}), ConstraintResult::kTrue);
+  EXPECT_EQ(exact.constraint->Evaluate({2}), ConstraintResult::kFalse);
+}
+
+// LIKE folds case with the same ASCII-only policy as the other value-matching
+// operators, so non-ASCII characters keep comparing exactly.
+TEST(ConstraintParserTest, LikeCaseFoldingIsAsciiOnly) {
+  std::vector<Parameter> params = {{"label", {"CAFE", "CAFÉ"}, {}}};
+
+  auto result = ParseConstraint("label LIKE cafe*", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_EQ(result.constraint->Evaluate({0}), ConstraintResult::kTrue);
+
+  auto accented = ParseConstraint("label LIKE café", params);
+  ASSERT_TRUE(accented.error.ok()) << accented.error.message;
+  EXPECT_EQ(accented.constraint->Evaluate({1}), ConstraintResult::kFalse);
+}
+
+// The set of combinations a LIKE constraint excludes is the cross-surface
+// contract; the pure-TypeScript port asserts the same set for this model.
+TEST(ConstraintParserTest, LikeExcludesCaseVariantCombinations) {
+  std::vector<Parameter> params = {{"browser", {"Chrome", "Chromium", "Firefox"}, {}},
+                                   {"engine", {"blink", "gecko"}, {}}};
+
+  auto result = ParseConstraint("IF browser LIKE chrom* THEN engine = blink", params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+
+  std::vector<std::string> excluded;
+  for (uint32_t b = 0; b < params[0].values.size(); ++b) {
+    for (uint32_t e = 0; e < params[1].values.size(); ++e) {
+      if (result.constraint->Evaluate({b, e}) == ConstraintResult::kFalse) {
+        excluded.push_back(params[0].values[b] + "/" + params[1].values[e]);
+      }
+    }
+  }
+
+  const std::vector<std::string> expected = {"Chrome/gecko", "Chromium/gecko"};
+  EXPECT_EQ(excluded, expected);
+}
+
 // ---------------------------------------------------------------------------
 // Parameter-to-parameter comparison
 // ---------------------------------------------------------------------------

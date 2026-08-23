@@ -15,6 +15,11 @@ std::vector<std::vector<uint32_t>> GenerateCombinations(uint32_t n, uint32_t k) 
     return result;
   }
 
+  uint64_t count = 0;
+  if (CheckedBinomial(n, k, std::numeric_limits<uint32_t>::max(), count)) {
+    result.reserve(static_cast<size_t>(count));
+  }
+
   std::vector<uint32_t> indices(k);
   for (uint32_t i = 0; i < k; ++i) {
     indices[i] = i;

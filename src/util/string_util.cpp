@@ -90,8 +90,14 @@ DecimalParse ParseDecimal(const char* begin, const char* end) {
   DecimalParse parsed;
 #if COVERWISE_HAS_FLOAT_FROM_CHARS
   const auto result = std::from_chars(begin, end, parsed.value, std::chars_format::general);
-  parsed.complete = result.ec == std::errc{} && result.ptr == end;
-  parsed.out_of_range = result.ec == std::errc::result_out_of_range;
+  if (result.ptr != end ||
+      (result.ec != std::errc{} && result.ec != std::errc::result_out_of_range)) {
+    return parsed;
+  }
+  if (result.ec == std::errc{}) {
+    parsed.complete = true;
+    return parsed;
+  }
 #else
   // num_get reports malformed input and out-of-range values through the same
   // failbit, so the syntax check is what separates them.
@@ -100,9 +106,25 @@ DecimalParse ParseDecimal(const char* begin, const char* end) {
   std::istringstream stream(field);
   stream.imbue(std::locale::classic());
   stream >> parsed.value;
-  parsed.complete = !stream.fail();
-  parsed.out_of_range = stream.fail();
+  if (!stream.fail()) {
+    parsed.complete = true;
+    return parsed;
+  }
 #endif
+  // The field is out of range for at least one of the two backends, and they
+  // do not agree on what that means: an underflow that still rounds to a
+  // subnormal is a range error for num_get (which nevertheless stores the
+  // correctly rounded value) but an ordinary result for from_chars, while a
+  // decimal that truly leaves the representable range may or may not leave a
+  // value behind. Keeping a stored finite non-zero value and discarding
+  // everything else makes the outcome depend on the decimal alone, so every
+  // platform and build configuration parses a subnormal identically.
+  if (std::isfinite(parsed.value) && parsed.value != 0.0) {
+    parsed.complete = true;
+    return parsed;
+  }
+  parsed.value = 0.0;
+  parsed.out_of_range = true;
   return parsed;
 }
 

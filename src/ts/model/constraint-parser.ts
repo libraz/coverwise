@@ -52,7 +52,6 @@ const MAX_EXPRESSION_BYTES = 64 * 1024;
 const MAX_TOKENS = 4096;
 const MAX_AST_DEPTH = 128;
 const MAX_AST_NODES = 1024;
-const MIN_NORMAL_NUMBER = 2.2250738585072014e-308;
 
 // --- Token types ---
 
@@ -200,6 +199,11 @@ function scanDecimal(value: string, start: number, allowSignOrLeadingDot: boolea
   return i;
 }
 
+/// Parse a relational literal, mirroring the C++ `TryParseFiniteDouble`.
+///
+/// A decimal that is representable is accepted with its exact value, including
+/// subnormals; only a decimal that overflows to infinity or that underflows to
+/// zero despite a non-zero mantissa is rejected as out of range.
 function parseFiniteDecimal(value: string): number | null {
   if (!isNumericString(value)) {
     return null;
@@ -207,10 +211,7 @@ function parseFiniteDecimal(value: string): number | null {
   const parsed = Number(value);
   const mantissa = value.split(/[eE]/, 1)[0];
   const hasNonzeroDigit = /[1-9]/.test(mantissa);
-  if (
-    !Number.isFinite(parsed) ||
-    (hasNonzeroDigit && (parsed === 0 || Math.abs(parsed) < MIN_NORMAL_NUMBER))
-  ) {
+  if (!Number.isFinite(parsed) || (hasNonzeroDigit && parsed === 0)) {
     return null;
   }
   return parsed;
@@ -1126,7 +1127,14 @@ class Parser {
     }
     const patternTok = this.advance();
 
-    return this.makeNode(new LikeNode(paramIdx, patternTok.text, this.params[paramIdx].values));
+    return this.makeNode(
+      new LikeNode(
+        paramIdx,
+        patternTok.text,
+        this.params[paramIdx].values,
+        this.options.caseSensitive,
+      ),
+    );
   }
 
   private parseRelationalRhs(paramTok: Token, opType: TokenType): ParseResult {
