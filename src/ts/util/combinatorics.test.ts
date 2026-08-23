@@ -123,8 +123,30 @@ describe('checkedBinomial', () => {
     // The product would need more than 53 bits of mantissa, so the value that
     // came out of the division cannot be trusted to compare against the limit.
     expect(checkedBinomial(4_000_000_000, 2, 0xffffffff)).toBeNull();
-    expect(checkedBinomial(4_000_000_000, 2, Number.MAX_VALUE)).toBeNull();
-    expect(checkedBinomial(200, 100, Number.MAX_VALUE)).toBeNull();
+    expect(checkedBinomial(200, 100, 0xffffffff)).toBeNull();
+  });
+
+  // A limit above 2^32 - 1 is the range where this implementation and the C++
+  // core can reach different verdicts. The core cannot be handed one at all —
+  // its limit type refuses to be built from anything wider — so asking for one
+  // here is a caller mistake, and null would read as "the count exceeded the
+  // limit" instead.
+  it('throws on a limit the C++ core could not express', () => {
+    expect(() => checkedBinomial(5, 2, 0x1_0000_0000)).toThrow(RangeError);
+    expect(() => checkedBinomial(5, 2, Number.MAX_VALUE)).toThrow(RangeError);
+    expect(() => checkedBinomial(5, 2, Number.POSITIVE_INFINITY)).toThrow(RangeError);
+    expect(() => checkedBinomial(5, 2, -1)).toThrow(RangeError);
+    expect(() => checkedBinomial(5, 2, 1.5)).toThrow(RangeError);
+    expect(() => checkedBinomial(5, 2, Number.NaN)).toThrow(RangeError);
+  });
+
+  it('names the accepted range in the message it throws', () => {
+    expect(() => checkedBinomial(5, 2, 0x1_0000_0000)).toThrow(/\[0, 4294967295\]/);
+  });
+
+  it('accepts the widest limit and a zero limit without throwing', () => {
+    expect(checkedBinomial(4_294_967_295, 1, 0xffffffff)).toBe(4_294_967_295);
+    expect(checkedBinomial(3, 5, 0)).toBe(0);
   });
 });
 

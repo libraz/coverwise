@@ -17,7 +17,7 @@ namespace validator {
 namespace {
 
 constexpr uint64_t kMaxTuples = 16'000'000;
-constexpr uint64_t kMaxCombinations = 1'000'000;
+constexpr uint32_t kMaxCombinations = 1'000'000;
 constexpr size_t kMaxDiagnosticTuples = 1'000;
 
 /// Recursion-node budget for a single feasibility search. Bounds the otherwise
@@ -194,7 +194,7 @@ model::Error PreflightEnumeration(const std::vector<model::Parameter>& params, u
   const uint32_t n = static_cast<uint32_t>(params.size());
   if (strength == 0 || strength > n) return {};
   uint64_t combinations = 0;
-  if (!util::CheckedBinomial(n, strength, kMaxCombinations, combinations)) {
+  if (!util::CheckedBinomial(n, strength, util::BinomialLimit(kMaxCombinations), combinations)) {
     return {model::Error::Code::kTupleExplosion,
             "parameter combination metadata exceeds safety limit",
             "Combinations exceed limit: " + std::to_string(kMaxCombinations) +
@@ -450,7 +450,7 @@ ClassDomain BuildClassDomain(const model::Parameter& parameter) {
 model::Error PreflightClassEnumeration(const std::vector<ClassDomain>& domains, uint32_t strength) {
   uint32_t n = static_cast<uint32_t>(domains.size());
   uint64_t combinations = 0;
-  if (!util::CheckedBinomial(n, strength, kMaxCombinations, combinations)) {
+  if (!util::CheckedBinomial(n, strength, util::BinomialLimit(kMaxCombinations), combinations)) {
     return {model::Error::Code::kTupleExplosion, "class combination metadata exceeds safety limit",
             "Combinations exceed limit: " + std::to_string(kMaxCombinations)};
   }

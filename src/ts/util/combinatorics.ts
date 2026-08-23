@@ -66,8 +66,31 @@ export function generateCombinationsFlat(n: number, k: number): number[] {
   }
 }
 
-/** Compute C(n, k), returning null when it exceeds limit or safe-integer range. */
+/// The largest combination budget checkedBinomial accepts.
+///
+/// The C++ core caps the same budget with a dedicated type that cannot be built
+/// from anything wider. The two implementations bound their arithmetic
+/// differently — a product that would wrap 64-bit unsigned arithmetic there, a
+/// result that leaves the double safe-integer range here — and those mechanisms
+/// agree only up to this value: with the budget and n both at most 2^32 - 1, no
+/// intermediate can reach 2^64 or leave the safe-integer range. Above it the two
+/// can reach different verdicts, so a wider budget is refused outright.
+const MAX_BINOMIAL_LIMIT = 0xffffffff;
+
+/**
+ * Compute C(n, k), returning null when it exceeds limit or safe-integer range.
+ *
+ * @param limit - The largest count to accept, an integer in [0, 2^32 - 1].
+ * @throws RangeError when `limit` falls outside that range. A budget the C++
+ * core cannot express is a caller mistake rather than a property of the query,
+ * and null would be indistinguishable from "the count exceeded the budget".
+ */
 export function checkedBinomial(n: number, k: number, limit: number): number | null {
+  if (!Number.isInteger(limit) || limit < 0 || limit > MAX_BINOMIAL_LIMIT) {
+    throw new RangeError(
+      `checkedBinomial limit must be an integer in [0, ${MAX_BINOMIAL_LIMIT}], got ${limit}`,
+    );
+  }
   if (k > n) {
     return 0;
   }

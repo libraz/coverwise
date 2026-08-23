@@ -11,6 +11,7 @@
 
 #include "util/combinatorics.h"
 
+using coverwise::util::BinomialLimit;
 using coverwise::util::CheckedBinomial;
 using coverwise::util::GenerateCombinations;
 using coverwise::util::GenerateCombinationsFlat;
@@ -57,7 +58,8 @@ TEST(CombinatoricsAllocationTest, TheNestedGeneratorAllocatesOncePerEmittedCombi
   constexpr uint32_t kN = 30;
   constexpr uint32_t kK = 5;
   uint64_t expected_count = 0;
-  ASSERT_TRUE(CheckedBinomial(kN, kK, std::numeric_limits<uint32_t>::max(), expected_count));
+  ASSERT_TRUE(
+      CheckedBinomial(kN, kK, BinomialLimit(std::numeric_limits<uint32_t>::max()), expected_count));
   ASSERT_GT(expected_count, 100000u);
 
   AllocationCounter counter;
@@ -75,7 +77,8 @@ TEST(CombinatoricsAllocationTest, TheFlatGeneratorAllocatesTwoBuffers) {
   constexpr uint32_t kN = 30;
   constexpr uint32_t kK = 5;
   uint64_t expected_count = 0;
-  ASSERT_TRUE(CheckedBinomial(kN, kK, std::numeric_limits<uint32_t>::max(), expected_count));
+  ASSERT_TRUE(
+      CheckedBinomial(kN, kK, BinomialLimit(std::numeric_limits<uint32_t>::max()), expected_count));
 
   AllocationCounter counter;
   auto flat = GenerateCombinationsFlat(kN, kK);

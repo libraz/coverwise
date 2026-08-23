@@ -36,7 +36,8 @@ model::Error PreflightModel(const std::vector<model::Parameter>& params,
   }
 
   uint64_t combination_count = 0;
-  if (!util::CheckedBinomial(n, strength, CoverageEngine::kMaxCombinations, combination_count)) {
+  if (!util::CheckedBinomial(n, strength, util::BinomialLimit(CoverageEngine::kMaxCombinations),
+                             combination_count)) {
     model::Error err;
     err.code = model::Error::Code::kTupleExplosion;
     err.message = "parameter combination metadata exceeds safety limit";
