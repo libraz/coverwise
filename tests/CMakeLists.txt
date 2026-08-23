@@ -13,9 +13,15 @@ FetchContent_MakeAvailable(googletest)
 
 include(GoogleTest)
 
+# Extra sources beyond TEST_SOURCE are compiled straight into the executable.
+# Shared test support that replaces global symbols -- the allocation counter's
+# operator new family -- must be attached this way: a static library would only
+# be pulled in on an undefined-symbol reference, which a global replacement is
+# not, so the linker could silently drop the instrumentation.
 function(coverwise_add_test TEST_NAME TEST_SOURCE)
-  add_executable(${TEST_NAME} ${TEST_SOURCE})
+  add_executable(${TEST_NAME} ${TEST_SOURCE} ${ARGN})
   target_compile_features(${TEST_NAME} PRIVATE cxx_std_17)
+  target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(${TEST_NAME} PRIVATE coverwise::coverwise GTest::gtest_main)
   coverwise_enable_warnings(${TEST_NAME})
   coverwise_enable_sanitizers(${TEST_NAME})
@@ -30,7 +36,8 @@ endfunction()
 coverwise_add_test(bitset_test util/bitset_test.cpp)
 coverwise_add_test(rng_test util/rng_test.cpp)
 coverwise_add_test(combinatorics_test util/combinatorics_test.cpp)
-coverwise_add_test(combinatorics_alloc_test util/combinatorics_alloc_test.cpp)
+coverwise_add_test(combinatorics_alloc_test util/combinatorics_alloc_test.cpp
+  support/allocation_counter.cpp)
 coverwise_add_test(string_util_test util/string_util_test.cpp)
 
 # Model tests
@@ -51,7 +58,8 @@ coverwise_add_test(coverage_engine_test core/coverage_engine_test.cpp)
 coverwise_add_test(generator_test core/generator_test.cpp)
 
 # Validator tests
-coverwise_add_test(coverage_validator_test validator/coverage_validator_test.cpp)
+coverwise_add_test(coverage_validator_test validator/coverage_validator_test.cpp
+  support/allocation_counter.cpp)
 coverwise_add_test(constraint_validator_test validator/constraint_validator_test.cpp)
 coverwise_add_test(equivalence_class_test validator/equivalence_class_test.cpp)
 
