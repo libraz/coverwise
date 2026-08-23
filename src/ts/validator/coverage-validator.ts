@@ -75,58 +75,147 @@ interface SearchBudget {
   exceeded: boolean;
 }
 
+/**
+ * Backtracking stack owned by the caller so a search allocates nothing.
+ *
+ * `params[i]` / `values[i]` describe the parameter assigned at level `i` and
+ * the value currently being tried there. Depth is bounded by the parameter
+ * count, so a caller that sizes the stack once can run any number of searches
+ * without further allocation.
+ */
+interface SearchStack {
+  params: number[];
+  values: number[];
+  depth: number;
+}
+
+function createSearchStack(size: number): SearchStack {
+  return {
+    params: new Array<number>(size).fill(0),
+    values: new Array<number>(size).fill(0),
+    depth: 0,
+  };
+}
+
+/** Smallest valid value index at or after `start`, or the domain size. */
+function nextValidValue(parameter: Parameter, start: number): number {
+  for (let vi = start; vi < parameter.size; ++vi) {
+    if (!parameter.isInvalid(vi)) {
+      return vi;
+    }
+  }
+  return parameter.size;
+}
+
 // Independent feasibility oracle. Keep this separate from the generation core
 // so cross-surface validation remains an algorithmically independent check.
+//
+// The search runs on an explicit stack: its depth grows with the parameter
+// count, and a satisfiable chain spends only one node of the budget per level,
+// so the node budget alone does not bound how deep it goes. Call stack use
+// therefore stays independent of the model size, while the enumeration order,
+// budget accounting and assignment side effects match a recursive descent.
+//
+// `assignment` is left exactly as it was received on every exit path, so a
+// caller can hand over its own scratch buffer instead of copying the partial.
 function validatorSearch(
   params: Parameter[],
   constraints: ConstraintNode[],
   assignment: number[],
   cursor: number,
   budget: SearchBudget,
+  stack: SearchStack,
 ): boolean {
-  if (budget.remaining === 0) {
-    budget.exceeded = true;
-    return false;
-  }
-  --budget.remaining;
-  for (const constraint of constraints) {
-    if (constraint.evaluate(assignment) === ConstraintResult.False) {
+  stack.depth = 0;
+  let position = cursor;
+  let expand = true;
+
+  for (;;) {
+    if (expand) {
+      expand = false;
+      let dead = false;
+      if (budget.remaining === 0) {
+        budget.exceeded = true;
+        dead = true;
+      } else {
+        --budget.remaining;
+        for (const constraint of constraints) {
+          if (constraint.evaluate(assignment) === ConstraintResult.False) {
+            dead = true;
+            break;
+          }
+        }
+      }
+      if (!dead) {
+        while (position < params.length && assignment[position] !== UNASSIGNED) {
+          ++position;
+        }
+        if (position === params.length) {
+          let satisfied = true;
+          for (const constraint of constraints) {
+            if (constraint.evaluate(assignment) !== ConstraintResult.True) {
+              satisfied = false;
+              break;
+            }
+          }
+          if (satisfied) {
+            // Undo this search's own writes so the caller's buffer comes back
+            // holding exactly the partial assignment it passed in.
+            for (let i = 0; i < stack.depth; ++i) {
+              assignment[stack.params[i]] = UNASSIGNED;
+            }
+            return true;
+          }
+        } else {
+          const vi = nextValidValue(params[position], 0);
+          if (vi < params[position].size) {
+            assignment[position] = vi;
+            stack.params[stack.depth] = position;
+            stack.values[stack.depth] = vi;
+            ++stack.depth;
+            ++position;
+            expand = true;
+            continue;
+          }
+        }
+      }
+    }
+
+    // Backtrack. An exhausted budget unwinds without trying further values, so
+    // the caller sees an untouched assignment together with budget.exceeded.
+    if (stack.depth === 0) {
       return false;
     }
-  }
-  while (cursor < params.length && assignment[cursor] !== UNASSIGNED) {
-    ++cursor;
-  }
-  if (cursor === params.length) {
-    return constraints.every(
-      (constraint) => constraint.evaluate(assignment) === ConstraintResult.True,
-    );
-  }
-  for (let vi = 0; vi < params[cursor].size; ++vi) {
-    if (params[cursor].isInvalid(vi)) {
+    const top = stack.depth - 1;
+    const topParam = stack.params[top];
+    const vi = budget.exceeded
+      ? params[topParam].size
+      : nextValidValue(params[topParam], stack.values[top] + 1);
+    if (vi < params[topParam].size) {
+      stack.values[top] = vi;
+      assignment[topParam] = vi;
+      position = topParam + 1;
+      expand = true;
       continue;
     }
-    assignment[cursor] = vi;
-    if (validatorSearch(params, constraints, assignment, cursor + 1, budget)) {
-      return true;
-    }
-    if (budget.exceeded) {
-      assignment[cursor] = UNASSIGNED;
-      return false;
-    }
+    assignment[topParam] = UNASSIGNED;
+    --stack.depth;
   }
-  assignment[cursor] = UNASSIGNED;
-  return false;
 }
 
+/**
+ * Whether `partial` extends to a full valid, constraint-satisfying assignment.
+ * `partial` is scratch: it is restored before returning.
+ */
 function hasSatisfyingCompletion(
   params: Parameter[],
   constraints: ConstraintNode[],
   partial: number[],
+  stack: SearchStack,
   budget?: SearchBudget,
 ): boolean {
   const b = budget ?? { remaining: MAX_SEARCH_NODES, exceeded: false };
-  return validatorSearch(params, constraints, partial.slice(), 0, b);
+  return validatorSearch(params, constraints, partial, 0, b, stack);
 }
 
 function validateSatisfiableModel(params: Parameter[], constraints: ConstraintNode[]): ErrorInfo {
@@ -139,6 +228,7 @@ function validateSatisfiableModel(params: Parameter[], constraints: ConstraintNo
       params,
       constraints,
       new Array<number>(params.length).fill(UNASSIGNED),
+      createSearchStack(params.length),
       budget,
     )
   ) {
@@ -277,6 +367,10 @@ export function validateCoverage(
     return report;
   }
 
+  // validateParameters enforces the parameter budget (MAX_PARAMETERS), and it
+  // runs before any feasibility search: the search walks one parameter per
+  // level, so an oversized model has to be rejected up front rather than
+  // discovered part-way through a descent.
   const parameterError = validateParameters(params);
   if (parameterError.length > 0) {
     report.error = {
@@ -312,8 +406,11 @@ export function validateCoverage(
     }
   }
 
-  // Buffers reused across combinations to avoid per-tuple allocation.
+  // Buffers reused across combinations to avoid per-tuple allocation. The
+  // search stack is sized to the maximum depth a search can reach so even the
+  // first feasibility check inside the tuple loop cannot grow it.
   const valueIndices = new Array<number>(strength);
+  const searchStack = createSearchStack(n);
   let coveredFlags = new Uint8Array(0);
 
   for (const combo of combinations) {
@@ -368,12 +465,25 @@ export function validateCoverage(
 
       // Step 2b: Exclude constraint-invalid tuples from the universe entirely
       // (matches CoverageEngine.excludeInvalidTuples).
-      if (constraints.length > 0) {
+      //
+      // A covered tuple needs no search: the valid test that covers it is
+      // itself a complete assignment of valid values satisfying every
+      // constraint, so the completion witness is already in hand. Asking the
+      // solver again can only reproduce that answer — or fail to reach it
+      // within the node budget and report a feasible tuple as undecidable.
+      const covered = coveredFlags[flat] !== 0;
+      if (!covered && constraints.length > 0) {
         for (let i = 0; i < strength; ++i) {
           assignment[combo[i]] = valueIndices[i];
         }
         const tupleBudget: SearchBudget = { remaining: MAX_SEARCH_NODES, exceeded: false };
-        const excluded = !hasSatisfyingCompletion(params, constraints, assignment, tupleBudget);
+        const excluded = !hasSatisfyingCompletion(
+          params,
+          constraints,
+          assignment,
+          searchStack,
+          tupleBudget,
+        );
         for (let i = 0; i < strength; ++i) {
           assignment[combo[i]] = UNASSIGNED;
         }
@@ -393,7 +503,7 @@ export function validateCoverage(
       ++report.totalTuples;
 
       // Step 3: Coverage is an O(1) lookup into the projection built above.
-      if (coveredFlags[flat]) {
+      if (covered) {
         ++report.coveredTuples;
       } else {
         ++report.uncoveredCount;
@@ -449,18 +559,28 @@ enum ClassTupleFeasibility {
   BudgetExceeded,
 }
 
+/** Marks a value that belongs to no class in a parameter's class domain. */
+const NO_CLASS = -1;
+
 interface ClassDomain {
   names: string[];
   validValueIndices: number[][];
-  indexByName: Map<string, number>;
+  /**
+   * Class index per value index, or NO_CLASS. Resolving a value to its class is
+   * a flat array read, never a name lookup: the projection below runs it once
+   * per (combination, test, position).
+   */
+  classIndexByValue: number[];
 }
 
 function buildClassDomain(parameter: Parameter): ClassDomain {
   const domain: ClassDomain = {
     names: [],
     validValueIndices: [],
-    indexByName: new Map<string, number>(),
+    classIndexByValue: new Array<number>(parameter.size).fill(NO_CLASS),
   };
+  // Name lookup is confined to this one-off build; nothing downstream hashes.
+  const indexByName = new Map<string, number>();
   for (let vi = 0; vi < parameter.size; ++vi) {
     if (parameter.isInvalid(vi)) {
       continue;
@@ -469,14 +589,15 @@ function buildClassDomain(parameter: Parameter): ClassDomain {
     if (className.length === 0) {
       continue;
     }
-    let classIndex = domain.indexByName.get(className);
+    let classIndex = indexByName.get(className);
     if (classIndex === undefined) {
       classIndex = domain.names.length;
-      domain.indexByName.set(className, classIndex);
+      indexByName.set(className, classIndex);
       domain.names.push(className);
       domain.validValueIndices.push([]);
     }
     domain.validValueIndices[classIndex].push(vi);
+    domain.classIndexByValue[vi] = classIndex;
   }
   return domain;
 }
@@ -535,24 +656,31 @@ function classTupleHasValidRepresentative(
   constraints: ConstraintNode[],
   assignment: number[],
   choice: number[],
+  stack: SearchStack,
 ): ClassTupleFeasibility {
   const k = comboParamIndices.length;
   choice.length = k;
   choice.fill(0);
+  // One representative exhausting its budget says nothing about the others, so
+  // it must not end the search: only a feasible representative, or the whole
+  // enumeration completing, decides the tuple. An exhausted budget is remembered
+  // and reported only when no representative proved feasible, which keeps the
+  // verdict independent of the order values appear in.
+  let anyExceeded = false;
   for (;;) {
     for (let i = 0; i < k; ++i) {
       assignment[comboParamIndices[i]] = candidates[i][choice[i]];
     }
     const budget: SearchBudget = { remaining: MAX_SEARCH_NODES, exceeded: false };
-    const violated = !hasSatisfyingCompletion(params, constraints, assignment, budget);
+    const violated = !hasSatisfyingCompletion(params, constraints, assignment, stack, budget);
     for (let i = 0; i < k; ++i) {
       assignment[comboParamIndices[i]] = UNASSIGNED;
     }
-    if (budget.exceeded) {
-      return ClassTupleFeasibility.BudgetExceeded;
-    }
     if (!violated) {
       return ClassTupleFeasibility.Feasible;
+    }
+    if (budget.exceeded) {
+      anyExceeded = true;
     }
 
     // Advance the mixed-radix choice vector.
@@ -568,7 +696,7 @@ function classTupleHasValidRepresentative(
       break;
     }
   }
-  return ClassTupleFeasibility.Infeasible;
+  return anyExceeded ? ClassTupleFeasibility.BudgetExceeded : ClassTupleFeasibility.Infeasible;
 }
 
 /**
@@ -583,7 +711,16 @@ function classTupleHasValidRepresentative(
  * constraints, so a fully valid-covering suite is not penalized with
  * classCoverageRatio < 1.0.
  * @param constraints Optional constraints threaded into class-tuple enumeration.
- * @returns Class coverage report. If no parameters have classes, returns all zeros.
+ * @returns Class coverage report. An empty class universe — strength outside
+ *          [1, parameter count], no parameter carrying equivalence classes, or
+ *          every class tuple excluded as infeasible — reports zero counts with
+ *          coverageRatio 1.0 and an ok error, so a suite is never penalized for
+ *          a universe with nothing to cover. coverageRatio is left at 0 only on
+ *          an error exit (invalid parameters, unsatisfiable constraints, an
+ *          exceeded enumeration limit, or an exhausted feasibility budget),
+ *          which is signalled by a non-ok error and where the counts are
+ *          partial. Detect "no classes" via the counts and error, never via
+ *          coverageRatio === 0.
  */
 export function computeClassCoverage(
   params: Parameter[],
@@ -659,6 +796,7 @@ export function computeClassCoverage(
   const requiredCandidates = new Array<readonly number[]>(effectiveStrength);
   const assignment = new Array<number>(params.length).fill(UNASSIGNED);
   const choice: number[] = [];
+  const searchStack = createSearchStack(params.length);
   let coveredFlags = new Uint8Array(0);
 
   // For each combination, enumerate all class tuples.
@@ -683,15 +821,13 @@ export function computeClassCoverage(
       let projected = 0;
       let inDomain = true;
       for (let k = 0; k < effectiveStrength; ++k) {
-        const domainIndex = combo[k];
-        const pi = classParams[domainIndex];
-        const className = params[pi].equivalenceClass(test.values[pi]);
-        const classIndex = classDomains[domainIndex].indexByName.get(className);
-        if (classIndex === undefined) {
+        const domain = classDomains[combo[k]];
+        const classIndex = domain.classIndexByValue[test.values[classParams[combo[k]]]];
+        if (classIndex === NO_CLASS) {
           inDomain = false;
           break;
         }
-        projected = projected * classDomains[domainIndex].names.length + classIndex;
+        projected = projected * domain.names.length + classIndex;
       }
       if (inDomain) {
         coveredFlags[projected] = 1;
@@ -719,6 +855,7 @@ export function computeClassCoverage(
           constraints,
           assignment,
           choice,
+          searchStack,
         );
         if (feasibility === ClassTupleFeasibility.BudgetExceeded) {
           report.error = {

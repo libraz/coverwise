@@ -75,7 +75,16 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
 /// fully valid-covering suite is not penalized with classCoverageRatio < 1.0.
 /// @param constraints Optional constraint AST list used to decide whether a
 ///                    class tuple has a constraint-satisfiable representative.
-/// @return Class coverage report. If no parameters have classes, returns all zeros.
+/// @return Class coverage report. An empty class universe — strength outside
+///         [1, parameter count], no parameter carrying equivalence classes, or
+///         every class tuple excluded as infeasible — reports zero counts with
+///         coverage_ratio 1.0 and an ok error, so a suite is never penalized for
+///         a universe with nothing to cover. coverage_ratio is left at 0.0 only
+///         on an error exit (invalid parameters, unsatisfiable constraints, an
+///         exceeded enumeration limit, or an exhausted feasibility budget),
+///         which is signalled by a non-ok error and where the counts are
+///         partial. Detect "no classes" via the counts and error, never via
+///         coverage_ratio == 0.0.
 ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& params,
                                          const std::vector<model::TestCase>& tests,
                                          uint32_t strength,

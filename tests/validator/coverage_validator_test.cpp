@@ -3,6 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -243,10 +247,10 @@ TEST(CoverageValidatorTest, StrengthExceedsParamCount) {
 // ---------------------------------------------------------------------------
 // 7. OutOfBoundsValueIndex
 //
-// A TestCase contains a value index >= the parameter's value count.
-// The validator should handle this gracefully: the out-of-bounds value
-// simply won't match any expected tuple, so those tuples remain uncovered.
-// The validator must not crash or produce undefined behavior.
+// A TestCase contains a value index >= the parameter's value count. The row is
+// rejected whole and reported in invalid_tests, so none of its values count as
+// coverage — not even the in-range ones. The validator must not crash or
+// produce undefined behavior.
 // ---------------------------------------------------------------------------
 TEST(CoverageValidatorTest, OutOfBoundsValueIndex) {
   std::vector<Parameter> params = {
@@ -262,11 +266,13 @@ TEST(CoverageValidatorTest, OutOfBoundsValueIndex) {
 
   // The validator should enumerate all 4 tuples.
   EXPECT_EQ(report.total_tuples, 4u);
-  // The out-of-bounds value (B=99) cannot match any expected tuple (B=0 or B=1),
-  // so no tuples should be covered.
+  // The row is rejected whole, so A=0 does not count either.
   EXPECT_EQ(report.covered_tuples, 0u);
   EXPECT_DOUBLE_EQ(report.coverage_ratio, 0.0);
   EXPECT_EQ(report.uncovered.size(), 4u);
+  ASSERT_EQ(report.invalid_tests.size(), 1u);
+  EXPECT_EQ(report.invalid_tests[0].test_index, 0u);
+  EXPECT_EQ(report.invalid_tests[0].reason, "value index 99 is out of range for parameter B");
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +354,57 @@ TEST(CoverageValidatorTest, RejectsJustAboveTupleLimit) {
   std::vector<Parameter> params = {std::move(a), std::move(b)};
   auto report = ValidateCoverage(params, {}, 2);
   EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kTupleExplosion);
+}
+
+TEST(CoverageValidatorTest, RejectsAParameterCountBeyondTheDocumentedLimit) {
+  // Feasibility search walks one parameter per level, so an oversized model has
+  // to be turned away as invalid input before any search starts.
+  constexpr uint32_t kParameters = 200'000;
+  std::vector<Parameter> params;
+  params.reserve(kParameters);
+  for (uint32_t index = 0; index < kParameters; ++index) {
+    params.push_back({"P" + std::to_string(index), {"a", "b"}});
+  }
+  auto parse = coverwise::model::ParseConstraint("P0=\"a\" OR P1=\"b\"", params);
+  ASSERT_TRUE(parse.error.ok()) << parse.error.message;
+  std::vector<coverwise::model::Constraint> constraints;
+  constraints.push_back(std::move(parse.constraint));
+
+  auto report = ValidateCoverage(params, {}, 1, constraints);
+
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_EQ(report.total_tuples, 0u);
+}
+
+TEST(CoverageValidatorTest, AcceptsTheLargestDocumentedParameterCount) {
+  constexpr uint32_t kParameters = coverwise::model::kMaxParameters;
+  std::vector<Parameter> params;
+  params.reserve(kParameters);
+  for (uint32_t index = 0; index < kParameters; ++index) {
+    params.push_back({"P" + std::to_string(index), {"a", "b"}});
+  }
+  auto parse = coverwise::model::ParseConstraint("P0=\"a\" OR P1=\"b\"", params);
+  ASSERT_TRUE(parse.error.ok()) << parse.error.message;
+  std::vector<coverwise::model::Constraint> constraints;
+  constraints.push_back(std::move(parse.constraint));
+
+  auto report = ValidateCoverage(params, {}, 1, constraints);
+
+  EXPECT_TRUE(report.error.ok()) << report.error.message << ": " << report.error.detail;
+  EXPECT_EQ(report.total_tuples, 2u * kParameters);
+}
+
+TEST(CoverageValidatorTest, RejectsOneParameterPastTheLimit) {
+  std::vector<Parameter> params;
+  params.reserve(coverwise::model::kMaxParameters + 1);
+  for (size_t index = 0; index <= coverwise::model::kMaxParameters; ++index) {
+    params.push_back({"P" + std::to_string(index), {"a", "b"}});
+  }
+
+  auto report = ValidateCoverage(params, {}, 1);
+
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_EQ(report.error.message, "Parameter count 1025 exceeds maximum of 1024");
 }
 
 TEST(CoverageValidatorTest, RejectsCombinationMetadataBeforeMaterialization) {
@@ -459,6 +516,242 @@ TEST(CoverageValidatorTest, ExcludesTupleWithoutCompleteConstraintWitness) {
   EXPECT_FALSE(UncoveredContains(report.uncovered, {"A=0", "B=0"}));
 }
 
+// ---------------------------------------------------------------------------
+// Constrained validation on a covering suite
+//
+// A tuple a valid test already covers comes with its own completion witness:
+// that test is a full assignment of valid values satisfying every constraint.
+// Re-deriving it with a feasibility search costs the whole model per tuple, so
+// the validator must not run one. These tests pin the two consequences — the
+// report is unchanged, and the constrained run stays close to the unconstrained
+// one in both time and heap traffic.
+// ---------------------------------------------------------------------------
+namespace {
+
+std::vector<Parameter> UniformParams(uint32_t count, uint32_t values) {
+  std::vector<Parameter> params;
+  for (uint32_t i = 0; i < count; ++i) {
+    std::vector<std::string> names;
+    for (uint32_t v = 0; v < values; ++v) names.push_back("v" + std::to_string(v));
+    params.emplace_back("p" + std::to_string(i), names);
+  }
+  return params;
+}
+
+/// @brief Strength-2 covering array for binary parameters.
+///
+/// The all-zero and all-one rows cover the (0,0) and (1,1) pairs; for any two
+/// distinct parameters some bit of their indices differs, so the row carrying
+/// that bit and its complement cover (0,1) and (1,0).
+std::vector<TestCase> BinaryCoveringSuite(uint32_t count) {
+  std::vector<TestCase> tests(2);
+  tests[0].values.assign(count, 0);
+  tests[1].values.assign(count, 1);
+  for (uint32_t bit = 0; (1u << bit) < count; ++bit) {
+    TestCase row;
+    TestCase complement;
+    row.values.resize(count);
+    complement.values.resize(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      uint32_t value = (i >> bit) & 1u;
+      row.values[i] = value;
+      complement.values[i] = 1u - value;
+    }
+    tests.push_back(row);
+    tests.push_back(complement);
+  }
+  return tests;
+}
+
+/// @brief Every assignment whose value for parameter i runs over [lowest[i], size).
+std::vector<TestCase> ExhaustiveSuite(const std::vector<Parameter>& params,
+                                      const std::vector<uint32_t>& lowest) {
+  std::vector<TestCase> tests;
+  TestCase current;
+  current.values = lowest;
+  for (;;) {
+    tests.push_back(current);
+    size_t pos = params.size();
+    bool carry = true;
+    while (pos > 0 && carry) {
+      --pos;
+      if (++current.values[pos] < params[pos].size()) {
+        carry = false;
+      } else {
+        current.values[pos] = lowest[pos];
+      }
+    }
+    if (carry) return tests;
+  }
+}
+
+std::vector<coverwise::model::Constraint> ParseAll(const std::vector<Parameter>& params,
+                                                   const std::vector<std::string>& expressions) {
+  std::vector<coverwise::model::Constraint> constraints;
+  for (const auto& expression : expressions) {
+    auto parsed = coverwise::model::ParseConstraint(expression, params);
+    EXPECT_TRUE(parsed.error.ok()) << expression << ": " << parsed.error.message;
+    constraints.push_back(std::move(parsed.constraint));
+  }
+  return constraints;
+}
+
+double FastestValidationMs(const std::vector<Parameter>& params, const std::vector<TestCase>& tests,
+                           uint32_t strength,
+                           const std::vector<coverwise::model::Constraint>& constraints,
+                           int repetitions) {
+  double best = 0.0;
+  for (int i = 0; i < repetitions; ++i) {
+    auto start = std::chrono::steady_clock::now();
+    auto report = ValidateCoverage(params, tests, strength, constraints);
+    auto elapsed =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    EXPECT_TRUE(report.error.ok());
+    if (i == 0 || elapsed < best) best = elapsed;
+  }
+  return best;
+}
+
+// Heap-allocation instrumentation. Counting is off unless a scope turns it on,
+// and it exists only in this test binary — the library is built without it, so
+// a release build carries no instrumentation at all.
+bool g_counting_allocations = false;
+uint64_t g_allocation_count = 0;
+
+class AllocationCounter {
+ public:
+  AllocationCounter() {
+    g_allocation_count = 0;
+    g_counting_allocations = true;
+  }
+  ~AllocationCounter() { g_counting_allocations = false; }
+  AllocationCounter(const AllocationCounter&) = delete;
+  AllocationCounter& operator=(const AllocationCounter&) = delete;
+
+  uint64_t Stop() {
+    g_counting_allocations = false;
+    return g_allocation_count;
+  }
+};
+
+}  // namespace
+
+void* operator new(size_t size) {
+  if (g_counting_allocations) ++g_allocation_count;
+  void* memory = std::malloc(size == 0 ? 1 : size);
+  if (memory == nullptr) throw std::bad_alloc();
+  return memory;
+}
+
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, size_t) noexcept { std::free(memory); }
+
+TEST(CoverageValidatorTest, SuccessfulFeasibilitySearchLeavesTheScratchAssignmentUntouched) {
+  // The tuple loop hands its own assignment buffer to the feasibility search
+  // instead of copying it per tuple, so a search that finds a witness has to
+  // undo its own writes. Leaking them would make later tuples be judged against
+  // the previous witness rather than against themselves.
+  //
+  // A=0,B=0 is feasible and its first witness assigns C=0. The very next tuple,
+  // A=0,B=1, is feasible only with C=1 — so a leaked C=0 turns it infeasible
+  // and drops it out of the universe.
+  std::vector<Parameter> params = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
+  };
+  auto constraints = ParseAll(params, {"IF B=1 THEN C=1"});
+
+  auto report = ValidateCoverage(params, {}, 2, constraints);
+
+  ASSERT_TRUE(report.error.ok()) << report.error.message;
+  // (A,B) and (A,C) contribute 4 tuples each; (B,C) loses only (B=1, C=0).
+  EXPECT_EQ(report.total_tuples, 11u);
+  EXPECT_EQ(report.uncovered_count, 11u);
+  EXPECT_TRUE(UncoveredContains(report.uncovered, {"A=0", "B=1"}));
+  EXPECT_FALSE(UncoveredContains(report.uncovered, {"B=1", "C=0"}));
+}
+
+TEST(CoverageValidatorTest, TriviallySatisfiedConstraintReportsSameUniverseAsNoConstraint) {
+  // 500 binary parameters: 124,750 parameter pairs, 499,000 tuples. The
+  // constraint holds for every assignment of p0, so it excludes nothing and the
+  // two reports have to agree field for field.
+  auto params = UniformParams(500, 2);
+  auto tests = BinaryCoveringSuite(500);
+  auto constraints = ParseAll(params, {"p0 = v0 OR p0 = v1"});
+
+  auto unconstrained = ValidateCoverage(params, tests, 2);
+  auto constrained = ValidateCoverage(params, tests, 2, constraints);
+
+  EXPECT_EQ(constrained.total_tuples, unconstrained.total_tuples);
+  EXPECT_EQ(constrained.covered_tuples, unconstrained.covered_tuples);
+  EXPECT_EQ(constrained.uncovered_count, unconstrained.uncovered_count);
+  EXPECT_EQ(constrained.omitted_uncovered, unconstrained.omitted_uncovered);
+  EXPECT_EQ(constrained.uncovered.size(), unconstrained.uncovered.size());
+  EXPECT_DOUBLE_EQ(constrained.coverage_ratio, unconstrained.coverage_ratio);
+  EXPECT_EQ(constrained.invalid_tests.size(), unconstrained.invalid_tests.size());
+  EXPECT_TRUE(constrained.error.ok());
+
+  // The suite covers the whole universe, which is what makes the search
+  // redundant in the first place.
+  EXPECT_EQ(constrained.total_tuples, 499000u);
+  EXPECT_EQ(constrained.covered_tuples, 499000u);
+  EXPECT_EQ(constrained.uncovered_count, 0u);
+  EXPECT_DOUBLE_EQ(constrained.coverage_ratio, 1.0);
+}
+
+TEST(CoverageValidatorTest, ConstrainedCoveringSuiteRunsWithinTwiceTheUnconstrainedTime) {
+  auto params = UniformParams(500, 2);
+  auto tests = BinaryCoveringSuite(500);
+  auto constraints = ParseAll(params, {"p0 = v0 OR p0 = v1"});
+
+  const int kRepetitions = 3;
+  double unconstrained_ms = FastestValidationMs(params, tests, 2, {}, kRepetitions);
+  double constrained_ms = FastestValidationMs(params, tests, 2, constraints, kRepetitions);
+
+  EXPECT_LT(constrained_ms, 2.0 * unconstrained_ms)
+      << "constrained=" << constrained_ms << "ms unconstrained=" << unconstrained_ms << "ms";
+}
+
+TEST(CoverageValidatorTest, ConstrainedTupleLoopAllocationCountIsIndependentOfSearchCount) {
+  // Two models over the same 6x4 parameters, differing only in how many tuples
+  // reach the feasibility search. Both suites cover their entire feasible
+  // universe, so no uncovered diagnostic is built and every allocation left is
+  // fixed setup. Equal counts therefore mean the searches allocate nothing.
+  auto params = UniformParams(6, 4);
+
+  // Only tuples containing p0=v0 are infeasible: 240 - 220 = 20 searches.
+  auto narrow = ParseAll(params, {"p0 != v0"});
+  std::vector<uint32_t> narrow_lowest(6, 0);
+  narrow_lowest[0] = 1;
+  auto narrow_tests = ExhaustiveSuite(params, narrow_lowest);
+
+  // Every tuple containing v0 anywhere is infeasible: 240 - 135 = 105 searches.
+  auto broad = ParseAll(params, {"p0 != v0 AND p1 != v0 AND p2 != v0 AND p3 != v0 AND "
+                                 "p4 != v0 AND p5 != v0"});
+  auto broad_tests = ExhaustiveSuite(params, std::vector<uint32_t>(6, 1));
+
+  AllocationCounter narrow_counter;
+  auto narrow_report = ValidateCoverage(params, narrow_tests, 2, narrow);
+  uint64_t narrow_allocations = narrow_counter.Stop();
+
+  AllocationCounter broad_counter;
+  auto broad_report = ValidateCoverage(params, broad_tests, 2, broad);
+  uint64_t broad_allocations = broad_counter.Stop();
+
+  ASSERT_TRUE(narrow_report.error.ok());
+  ASSERT_TRUE(broad_report.error.ok());
+  EXPECT_EQ(narrow_report.total_tuples, 220u);
+  EXPECT_EQ(narrow_report.covered_tuples, 220u);
+  EXPECT_EQ(narrow_report.uncovered_count, 0u);
+  EXPECT_EQ(broad_report.total_tuples, 135u);
+  EXPECT_EQ(broad_report.covered_tuples, 135u);
+  EXPECT_EQ(broad_report.uncovered_count, 0u);
+
+  EXPECT_EQ(broad_allocations, narrow_allocations)
+      << "broad=" << broad_allocations << " narrow=" << narrow_allocations;
+}
+
 TEST(CoverageValidatorTest, MalformedAndConstraintViolatingTestsDoNotContribute) {
   std::vector<Parameter> params = {
       {"A", {"0", "1"}, {}},
@@ -475,4 +768,83 @@ TEST(CoverageValidatorTest, MalformedAndConstraintViolatingTestsDoNotContribute)
   auto report = ValidateCoverage(params, tests, 2, constraints);
 
   EXPECT_TRUE(UncoveredContains(report.uncovered, {"A=0", "B=0"}));
+  // Neither row silently disappears: both are reported, in input order.
+  ASSERT_EQ(report.invalid_tests.size(), 2u);
+  EXPECT_EQ(report.invalid_tests[0].test_index, 0u);
+  EXPECT_EQ(report.invalid_tests[1].test_index, 1u);
+}
+
+// ---------------------------------------------------------------------------
+// invalid_tests
+//
+// A row the validator refuses to count is the one thing a caller cannot see
+// from the coverage numbers alone: a rejected row lowers coverage exactly like
+// a missing one. Every rejection category therefore has to name the row and say
+// why, and the five categories are checked in a fixed order — arity first, then
+// per-parameter unassigned / out of range / marked invalid, then the
+// constraints.
+// ---------------------------------------------------------------------------
+TEST(CoverageValidatorTest, InvalidTestsNameEveryRejectedRowAndItsReason) {
+  std::vector<Parameter> params = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "bad"}, {false, true}},
+      {"C", {"c0", "c1"}, {}},
+  };
+  auto parsed = coverwise::model::ParseConstraint("IF A=a0 THEN C=c0", params);
+  ASSERT_TRUE(parsed.error.ok());
+  std::vector<coverwise::model::Constraint> constraints;
+  constraints.push_back(std::move(parsed.constraint));
+
+  const uint32_t unassigned = coverwise::model::kUnassigned;
+  std::vector<TestCase> tests = {
+      TestCase{{0, 0}},              // 0: too few values
+      TestCase{{0, unassigned, 0}},  // 1: B left unassigned
+      TestCase{{0, 99, 0}},          // 2: B out of range
+      TestCase{{0, 1, 0}},           // 3: B=bad is marked invalid
+      TestCase{{0, 0, 1}},           // 4: violates the constraint
+      TestCase{{0, 0, 0}},           // 5: accepted
+      TestCase{{0, 0, 0, 0}},        // 6: too many values
+  };
+
+  auto report = ValidateCoverage(params, tests, 2, constraints);
+  ASSERT_TRUE(report.error.ok()) << report.error.message;
+
+  ASSERT_EQ(report.invalid_tests.size(), 6u);
+
+  EXPECT_EQ(report.invalid_tests[0].test_index, 0u);
+  EXPECT_EQ(report.invalid_tests[0].reason, "expected 3 value(s), got 2");
+
+  EXPECT_EQ(report.invalid_tests[1].test_index, 1u);
+  EXPECT_EQ(report.invalid_tests[1].reason, "missing value for parameter B");
+
+  EXPECT_EQ(report.invalid_tests[2].test_index, 2u);
+  EXPECT_EQ(report.invalid_tests[2].reason, "value index 99 is out of range for parameter B");
+
+  EXPECT_EQ(report.invalid_tests[3].test_index, 3u);
+  EXPECT_EQ(report.invalid_tests[3].reason, "value B=bad is marked invalid");
+
+  EXPECT_EQ(report.invalid_tests[4].test_index, 4u);
+  EXPECT_EQ(report.invalid_tests[4].reason,
+            "violates constraint #1 (constraint evaluation is false or indeterminate)");
+
+  EXPECT_EQ(report.invalid_tests[5].test_index, 6u);
+  EXPECT_EQ(report.invalid_tests[5].reason, "expected 3 value(s), got 4");
+
+  // Only row 5 survived, so it is the only one that can contribute coverage.
+  // A=a0,B=b0 is the pair it covers; the invalid-value tuples are outside the
+  // universe entirely.
+  EXPECT_EQ(report.covered_tuples, 3u);
+}
+
+TEST(CoverageValidatorTest, InvalidTestsIsEmptyWhenEveryRowIsAccepted) {
+  std::vector<Parameter> params = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1"}, {}},
+  };
+  std::vector<TestCase> tests = {TestCase{{0, 0}}, TestCase{{1, 1}}};
+
+  auto report = ValidateCoverage(params, tests, 2);
+
+  ASSERT_TRUE(report.error.ok());
+  EXPECT_TRUE(report.invalid_tests.empty());
 }
