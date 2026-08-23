@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22.23.1'
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Verify tag and manifest versions
@@ -125,7 +125,7 @@ jobs:
           done
           echo "Published package @libraz/coverwise@$version was not visible in the registry" >&2
           exit 1
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: native-linux-x64
           path: coverwise-${{ github.ref_name }}-linux-x64.tar.gz
@@ -166,7 +166,7 @@ jobs:
           "$python_bin" -m venv /tmp/coverwise-wheel-test
           /tmp/coverwise-wheel-test/bin/python -m pip install bindings/python/wheelhouse/*.whl pytest
           /tmp/coverwise-wheel-test/bin/python -m pytest bindings/python/tests -v
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: python-wheel-manylinux-${{ matrix.arch }}
           path: bindings/python/wheelhouse/*.whl
@@ -177,7 +177,7 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Build macOS wheel
@@ -193,7 +193,7 @@ jobs:
           python3 -m venv /tmp/coverwise-wheel-test
           /tmp/coverwise-wheel-test/bin/python -m pip install bindings/python/dist/*.whl pytest
           /tmp/coverwise-wheel-test/bin/python -m pytest bindings/python/tests -v
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: python-wheel-macos-arm64
           path: bindings/python/dist/*.whl
@@ -208,7 +208,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: python-wheel-*
           path: dist/
@@ -223,7 +223,7 @@ jobs:
     needs: [publish-npm, publish-pypi]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: native-linux-x64
           path: dist/

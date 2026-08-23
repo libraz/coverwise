@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: volta-cli/action@v5
+      - uses: jdx/mise-action@v4
       - run: yarn install --immutable
       - run: yarn lint
       - run: yarn format:check
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: volta-cli/action@v5
+      - uses: jdx/mise-action@v4
       - uses: mymindstorm/setup-emsdk@v16
 
       - name: Cache CMake dependencies
@@ -127,7 +127,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
