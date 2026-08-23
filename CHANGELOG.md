@@ -9,6 +9,63 @@ Generation is deterministic: the same model and seed produce the same suite.
 Entries below call out the releases where that output changed, so a pinned
 version can be upgraded knowingly.
 
+## [1.5.0] - 2026-08-24
+
+Every surface — CLI, WASM, JavaScript, pure TypeScript and Python — is held to
+one input-acceptance contract and one error shape, and the paths that decide
+them are now single implementations rather than per-surface copies. **Generated
+suites are unchanged for valid models and seeds.**
+
+### Added
+
+- The documented input limits have one origin and are enforced identically on
+  every surface.
+- Type-level contract files pin what each JavaScript entry point exports and
+  with what visibility, and the Python package ships a typing marker.
+- A security policy.
+
+### Fixed
+
+- `LIKE` honours case sensitivity, the last value-matching operator that
+  ignored it.
+- Subnormal decimals parse identically on every platform and build backend.
+- A zero strength returns an empty universe instead of dividing by zero, and an
+  exhausted budget no longer reports a covered tuple as a constraint error.
+- Every CLI subcommand exits the same way on a malformed constraint and names
+  the expression that failed; `analyze` honours the model's strength and
+  rejects a `--constraints` document that is not a constraint list rather than
+  silently measuring an unconstrained universe.
+- A row preserved from an existing suite keeps the text the caller supplied, so
+  a warning names the value instead of an internal sentinel.
+- The JavaScript entry points raise a structured error for `null` or
+  `undefined` in a values array, and quote an equality value so one matching a
+  parameter name stays a value.
+- The Python API returns the report the executable wrote instead of discarding
+  it, raises `TypeError` for a scalar where a value list belongs, and reports a
+  crashed executable as a process failure rather than a model error.
+- Source maps pointing outside the published tarball are no longer shipped.
+
+### Changed
+
+- **C++ API (breaking):** `CheckedBinomial` takes a `util::BinomialLimit`
+  instead of a `uint64_t` budget, bounding it to the range over which the C++
+  and TypeScript engines reach the same verdict. A literal budget needs a `u`
+  suffix.
+- `stats` reads the same model document as `generate`, so a `seeds` array
+  `generate` rejects no longer passes the preflight.
+- A row that drifts from the model is preserved with a warning naming the
+  offending value, instead of being dropped — **`extend` output can differ from
+  1.4.0 for suites containing such rows.**
+- `estimatedTests` is documented as a coarse sizing heuristic rather than an
+  upper bound. No reported value changed.
+- Generation and coverage validation are substantially faster on large and
+  constrained models: pass state is reused, a parameter is scored in one batch,
+  and a tuple already witnessed by a valid test skips the feasibility search.
+- The published benchmark table, CLI output blocks and constraint examples are
+  regenerated from the shipping binary and pinned by tests. Per-configuration
+  run times are no longer published, since nothing in the repository can
+  re-derive them.
+
 ## [1.4.0] - 2026-07-25
 
 A Python binding that ships the native CLI, plus stdin input for the CLI itself.
@@ -129,6 +186,7 @@ First release.
   mirroring the C++ architecture.
 - Bilingual documentation and the publish workflow.
 
+[1.5.0]: https://github.com/libraz/coverwise/releases/tag/v1.5.0
 [1.4.0]: https://github.com/libraz/coverwise/releases/tag/v1.4.0
 [1.3.1]: https://github.com/libraz/coverwise/releases/tag/v1.3.1
 [1.3.0]: https://github.com/libraz/coverwise/releases/tag/v1.3.0
