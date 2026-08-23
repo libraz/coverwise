@@ -4,9 +4,12 @@
 
 #include <algorithm>
 #include <limits>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "core/coverage_engine.h"
 #include "model/constraint_ast.h"
 #include "model/constraint_parser.h"
 #include "model/parameter.h"
@@ -319,6 +322,116 @@ TEST(GeneratorTest, ConstraintsAndSubModelsCombined) {
   EXPECT_EQ(con_report.violations, 0u);
 }
 
+namespace {
+
+/// @brief Build the model used by the sub-model diagnostic tests: four
+/// three-valued parameters, pairwise, plus a sub-model that repeats the same
+/// strength over three of them so both engines enumerate the same pairs.
+GenerateOptions OverlappingSubModelOptions() {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1", "a2"}, {}},
+      {"B", {"b0", "b1", "b2"}, {}},
+      {"C", {"c0", "c1", "c2"}, {}},
+      {"D", {"d0", "d1", "d2"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  SubModel sm;
+  sm.parameter_names = {"A", "B", "C"};
+  sm.strength = 2;
+  opts.sub_models = {sm};
+  return opts;
+}
+
+/// @brief Number of distinct (parameter index, value index) tuples in the list.
+size_t DistinctTupleCount(const std::vector<coverwise::model::UncoveredTuple>& uncovered) {
+  std::set<std::vector<std::pair<uint32_t, uint32_t>>> seen;
+  for (const auto& ut : uncovered) {
+    seen.insert(ut.indices);
+  }
+  return seen.size();
+}
+
+}  // namespace
+
+TEST(GeneratorTest, OverlappingSubModelCountsEachUncoveredTupleOnce) {
+  GenerateOptions opts = OverlappingSubModelOptions();
+  opts.max_tests = 3;
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok());
+  ASSERT_LT(result.coverage, 1.0);
+
+  // The engines together report more shortfall than the model actually has:
+  // stats sums the engines, while uncovered_count describes their union.
+  uint64_t summed_shortfall = result.stats.total_tuples - result.stats.covered_tuples;
+  EXPECT_LT(result.uncovered_count, summed_shortfall);
+
+  // Every distinct tuple fits in the diagnostic budget for a model this small,
+  // so the list is exactly the union and nothing is omitted.
+  EXPECT_EQ(result.uncovered.size(), result.uncovered_count);
+  EXPECT_EQ(DistinctTupleCount(result.uncovered), result.uncovered.size());
+  EXPECT_EQ(result.omitted_uncovered, 0u);
+
+  // 6 parameter pairs x 9 value pairs, less the 6 pairs each of the 3 tests covers.
+  EXPECT_EQ(result.uncovered_count, 36u);
+  EXPECT_EQ(summed_shortfall, 54u);
+
+  // One suggestion per distinct tuple; the same test is never proposed twice.
+  std::set<std::string> descriptions;
+  for (const auto& suggestion : result.suggestions) {
+    EXPECT_TRUE(descriptions.insert(suggestion.description).second)
+        << "duplicate suggestion: " << suggestion.description;
+  }
+  EXPECT_EQ(result.suggestions.size(), result.uncovered.size());
+}
+
+TEST(GeneratorTest, OverlappingSubModelReportsNoShortfallWhenComplete) {
+  GenerateOptions opts = OverlappingSubModelOptions();
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok());
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(result.uncovered.empty());
+  EXPECT_EQ(result.uncovered_count, 0u);
+  EXPECT_EQ(result.omitted_uncovered, 0u);
+  EXPECT_TRUE(result.suggestions.empty());
+}
+
+TEST(GeneratorTest, OverlappingSubModelSpendsDiagnosticBudgetOnDistinctTuples) {
+  GenerateOptions opts;
+  for (char name = 'A'; name <= 'I'; ++name) {
+    opts.parameters.push_back({std::string(1, name), {"0", "1", "2", "3", "4", "5"}, {}});
+  }
+  opts.strength = 2;
+  opts.seed = 7;
+  opts.max_tests = 1;
+
+  SubModel sm;
+  for (char name = 'A'; name <= 'H'; ++name) {
+    sm.parameter_names.push_back(std::string(1, name));
+  }
+  sm.strength = 2;
+  opts.sub_models = {sm};
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok());
+  // C(9,2) * 36 pairs, less the 36 the single test covers.
+  EXPECT_EQ(result.uncovered_count, 1260u);
+  EXPECT_LT(result.uncovered_count, result.stats.total_tuples - result.stats.covered_tuples);
+
+  // The truncated list is full and holds no repeats, so the budget was spent
+  // entirely on interactions the user has not seen yet.
+  ASSERT_EQ(result.uncovered.size(), coverwise::core::CoverageEngine::kMaxDiagnosticTuples);
+  EXPECT_EQ(DistinctTupleCount(result.uncovered), result.uncovered.size());
+  EXPECT_EQ(result.omitted_uncovered, result.uncovered_count - result.uncovered.size());
+}
+
 TEST(GeneratorTest, ClassCoverageUsesGenerationConstraints) {
   GenerateOptions opts;
   Parameter a("A", {"a0", "a1"});
@@ -336,6 +449,54 @@ TEST(GeneratorTest, ClassCoverageUsesGenerationConstraints) {
   EXPECT_EQ(result.class_coverage->total_class_tuples, 3u);
   EXPECT_EQ(result.class_coverage->covered_class_tuples, 3u);
   EXPECT_DOUBLE_EQ(result.class_coverage->class_coverage_ratio, 1.0);
+}
+
+TEST(GeneratorTest, BoundaryExpansionKeepsPerValueMetadata) {
+  GenerateOptions opts;
+  Parameter n("n", {"5"});
+  n.set_aliases({{"five"}});
+  n.set_equivalence_classes({"mid"});
+  Parameter os("os", {"win", "mac"});
+  os.set_equivalence_classes({"desktop", "laptop"});
+  opts.parameters = {n, os};
+  opts.boundary_configs["n"] = {coverwise::model::BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+  opts.constraint_expressions = {"IF n=five THEN os!=mac"};
+  opts.strength = 2;
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  const auto& expanded = result.parameters[0];
+  EXPECT_EQ(expanded.values, (std::vector<std::string>{"3", "4", "5", "6", "7"}));
+  const uint32_t five = expanded.find_value_index("5");
+  ASSERT_NE(five, coverwise::model::kUnassigned);
+  EXPECT_EQ(expanded.aliases(five), (std::vector<std::string>{"five"}));
+  EXPECT_EQ(expanded.equivalence_class(five), "mid");
+  // Values the range generated have no metadata of their own.
+  const uint32_t three = expanded.find_value_index("3");
+  ASSERT_NE(three, coverwise::model::kUnassigned);
+  EXPECT_TRUE(expanded.aliases(three).empty());
+  EXPECT_TRUE(expanded.equivalence_class(three).empty());
+  // The alias still resolves, so a constraint written against it parses.
+  EXPECT_EQ(expanded.find_value_index("five"), five);
+  ASSERT_TRUE(result.class_coverage.has_value());
+  EXPECT_GT(result.class_coverage->total_class_tuples, 0u);
+}
+
+TEST(GeneratorTest, RejectsValueSetThatExpansionMakesAmbiguous) {
+  GenerateOptions opts;
+  Parameter n("n", {"10"});
+  n.set_aliases({{"5"}});
+  opts.parameters = {n, Parameter("os", {"win", "mac"})};
+  opts.boundary_configs["n"] = {coverwise::model::BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+  opts.strength = 2;
+
+  auto result = Generate(opts);
+
+  // '5' is unambiguous before expansion and collides with a generated value
+  // after it, so the collection is judged again on the expanded value space.
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_EQ(result.error.message, "Ambiguous value or alias '5' in parameter 'n'");
 }
 
 TEST(GeneratorTest, NegativeTesting) {
@@ -1252,4 +1413,118 @@ TEST(GenerateCompletionTest, ReachesFullCoverageUnderStallingConstraints) {
   }
   auto con_report = coverwise::validator::ValidateConstraints(result.tests, constraints);
   EXPECT_EQ(con_report.violations, 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Negative coverage reporting on error paths
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Model whose negative pass cannot classify its targets in budget.
+///
+/// P0 carries the only invalid value, and the pairwise-different constraints
+/// over P1..P11 activate only while P0 holds it. Positive generation never
+/// assigns an invalid value, so it sees the implications as vacuously true; the
+/// negative pass pins P0 to "bad" and has to prove eleven parameters cannot take
+/// ten distinct values, which costs more nodes than the search budget allows.
+GenerateOptions MakeUnclassifiableNegativeModel() {
+  constexpr uint32_t kHoles = 10;
+  constexpr uint32_t kPigeons = 11;
+  std::vector<std::string> holes;
+  for (uint32_t index = 0; index < kHoles; ++index) holes.push_back("h" + std::to_string(index));
+
+  GenerateOptions opts;
+  std::vector<std::string> fixed_values = holes;
+  fixed_values.push_back("bad");
+  std::vector<bool> fixed_invalid(kHoles, false);
+  fixed_invalid.push_back(true);
+  opts.parameters.push_back({"P0", fixed_values, fixed_invalid});
+  for (uint32_t index = 1; index <= kPigeons; ++index) {
+    opts.parameters.push_back({"P" + std::to_string(index), holes, {}});
+  }
+  for (uint32_t left = 1; left <= kPigeons; ++left) {
+    for (uint32_t right = left + 1; right <= kPigeons; ++right) {
+      opts.constraint_expressions.push_back("IF P0 = \"bad\" THEN P" + std::to_string(left) +
+                                            " != P" + std::to_string(right));
+    }
+  }
+  opts.strength = 2;
+  opts.seed = 42;
+  return opts;
+}
+
+}  // namespace
+
+TEST(GeneratorTest, NegativeCoverageIsUnsetWhenTargetsCannotBeClassified) {
+  auto result = Generate(MakeUnclassifiableNegativeModel());
+
+  ASSERT_FALSE(result.error.ok());
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_EQ(result.error.message, "Constraint search budget exceeded");
+  EXPECT_EQ(result.error.detail,
+            "Negative coverage targets could not be classified within the search budget");
+  // The pass stopped before it could work out omitted tuples and the ratio, so
+  // publishing its counters would describe a tuple universe that was never
+  // finished being classified.
+  EXPECT_FALSE(result.negative_coverage.has_value());
+}
+
+TEST(GeneratorTest, NegativeCoverageCountsAgreeOnEveryCompletedPass) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1", "bad"}, {false, false, true}},
+      {"B", {"b0", "b1"}, {}},
+      {"C", {"c0", "c1", "worse"}, {false, false, true}},
+  };
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  ASSERT_TRUE(result.negative_coverage.has_value());
+  const auto& negative = *result.negative_coverage;
+  EXPECT_LE(negative.covered_tuples, negative.total_tuples);
+  EXPECT_EQ(negative.omitted_tuples, negative.total_tuples - negative.covered_tuples);
+  EXPECT_DOUBLE_EQ(negative.coverage_ratio, negative.total_tuples == 0
+                                                ? 1.0
+                                                : static_cast<double>(negative.covered_tuples) /
+                                                      static_cast<double>(negative.total_tuples));
+}
+
+TEST(GeneratorTest, AWarningForAnErrorWithoutADetailEndsWithoutASeparator) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  opts.strength = 2;
+  // An unterminated string literal is reported with no detail, so the warning
+  // must not carry the separator that would introduce one.
+  opts.constraint_expressions = {"A = \"0"};
+
+  auto result = Generate(opts);
+
+  ASSERT_FALSE(result.error.ok());
+  ASSERT_TRUE(result.error.detail.empty()) << result.error.detail;
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings[0], result.error.message);
+}
+
+TEST(GeneratorTest, AWarningForAnErrorWithADetailKeepsIt) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  opts.strength = 2;
+  opts.constraint_expressions = {"A = 0", "A != 0"};
+
+  auto result = Generate(opts);
+
+  ASSERT_FALSE(result.error.ok());
+  ASSERT_FALSE(result.error.detail.empty());
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings[0], result.error.message + ": " + result.error.detail);
 }

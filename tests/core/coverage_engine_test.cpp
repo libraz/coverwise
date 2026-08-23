@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <limits>
+#include <string>
+#include <vector>
 
 #include "model/constraint_ast.h"
 #include "model/parameter.h"
@@ -10,6 +12,44 @@
 using coverwise::core::CoverageEngine;
 using coverwise::model::Parameter;
 using coverwise::model::TestCase;
+
+namespace {
+
+/// @brief Render a complete test case as "name=value,name=value,...".
+std::string RenderTestCase(const std::vector<Parameter>& params, const TestCase& test_case) {
+  std::string rendered;
+  for (size_t pi = 0; pi < params.size(); ++pi) {
+    if (pi > 0) rendered += ",";
+    rendered += params[pi].name + "=" + params[pi].values[test_case.values[pi]];
+  }
+  return rendered;
+}
+
+/// @brief Drive the deterministic completion loop the generator uses.
+///
+/// Repeatedly covers the first uncovered tuple, filling the positions the tuple
+/// leaves unassigned with each parameter's first value, and returns the test
+/// cases in the order they were produced.
+/// @param calls Out-parameter receiving the number of FirstUncovered() calls.
+std::vector<std::string> DriveCompletion(CoverageEngine& engine,
+                                         const std::vector<Parameter>& params, uint32_t& calls) {
+  std::vector<std::string> produced;
+  calls = 0;
+  while (!engine.IsComplete()) {
+    CoverageEngine::UncoveredAssignment uncovered;
+    ++calls;
+    if (!engine.FirstUncovered(uncovered)) break;
+    TestCase witness{uncovered.assignment};
+    for (size_t pi = 0; pi < params.size(); ++pi) {
+      if (witness.values[pi] == coverwise::model::kUnassigned) witness.values[pi] = 0;
+    }
+    engine.AddTestCase(witness);
+    produced.push_back(RenderTestCase(params, witness));
+  }
+  return produced;
+}
+
+}  // namespace
 
 TEST(CoverageEngineTest, EmptyParametersFullCoverage) {
   std::vector<Parameter> params;
@@ -287,6 +327,93 @@ TEST(CoverageEngineTest, SingleParamStrengthOne) {
   EXPECT_TRUE(engine.IsComplete());
 }
 
+TEST(CoverageEngineTest, CompletionOrderIsStableForModelWithInvalidValues) {
+  // Invalid values leave large excluded regions in the coverage bitmap, which is
+  // exactly where the incremental scan must not change which tuple is picked.
+  std::vector<Parameter> params = {
+      {"os", {"win", "mac", "beos"}, {false, false, true}},
+      {"browser", {"chrome", "safari"}, {}},
+      {"auth", {"oauth", "basic", "none"}, {false, false, true}},
+      {"region", {"us", "eu"}, {}},
+  };
+  auto [engine, err] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(err.ok());
+  engine.ExcludeInvalidValues();
+
+  uint32_t calls = 0;
+  auto produced = DriveCompletion(engine, params, calls);
+
+  // Pinned suite: the completion loop must keep emitting these test cases, in
+  // this order, for the scan to count as behaviour-preserving.
+  const std::vector<std::string> expected = {
+      "os=win,browser=chrome,auth=oauth,region=us", "os=win,browser=safari,auth=oauth,region=us",
+      "os=mac,browser=chrome,auth=oauth,region=us", "os=mac,browser=safari,auth=oauth,region=us",
+      "os=win,browser=chrome,auth=basic,region=us", "os=mac,browser=chrome,auth=basic,region=us",
+      "os=win,browser=chrome,auth=oauth,region=eu", "os=mac,browser=chrome,auth=oauth,region=eu",
+      "os=win,browser=safari,auth=basic,region=us", "os=win,browser=safari,auth=oauth,region=eu",
+      "os=win,browser=chrome,auth=basic,region=eu",
+  };
+  EXPECT_EQ(produced, expected);
+  EXPECT_TRUE(engine.IsComplete());
+}
+
+TEST(CoverageEngineTest, FirstUncoveredRewindsAfterResetCoverage) {
+  // The scan may only skip a prefix while coverage bits are monotonically set.
+  // ResetCoverage() clears them, so the next scan must start over from the very
+  // first tuple.
+  std::vector<Parameter> params = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
+  };
+  auto [engine, err] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(err.ok());
+
+  CoverageEngine::UncoveredAssignment first;
+  ASSERT_TRUE(engine.FirstUncovered(first));
+
+  uint32_t calls = 0;
+  DriveCompletion(engine, params, calls);
+  ASSERT_TRUE(engine.IsComplete());
+
+  engine.ResetCoverage();
+  CoverageEngine::UncoveredAssignment after_reset;
+  ASSERT_TRUE(engine.FirstUncovered(after_reset));
+  EXPECT_EQ(after_reset.index, first.index);
+  EXPECT_EQ(after_reset.assignment, first.assignment);
+}
+
+TEST(CoverageEngineTest, FirstUncoveredScanCostStaysLinearOverACompletionPass) {
+  // 8 params x 4 values at strength 3: C(8,3) = 56 combinations x 64 value
+  // tuples = 3584 tuple indices. The last value of every parameter is invalid,
+  // so exclusion sets most of those bits up front and the completion loop scans
+  // across long excluded stretches -- the case that made a from-scratch rescan
+  // quadratic.
+  constexpr uint32_t kParamCount = 8;
+  constexpr uint64_t kUniverse = 56 * 64;
+  std::vector<Parameter> params;
+  for (uint32_t pi = 0; pi < kParamCount; ++pi) {
+    params.push_back(
+        {"P" + std::to_string(pi), {"v0", "v1", "v2", "bad"}, {false, false, false, true}});
+  }
+  auto [engine, err] = CoverageEngine::Create(params, 3);
+  ASSERT_TRUE(err.ok());
+  ASSERT_EQ(engine.TotalTuples(), kUniverse);
+  engine.ExcludeInvalidValues();
+
+  uint32_t calls = 0;
+  DriveCompletion(engine, params, calls);
+  ASSERT_TRUE(engine.IsComplete());
+  ASSERT_GT(calls, 10u);
+
+  // Every tuple index is examined at most once across the whole pass, plus the
+  // one uncovered index each call stops on.
+  EXPECT_LE(engine.ScanBitTests(), kUniverse + calls);
+  // Restarting each scan at index 0 would test on the order of half the universe
+  // per call; this keeps that regression from passing unnoticed.
+  EXPECT_LT(engine.ScanBitTests(), calls * kUniverse / 4);
+}
+
 TEST(CoverageEngineTest, ConstraintClassificationScalesAcrossManyParameters) {
   constexpr uint32_t kParameterCount = 1500;
   std::vector<Parameter> params;
@@ -304,4 +431,125 @@ TEST(CoverageEngineTest, ConstraintClassificationScalesAcrossManyParameters) {
 
   EXPECT_FALSE(budget_exceeded);
   EXPECT_EQ(engine.TotalTuples(), kParameterCount);
+}
+
+TEST(CoverageEngineTest, ScoringAWholeParameterAgreesWithScoringEachValue) {
+  std::vector<Parameter> params = {
+      {"A", {"a0", "a1", "a2"}, {}},
+      {"B", {"b0", "b1"}, {}},
+      {"C", {"c0", "c1", "c2", "c3"}, {}},
+  };
+  auto [engine, err] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(err.ok());
+  engine.AddTestCase(TestCase{{0, 0, 0}});
+  engine.AddTestCase(TestCase{{1, 1, 2}});
+
+  // Partial assignments covering the interesting shapes: nothing else assigned,
+  // one neighbour assigned, and every neighbour assigned.
+  const std::vector<TestCase> partials = {
+      TestCase{{coverwise::model::kUnassigned, coverwise::model::kUnassigned,
+                coverwise::model::kUnassigned}},
+      TestCase{{coverwise::model::kUnassigned, 1, coverwise::model::kUnassigned}},
+      TestCase{{coverwise::model::kUnassigned, 0, 3}},
+  };
+  for (const auto& partial : partials) {
+    for (uint32_t pi = 0; pi < params.size(); ++pi) {
+      if (partial.values[pi] != coverwise::model::kUnassigned) continue;
+      std::vector<uint32_t> batched(params[pi].size(), 0);
+      engine.AddValueScores(partial, pi, batched.data());
+      for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
+        EXPECT_EQ(batched[vi], engine.ScoreValue(partial, pi, vi))
+            << "param " << pi << " value " << vi;
+      }
+    }
+  }
+}
+
+TEST(CoverageEngineTest, ScoringAParameterCostsTheSameAtAnyValueCount) {
+  // Scoring one value at a time re-walks the parameter's combinations once per
+  // value. The visit counter must stay at one walk per call, so a parameter with
+  // ten times the values costs the same number of combination visits.
+  auto build = [](uint32_t value_count) {
+    std::vector<Parameter> params;
+    for (uint32_t pi = 0; pi < 4; ++pi) {
+      Parameter p;
+      p.name = "P" + std::to_string(pi);
+      for (uint32_t vi = 0; vi < value_count; ++vi) p.values.push_back("v" + std::to_string(vi));
+      params.push_back(std::move(p));
+    }
+    return params;
+  };
+
+  auto visits_for = [&](uint32_t value_count) {
+    auto params = build(value_count);
+    auto [engine, err] = CoverageEngine::Create(params, 2);
+    EXPECT_TRUE(err.ok());
+    TestCase partial{{coverwise::model::kUnassigned, 0, 0, 0}};
+    std::vector<uint32_t> scores(value_count, 0);
+    engine.AddValueScores(partial, 0, scores.data());
+    return engine.ValueScoreComboVisits();
+  };
+
+  const uint64_t few = visits_for(2);
+  const uint64_t many = visits_for(20);
+  EXPECT_GT(few, 0u);
+  EXPECT_EQ(few, many);
+}
+
+TEST(CoverageEngineTest, ZeroStrengthYieldsAnEmptyTupleUniverse) {
+  // Strength 0 selects no parameters, so there is no combination stride to
+  // divide by and no tuple to cover. Both factories must agree on that instead
+  // of evaluating an undefined expression.
+  std::vector<Parameter> params = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1"}, {}},
+  };
+
+  auto [engine, err] = CoverageEngine::Create(params, 0);
+  ASSERT_TRUE(err.ok()) << err.message;
+  EXPECT_EQ(engine.TotalTuples(), 0u);
+  EXPECT_EQ(engine.CoveredCount(), 0u);
+  EXPECT_DOUBLE_EQ(engine.CoverageRatio(), 1.0);
+  EXPECT_TRUE(engine.IsComplete());
+  CoverageEngine::UncoveredAssignment uncovered;
+  EXPECT_FALSE(engine.FirstUncovered(uncovered));
+  engine.AddTestCase(TestCase{{0, 0}});
+  EXPECT_EQ(engine.CoveredCount(), 0u);
+  EXPECT_TRUE(engine.GetUncoveredTuples(params).empty());
+
+  std::vector<uint32_t> subset = {0};
+  auto [sub_engine, sub_err] = CoverageEngine::Create(params, subset, 0);
+  ASSERT_TRUE(sub_err.ok()) << sub_err.message;
+  EXPECT_EQ(sub_engine.TotalTuples(), 0u);
+  EXPECT_TRUE(sub_engine.IsComplete());
+}
+
+TEST(CoverageEngineTest, EnginesOverOneModelShareASingleParameterSet) {
+  // A sub-model engine indexes the whole parameter set by global index, so it
+  // needs all of them available. Sharing keeps that from duplicating the model's
+  // string payload once per engine.
+  std::vector<Parameter> params = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1"}, {}},
+      {"C", {"c0", "c1"}, {}},
+  };
+  auto shared = CoverageEngine::ShareParameters(params);
+
+  auto [global, global_err] = CoverageEngine::CreateShared(shared, 2);
+  ASSERT_TRUE(global_err.ok());
+  auto [sub_ab, sub_ab_err] = CoverageEngine::CreateShared(shared, {0, 1}, 2);
+  ASSERT_TRUE(sub_ab_err.ok());
+  auto [sub_bc, sub_bc_err] = CoverageEngine::CreateShared(shared, {1, 2}, 2);
+  ASSERT_TRUE(sub_bc_err.ok());
+
+  EXPECT_EQ(&global.Parameters(), &sub_ab.Parameters());
+  EXPECT_EQ(&global.Parameters(), &sub_bc.Parameters());
+  EXPECT_EQ(global.Parameters().size(), params.size());
+
+  // Sharing must not change what a subset engine enumerates.
+  EXPECT_EQ(global.TotalTuples(), 12u);
+  EXPECT_EQ(sub_ab.TotalTuples(), 4u);
+  auto [copied, copied_err] = CoverageEngine::Create(params, {0, 1}, 2);
+  ASSERT_TRUE(copied_err.ok());
+  EXPECT_EQ(copied.TotalTuples(), sub_ab.TotalTuples());
 }

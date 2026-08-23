@@ -10,12 +10,55 @@ import { UNASSIGNED } from '../model/parameter.js';
 import type { TestCase } from '../model/test-case.js';
 import type { Rng } from '../util/rng.js';
 
-/// Scoring function: given partial test case, param index, value index -> coverage score.
-export type ScoreFn = (partial: TestCase, paramIndex: number, valueIndex: number) => number;
+/// Scoring function: adds the coverage gain of every value of `paramIndex` into
+/// `outScores[valueIndex]`, given the current partial test case. Scoring a whole
+/// parameter at once keeps the work per candidate value constant; scoring values
+/// one at a time repeats the sweep over the parameter's combinations per value.
+export type ScoreValuesFn = (partial: TestCase, paramIndex: number, outScores: number[]) => void;
 
 /// Minimal parameter interface needed by the greedy algorithm.
 export interface GreedyParam {
   readonly size: number;
+}
+
+/// Buffers a greedy construction borrows instead of allocating its own.
+///
+/// One instance is owned by the generation pass and handed to every
+/// greedyConstruct() call, so building a suite allocates a bounded amount rather
+/// than one array per parameter per test case. The contents carry no meaning
+/// between calls.
+export interface GreedyScratch {
+  /// Parameter order, reshuffled per construction.
+  order: number[];
+  /// Coverage gain per value of the current parameter.
+  scores: number[];
+  /// Value indices tied for the best score.
+  bestValues: number[];
+}
+
+/// A constructed test case together with the coverage it gains.
+export interface GreedyResult {
+  testCase: TestCase;
+  /// Newly covered tuples, accumulated while the test case was built.
+  ///
+  /// Each parameter combination is scored exactly once — at the step that
+  /// assigns the last of its parameters — and the coverage state does not change
+  /// during a construction, so this equals scoring the finished test case
+  /// against that same state.
+  score: number;
+}
+
+/// Create scratch buffers sized for `params` so no construction has to grow them.
+export function createGreedyScratch(params: readonly GreedyParam[]): GreedyScratch {
+  let maxValues = 0;
+  for (const param of params) {
+    maxValues = Math.max(maxValues, param.size);
+  }
+  return {
+    order: new Array<number>(params.length).fill(0),
+    scores: new Array<number>(maxValues).fill(0),
+    bestValues: [],
+  };
 }
 
 /// Break ties among bestValues using weights, then RNG for remaining ties.
@@ -81,26 +124,28 @@ function breakTieWithWeights(
 /// rather than guaranteeing optimal coverage.
 ///
 /// @param params Parameter definitions (only .size is used).
-/// @param scoreFn Scoring function that returns the coverage gain for assigning
-///   value vi to parameter pi given the current partial test case.
+/// @param scoreValues Scoring function that adds the coverage gain of every
+///   value of a parameter into a caller-owned buffer.
 /// @param constraints Active constraints (empty if none).
 /// @param rng Random number generator for tie-breaking and parameter ordering.
+/// @param scratch Caller-owned buffers, reused across constructions.
 /// @param allowedValues Optional per-parameter mask of allowed values.
 ///   If non-empty, allowedValues[pi][vi] must be true for value vi of param pi
 ///   to be considered. If empty, all values are allowed.
 /// @param weights Optional per-parameter per-value weights for tie-breaking.
 ///   If non-empty, weights[pi][vi] is the weight for value vi of param pi.
-/// @returns The constructed test case, or null if no constraint-satisfying value
-///   exists for some parameter. A constraint-violating value is never written
-///   into the returned test case.
+/// @returns The constructed test case and its coverage gain, or null if no
+///   constraint-satisfying value exists for some parameter. A
+///   constraint-violating value is never written into the returned test case.
 export function greedyConstruct(
   params: readonly GreedyParam[],
-  scoreFn: ScoreFn,
+  scoreValues: ScoreValuesFn,
   constraints: readonly ConstraintNode[],
   rng: Rng,
+  scratch: GreedyScratch,
   allowedValues: boolean[][] = [],
   weights: number[][] = [],
-): TestCase | null {
+): GreedyResult | null {
   const numParams = params.length;
 
   const values = new Array<number>(numParams);
@@ -108,9 +153,11 @@ export function greedyConstruct(
     values[i] = UNASSIGNED;
   }
   const tc: TestCase = { values };
+  let totalGain = 0;
 
   // Fisher-Yates shuffle for parameter order.
-  const order = new Array<number>(numParams);
+  const order = scratch.order;
+  order.length = numParams;
   for (let i = 0; i < numParams; i++) {
     order[i] = i;
   }
@@ -126,10 +173,17 @@ export function greedyConstruct(
   // local choice may leave some satisfiable tuples uncovered, which the caller
   // surfaces as coverage < 1.0 rather than retrying exhaustively.
   for (const pi of order) {
-    let bestScore = 0;
-    const bestValues: number[] = [];
+    const numValues = params[pi].size;
+    const scores = scratch.scores;
+    scores.length = numValues;
+    scores.fill(0);
+    scoreValues(tc, pi, scores);
 
-    for (let vi = 0; vi < params[pi].size; ++vi) {
+    let bestScore = 0;
+    const bestValues = scratch.bestValues;
+    bestValues.length = 0;
+
+    for (let vi = 0; vi < numValues; ++vi) {
       if (allowedValues.length > 0 && !allowedValues[pi][vi]) {
         continue;
       }
@@ -155,7 +209,7 @@ export function greedyConstruct(
         continue;
       }
 
-      const score = scoreFn(tc, pi, vi);
+      const score = scores[vi];
       if (bestValues.length === 0 || score > bestScore) {
         bestScore = score;
         bestValues.length = 0;
@@ -165,42 +219,17 @@ export function greedyConstruct(
       }
     }
 
+    // Every value allowed by the mask that survives the constraints is recorded
+    // above, so an empty set means this parameter has no usable value at all.
+    // Constraint evaluation is a pure function of the same partial assignment,
+    // so no second pass could reach a different verdict.
     if (bestValues.length === 0) {
-      // Fallback: pick the first allowed value that satisfies constraints.
-      let assigned = false;
-      const candidates =
-        allowedValues.length > 0
-          ? Array.from({ length: params[pi].size }, (_, i) => i).filter(
-              (vi) => allowedValues[pi][vi],
-            )
-          : Array.from({ length: params[pi].size }, (_, i) => i);
-
-      for (const vi of candidates) {
-        tc.values[pi] = vi;
-        let pruned = false;
-        for (const constraint of constraints) {
-          const result = constraint.evaluate(tc.values);
-          if (result === ConstraintResult.False) {
-            pruned = true;
-            break;
-          }
-        }
-        if (!pruned) {
-          assigned = true;
-          break;
-        }
-        tc.values[pi] = UNASSIGNED;
-      }
-
-      if (!assigned) {
-        // No constraint-satisfying value exists for this parameter. Signal
-        // construction failure rather than writing a constraint-violating value.
-        return null;
-      }
-    } else {
-      tc.values[pi] = breakTieWithWeights(bestValues, weights, pi, rng);
+      return null;
     }
+
+    tc.values[pi] = breakTieWithWeights(bestValues, weights, pi, rng);
+    totalGain += bestScore;
   }
 
-  return tc;
+  return { testCase: tc, score: totalGain };
 }

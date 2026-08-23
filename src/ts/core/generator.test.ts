@@ -7,6 +7,7 @@ import { Parameter } from '../model/parameter.js';
 import type { GenerateResult } from '../model/test-case.js';
 import { validateConstraintReport } from '../validator/constraint-validator.js';
 import { validateCoverage } from '../validator/coverage-validator.js';
+import { CoverageEngine } from './coverage-engine.js';
 import { estimateModel, extend, generate } from './generator.js';
 
 /// Count constraint violations across a generated suite's positive tests.
@@ -514,6 +515,99 @@ describe('generate', () => {
   });
 });
 
+describe('overlapping sub-model diagnostics', () => {
+  /// Build the model used below: four three-valued parameters, pairwise, plus a
+  /// sub-model that repeats the same strength over three of them so both engines
+  /// enumerate the same pairs.
+  function overlappingSubModelOptions(): GenerateOptions {
+    return createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['a0', 'a1', 'a2'] },
+        { name: 'B', values: ['b0', 'b1', 'b2'] },
+        { name: 'C', values: ['c0', 'c1', 'c2'] },
+        { name: 'D', values: ['d0', 'd1', 'd2'] },
+      ],
+      strength: 2,
+      seed: 42,
+      subModels: [{ parameterNames: ['A', 'B', 'C'], strength: 2 }],
+    });
+  }
+
+  /// Number of distinct (parameter index, value index) tuples in the list.
+  function distinctTupleCount(uncovered: GenerateResult['uncovered']): number {
+    return new Set(
+      uncovered.map((ut) => (ut.indices ?? []).map(([pi, vi]) => `${pi}:${vi}`).join(',')),
+    ).size;
+  }
+
+  it('counts each uncovered tuple once', () => {
+    const opts = overlappingSubModelOptions();
+    opts.maxTests = 3;
+
+    const result = generate(opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.coverage).toBeLessThan(1);
+
+    // The engines together report more shortfall than the model actually has:
+    // stats sums the engines, while uncoveredCount describes their union.
+    const summedShortfall = result.stats.totalTuples - result.stats.coveredTuples;
+    expect(result.uncoveredCount).toBeLessThan(summedShortfall);
+
+    // Every distinct tuple fits in the diagnostic budget for a model this small,
+    // so the list is exactly the union and nothing is omitted.
+    expect(result.uncovered).toHaveLength(result.uncoveredCount);
+    expect(distinctTupleCount(result.uncovered)).toBe(result.uncovered.length);
+    expect(result.omittedUncovered).toBe(0);
+
+    // 6 parameter pairs x 9 value pairs, less the 6 pairs each of the 3 tests covers.
+    expect(result.uncoveredCount).toBe(36);
+    expect(summedShortfall).toBe(54);
+
+    // One suggestion per distinct tuple; the same test is never proposed twice.
+    const descriptions = result.suggestions.map((s) => s.description);
+    expect(new Set(descriptions).size).toBe(descriptions.length);
+    expect(result.suggestions).toHaveLength(result.uncovered.length);
+  });
+
+  it('reports no shortfall when the suite is complete', () => {
+    const result = generate(overlappingSubModelOptions());
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.coverage).toBe(1);
+    expect(result.uncovered).toHaveLength(0);
+    expect(result.uncoveredCount).toBe(0);
+    expect(result.omittedUncovered).toBe(0);
+    expect(result.suggestions).toHaveLength(0);
+  });
+
+  it('spends the diagnostic budget on distinct tuples', () => {
+    const names = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
+    const result = generate(
+      createGenerateOptions({
+        parameters: names.map((name) => ({ name, values: ['0', '1', '2', '3', '4', '5'] })),
+        strength: 2,
+        seed: 7,
+        maxTests: 1,
+        subModels: [{ parameterNames: names.slice(0, 8), strength: 2 }],
+      }),
+    );
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    // C(9,2) * 36 pairs, less the 36 the single test covers.
+    expect(result.uncoveredCount).toBe(1260);
+    expect(result.uncoveredCount).toBeLessThan(
+      result.stats.totalTuples - result.stats.coveredTuples,
+    );
+
+    // The truncated list is full and holds no repeats, so the budget was spent
+    // entirely on interactions the user has not seen yet.
+    expect(result.uncovered).toHaveLength(CoverageEngine.MAX_DIAGNOSTIC_TUPLES);
+    expect(distinctTupleCount(result.uncovered)).toBe(result.uncovered.length);
+    expect(result.omittedUncovered).toBe(result.uncoveredCount - result.uncovered.length);
+  });
+});
+
 describe('generate edge cases', () => {
   it('rejects strength=0', () => {
     const opts = createGenerateOptions({
@@ -530,6 +624,41 @@ describe('generate edge cases', () => {
     expect(result.tests).toHaveLength(0);
     expect(result.stats.totalTuples).toBe(0);
     expect(result.uncovered).toHaveLength(0);
+  });
+});
+
+describe('warning text for a structured failure', () => {
+  const parameters = [
+    { name: 'A', values: ['0', '1'] },
+    { name: 'B', values: ['0', '1'] },
+  ];
+
+  it('leaves no separator behind when the failure has no detail', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters,
+        // An unterminated string literal is reported with no detail.
+        constraintExpressions: ['A = "0'],
+      }),
+    );
+
+    expect(result.error.code).not.toBe(ErrorCode.Ok);
+    expect(result.error.detail).toBe('');
+    expect(result.warnings[0]).toBe(result.error.message);
+    expect(result.warnings[0].endsWith(': ')).toBe(false);
+  });
+
+  it('keeps the detail when the failure has one', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters,
+        constraintExpressions: ['A = 0', 'A != 0'],
+      }),
+    );
+
+    expect(result.error.code).not.toBe(ErrorCode.Ok);
+    expect(result.error.detail).not.toBe('');
+    expect(result.warnings[0]).toBe(`${result.error.message}: ${result.error.detail}`);
   });
 });
 
@@ -629,6 +758,59 @@ describe('boundary expansion', () => {
         }),
       ).error.code,
     ).toBe(ErrorCode.InvalidInput);
+  });
+
+  it('keeps per-value aliases and equivalence classes on retained values', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'n', values: ['5'], aliases: [['five']], equivalenceClasses: ['mid'] },
+          { name: 'os', values: ['win', 'mac'], equivalenceClasses: ['desktop', 'laptop'] },
+        ],
+        boundaryConfigs: {
+          n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 },
+        },
+        constraintExpressions: ['IF n=five THEN os!=mac'],
+        strength: 2,
+      }),
+    );
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    const n = result.parameters[0];
+    // Expansion regenerates the value set around the range, and the spelled-out
+    // value survives it carrying the metadata it was declared with.
+    expect(n.values).toEqual(['3', '4', '5', '6', '7']);
+    const five = n.findValueIndex('5');
+    expect(n.aliases(five)).toEqual(['five']);
+    expect(n.equivalenceClass(five)).toBe('mid');
+    // Values the range generated have no metadata of their own.
+    expect(n.aliases(n.findValueIndex('3'))).toEqual([]);
+    expect(n.equivalenceClass(n.findValueIndex('3'))).toBe('');
+    // The alias still resolves, so a constraint written against it parses.
+    expect(n.findValueIndex('five')).toBe(five);
+    expect(result.classCoverage).toBeDefined();
+    expect(result.classCoverage?.totalClassTuples).toBeGreaterThan(0);
+  });
+
+  it('rejects a value set that expansion makes ambiguous', () => {
+    const result = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'n', values: ['10'], aliases: [['5']] },
+          { name: 'os', values: ['win', 'mac'] },
+        ],
+        boundaryConfigs: {
+          n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 },
+        },
+        strength: 2,
+      }),
+    );
+
+    // '5' is unambiguous before expansion and collides with a generated value
+    // after it, so the collection is judged again on the expanded value space.
+    // Message text is byte-identical to the C++ core and CLI.
+    expect(result.error.code).toBe(ErrorCode.InvalidInput);
+    expect(result.error.message).toBe("Ambiguous value or alias '5' in parameter 'n'");
   });
 });
 

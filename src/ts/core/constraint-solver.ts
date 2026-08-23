@@ -68,6 +68,32 @@ function constraintsCanStillPass(
   );
 }
 
+/** Smallest usable value index at or after `start`, or the domain size. */
+function nextUsableValue(
+  params: readonly Parameter[],
+  allowedValues: readonly (readonly boolean[])[] | null,
+  param: number,
+  start: number,
+): number {
+  for (let vi = start; vi < params[param].size; ++vi) {
+    if (allowedValues === null ? !params[param].isInvalid(vi) : allowedValues[param][vi]) {
+      return vi;
+    }
+  }
+  return params[param].size;
+}
+
+/**
+ * Depth-first feasibility search driven by an explicit stack.
+ *
+ * The search depth grows with the parameter count, and a satisfiable chain
+ * spends only one node of the budget per level, so the node budget alone does
+ * not bound how deep the search goes. Keeping the frames in an array makes call
+ * stack use independent of the model size while preserving the recursive
+ * enumeration order, budget accounting and assignment side effects: on success
+ * `assignment` holds the witness, and on failure every parameter this search
+ * assigned is restored to UNASSIGNED.
+ */
 function search(
   params: readonly Parameter[],
   constraints: readonly ConstraintNode[],
@@ -77,50 +103,63 @@ function search(
   allowedValues: readonly (readonly boolean[])[] | null,
   budget: SolveBudget,
 ): boolean {
-  if (budget.remaining === 0) {
-    budget.exceeded = true;
-    return false;
-  }
-  --budget.remaining;
-  if (!constraintsCanStillPass(constraints, assignment)) {
-    return false;
-  }
-  while (
-    orderPosition < parameterOrder.length &&
-    assignment[parameterOrder[orderPosition]] !== UNASSIGNED
-  ) {
-    ++orderPosition;
-  }
-  if (orderPosition === parameterOrder.length) {
-    return true;
-  }
-  const next = parameterOrder[orderPosition];
+  /** param: parameter assigned at this level; value: value currently tried. */
+  const stack: Array<{ param: number; value: number; nextPosition: number }> = [];
+  let position = orderPosition;
+  let expand = true;
 
-  for (let vi = 0; vi < params[next].size; ++vi) {
-    if (allowedValues === null ? params[next].isInvalid(vi) : !allowedValues[next][vi]) {
-      continue;
+  for (;;) {
+    if (expand) {
+      expand = false;
+      let dead = false;
+      if (budget.remaining === 0) {
+        budget.exceeded = true;
+        dead = true;
+      } else {
+        --budget.remaining;
+        dead = !constraintsCanStillPass(constraints, assignment);
+      }
+      if (!dead) {
+        while (
+          position < parameterOrder.length &&
+          assignment[parameterOrder[position]] !== UNASSIGNED
+        ) {
+          ++position;
+        }
+        if (position === parameterOrder.length) {
+          return true;
+        }
+        const next = parameterOrder[position];
+        const vi = nextUsableValue(params, allowedValues, next, 0);
+        if (vi < params[next].size) {
+          assignment[next] = vi;
+          ++position;
+          stack.push({ param: next, value: vi, nextPosition: position });
+          expand = true;
+          continue;
+        }
+      }
     }
-    assignment[next] = vi;
-    if (
-      search(
-        params,
-        constraints,
-        assignment,
-        parameterOrder,
-        orderPosition + 1,
-        allowedValues,
-        budget,
-      )
-    ) {
-      return true;
-    }
-    if (budget.exceeded) {
-      assignment[next] = UNASSIGNED;
+
+    // Backtrack. An exhausted budget unwinds without trying further values, so
+    // the caller sees an untouched assignment together with budget.exceeded.
+    const top = stack[stack.length - 1];
+    if (top === undefined) {
       return false;
     }
+    const vi = budget.exceeded
+      ? params[top.param].size
+      : nextUsableValue(params, allowedValues, top.param, top.value + 1);
+    if (vi < params[top.param].size) {
+      top.value = vi;
+      assignment[top.param] = vi;
+      position = top.nextPosition;
+      expand = true;
+      continue;
+    }
+    assignment[top.param] = UNASSIGNED;
+    stack.pop();
   }
-  assignment[next] = UNASSIGNED;
-  return false;
 }
 
 /**

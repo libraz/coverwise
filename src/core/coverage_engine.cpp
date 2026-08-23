@@ -82,12 +82,12 @@ model::Error PreflightModel(const std::vector<model::Parameter>& params,
 
 }  // namespace
 
-std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
-    const std::vector<model::Parameter>& params, uint32_t strength) {
+std::pair<CoverageEngine, model::Error> CoverageEngine::CreateShared(SharedParameters params,
+                                                                     uint32_t strength) {
   CoverageEngine engine;
-  engine.params_ = params;
+  engine.params_ = std::move(params);
   engine.strength_ = strength;
-  auto preflight_error = PreflightModel(params, {}, strength, engine.total_tuples_);
+  auto preflight_error = PreflightModel(engine.Parameters(), {}, strength, engine.total_tuples_);
   if (!preflight_error.ok()) return {CoverageEngine{}, preflight_error};
   engine.InitCombinations();
   engine.total_tuples_ = engine.ComputeTotalTuples();
@@ -101,14 +101,14 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
   return {std::move(engine), model::Error{}};
 }
 
-std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
-    const std::vector<model::Parameter>& all_params, const std::vector<uint32_t>& param_subset,
-    uint32_t strength) {
+std::pair<CoverageEngine, model::Error> CoverageEngine::CreateShared(
+    SharedParameters all_params, const std::vector<uint32_t>& param_subset, uint32_t strength) {
   CoverageEngine engine;
-  engine.params_ = all_params;
+  engine.params_ = std::move(all_params);
   engine.strength_ = strength;
   engine.param_subset_ = param_subset;
-  auto preflight_error = PreflightModel(all_params, param_subset, strength, engine.total_tuples_);
+  auto preflight_error =
+      PreflightModel(engine.Parameters(), param_subset, strength, engine.total_tuples_);
   if (!preflight_error.ok()) return {CoverageEngine{}, preflight_error};
   engine.InitCombinationsFromSubset();
   engine.total_tuples_ = engine.ComputeTotalTuples();
@@ -123,12 +123,25 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::Create(
 }
 
 void CoverageEngine::InitCombinations() {
-  uint32_t n = static_cast<uint32_t>(params_.size());
+  // Strength 0 selects no parameters at all: there is no combination to store
+  // and no stride to divide by. PreflightModel already accepts it as an empty
+  // tuple universe, so the engine is built empty rather than rejected.
+  if (strength_ == 0) {
+    param_combinations_.clear();
+    num_combinations_ = 0;
+    return;
+  }
+  uint32_t n = static_cast<uint32_t>(Parameters().size());
   param_combinations_ = util::GenerateCombinationsFlat(n, strength_);
   num_combinations_ = static_cast<uint32_t>(param_combinations_.size() / strength_);
 }
 
 void CoverageEngine::InitCombinationsFromSubset() {
+  if (strength_ == 0) {
+    param_combinations_.clear();
+    num_combinations_ = 0;
+    return;
+  }
   uint32_t n = static_cast<uint32_t>(param_subset_.size());
   param_combinations_ = util::GenerateCombinationsFlat(n, strength_);
   for (uint32_t& local_index : param_combinations_) local_index = param_subset_[local_index];
@@ -136,7 +149,7 @@ void CoverageEngine::InitCombinationsFromSubset() {
 }
 
 void CoverageEngine::BuildLookupTables() {
-  uint32_t num_params = static_cast<uint32_t>(params_.size());
+  uint32_t num_params = static_cast<uint32_t>(Parameters().size());
   uint32_t num_combos = num_combinations_;
 
   // Build param-to-combinations index and position-in-combo lookup.
@@ -160,7 +173,7 @@ void CoverageEngine::BuildLookupTables() {
     uint32_t* mults = &combo_multipliers_[static_cast<size_t>(ci) * strength_];
     mults[strength_ - 1] = 1;
     for (int j = static_cast<int>(strength_) - 2; j >= 0; --j) {
-      mults[j] = mults[j + 1] * params_[combo[j + 1]].size();
+      mults[j] = mults[j + 1] * Parameters()[combo[j + 1]].size();
     }
   }
 }
@@ -175,7 +188,7 @@ uint32_t CoverageEngine::ComputeTotalTuples() {
     combination_offsets_.push_back(static_cast<uint32_t>(total));
     uint64_t product = 1;
     for (uint32_t j = 0; j < strength_; ++j) {
-      product *= params_[combo[j]].size();
+      product *= Parameters()[combo[j]].size();
       if (product > kMaxTuples) {
         return static_cast<uint32_t>(std::min(total + product, static_cast<uint64_t>(UINT32_MAX)));
       }
@@ -189,7 +202,7 @@ uint32_t CoverageEngine::ComputeTotalTuples() {
 }
 
 void CoverageEngine::AddTestCase(const model::TestCase& test_case) {
-  assert(test_case.values.size() >= params_.size());
+  assert(test_case.values.size() >= Parameters().size());
   for (uint32_t ci = 0; ci < num_combinations_; ++ci) {
     const uint32_t* combo = Combo(ci);
     const uint32_t* mults = Mults(ci);
@@ -209,7 +222,7 @@ void CoverageEngine::AddTestCase(const model::TestCase& test_case) {
 
 uint32_t CoverageEngine::ScoreValue(const model::TestCase& partial, uint32_t param_index,
                                     uint32_t value_index) const {
-  assert(partial.values.size() >= params_.size());
+  assert(partial.values.size() >= Parameters().size());
   uint32_t score = 0;
   const auto& relevant_combos = param_to_combos_[param_index];
   const auto& positions = param_position_in_combo_[param_index];
@@ -243,8 +256,49 @@ uint32_t CoverageEngine::ScoreValue(const model::TestCase& partial, uint32_t par
   return score;
 }
 
+void CoverageEngine::AddValueScores(const model::TestCase& partial, uint32_t param_index,
+                                    uint32_t* out_scores) const {
+  assert(partial.values.size() >= Parameters().size());
+  const auto& relevant_combos = param_to_combos_[param_index];
+  const auto& positions = param_position_in_combo_[param_index];
+  const uint32_t num_relevant = static_cast<uint32_t>(relevant_combos.size());
+  const uint32_t num_values = Parameters()[param_index].size();
+  value_score_combo_visits_ += num_relevant;
+
+  for (uint32_t k = 0; k < num_relevant; ++k) {
+    uint32_t ci = relevant_combos[k];
+    uint32_t pos = positions[k];
+    const uint32_t* combo = Combo(ci);
+    const uint32_t* mults = Mults(ci);
+
+    // The other positions of this combination are the same for every candidate
+    // value, so their share of the mixed-radix index is computed once here
+    // rather than once per value.
+    bool all_assigned = true;
+    uint32_t base_index = 0;
+    for (uint32_t j = 0; j < strength_; ++j) {
+      if (j == pos) continue;
+      uint32_t v = partial.values[combo[j]];
+      if (v == model::kUnassigned) {
+        all_assigned = false;
+        break;
+      }
+      base_index += v * mults[j];
+    }
+    if (!all_assigned) continue;
+
+    const uint32_t first = combination_offsets_[ci] + base_index;
+    const uint32_t stride = mults[pos];
+    for (uint32_t vi = 0; vi < num_values; ++vi) {
+      if (!covered_.Test(first + vi * stride)) {
+        ++out_scores[vi];
+      }
+    }
+  }
+}
+
 uint32_t CoverageEngine::ScoreCandidate(const model::TestCase& candidate) const {
-  assert(candidate.values.size() >= params_.size());
+  assert(candidate.values.size() >= Parameters().size());
   uint32_t score = 0;
 
   for (uint32_t ci = 0; ci < num_combinations_; ++ci) {
@@ -287,18 +341,42 @@ std::vector<model::UncoveredTuple> CoverageEngine::GetUncoveredTuples(
 }
 
 bool CoverageEngine::FirstUncovered(UncoveredAssignment& out) const {
-  bool found = false;
-  ForEachTupleUntil([&](uint32_t global_index, const uint32_t* combo,
-                        const std::vector<uint32_t>& value_indices) {
-    out.index = global_index;
-    out.assignment.assign(params_.size(), model::kUnassigned);
+  const uint32_t start = ScanPosition();
+  std::vector<uint32_t> radixes(strength_);
+  std::vector<uint32_t> value_indices(strength_);
+
+  while (scan_ci_ < num_combinations_) {
+    const uint32_t* combo = Combo(scan_ci_);
+    uint32_t product = 1;
     for (uint32_t j = 0; j < strength_; ++j) {
-      out.assignment[combo[j]] = value_indices[j];
+      radixes[j] = Parameters()[combo[j]].size();
+      product *= radixes[j];
     }
-    found = true;
-    return false;  // Stop after the first uncovered tuple.
-  });
-  return found;
+
+    while (scan_vi_ < product) {
+      const uint32_t global_index = combination_offsets_[scan_ci_] + scan_vi_;
+      if (covered_.Test(global_index)) {
+        ++scan_vi_;
+        continue;
+      }
+      util::DecodeMixedRadix(scan_vi_, radixes, value_indices);
+      out.index = global_index;
+      out.assignment.assign(Parameters().size(), model::kUnassigned);
+      for (uint32_t j = 0; j < strength_; ++j) {
+        out.assignment[combo[j]] = value_indices[j];
+      }
+      // Every index the cursor advanced past was tested and found covered; the
+      // tuple the cursor stops on accounts for the one remaining bit test.
+      scan_bit_tests_ += (global_index - start) + 1;
+      return true;
+    }
+
+    ++scan_ci_;
+    scan_vi_ = 0;
+  }
+
+  scan_bit_tests_ += total_tuples_ - start;
+  return false;
 }
 
 void CoverageEngine::ExcludeTuple(uint32_t index) {
@@ -314,12 +392,12 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
                                           bool* budget_exceeded) {
   if (constraints.empty()) return;
 
-  uint32_t num_params = static_cast<uint32_t>(params_.size());
+  uint32_t num_params = static_cast<uint32_t>(Parameters().size());
   model::TestCase witness;
   witness.values.assign(num_params, model::kUnassigned);
   auto parameter_order = allowed_values.empty()
-                             ? BuildValidSolveParameterOrder(params_)
-                             : BuildAllowedSolveParameterOrder(params_, allowed_values);
+                             ? BuildValidSolveParameterOrder(Parameters())
+                             : BuildAllowedSolveParameterOrder(Parameters(), allowed_values);
 
   ForEachTupleUntil([&](uint32_t global_index, const uint32_t* combo,
                         const std::vector<uint32_t>& value_indices) {
@@ -335,9 +413,9 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
     // out rather than proceed on a partially classified universe.
     SolveBudget tuple_budget;
     bool invalid = allowed_values.empty()
-                       ? !CompleteValidAssignment(params_, constraints, witness, &tuple_budget,
+                       ? !CompleteValidAssignment(Parameters(), constraints, witness, &tuple_budget,
                                                   &parameter_order)
-                       : !CompleteAssignment(params_, constraints, allowed_values, witness,
+                       : !CompleteAssignment(Parameters(), constraints, allowed_values, witness,
                                              &tuple_budget, &parameter_order);
 
     // Reset assignment for reuse.
@@ -358,14 +436,14 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
 }
 
 void CoverageEngine::ExcludeInvalidValues() {
-  if (!model::HasInvalidValues(params_)) return;
+  if (!model::HasInvalidValues(Parameters())) return;
 
   ForEachTuple([&](uint32_t global_index, const uint32_t* combo,
                    const std::vector<uint32_t>& value_indices) {
     // Check if any decoded value is invalid.
     bool contains_invalid = false;
     for (size_t j = 0; j < strength_; ++j) {
-      if (params_[combo[j]].is_invalid(value_indices[j])) {
+      if (Parameters()[combo[j]].is_invalid(value_indices[j])) {
         contains_invalid = true;
         break;
       }
@@ -381,14 +459,14 @@ void CoverageEngine::ExcludeInvalidValues() {
 
 void CoverageEngine::ExcludeTuplesOutsideMask(
     const std::vector<std::vector<bool>>& allowed_values) {
-  if (allowed_values.size() != params_.size()) return;
+  if (allowed_values.size() != Parameters().size()) return;
   ForEachTuple([&](uint32_t global_index, const uint32_t* combo,
                    const std::vector<uint32_t>& value_indices) {
     bool excluded = false;
     for (size_t j = 0; j < strength_; ++j) {
       uint32_t pi = combo[j];
       uint32_t vi = value_indices[j];
-      if (allowed_values[pi].size() != params_[pi].size() || !allowed_values[pi][vi]) {
+      if (allowed_values[pi].size() != Parameters()[pi].size() || !allowed_values[pi][vi]) {
         excluded = true;
         break;
       }

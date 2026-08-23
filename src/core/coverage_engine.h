@@ -6,6 +6,8 @@
 
 #include <cassert>
 #include <cstdint>
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include "model/constraint_ast.h"
@@ -31,12 +33,28 @@ class CoverageEngine {
   /// Maximum number of human-readable uncovered tuples returned per result.
   static constexpr uint32_t kMaxDiagnosticTuples = 1'000;
 
+  /// @brief An immutable parameter set shared by a family of engines.
+  ///
+  /// An engine only ever reads its parameters, so several engines over the same
+  /// model can share one copy. Both whole-model and subset engines index the
+  /// full parameter set by global index, so a sub-model engine covering three
+  /// parameters still needs the whole set available; sharing keeps that from
+  /// duplicating the model's string payload once per engine.
+  using SharedParameters = std::shared_ptr<const std::vector<model::Parameter>>;
+
+  /// @brief Wrap a parameter set so several engines can share one copy.
+  static SharedParameters ShareParameters(std::vector<model::Parameter> params) {
+    return std::make_shared<const std::vector<model::Parameter>>(std::move(params));
+  }
+
   /// @brief Initialize coverage tracking for the given parameters and strength.
   /// @param params The parameter definitions.
   /// @param strength The interaction strength (t). 2 = pairwise.
   /// @return Error if tuple count exceeds kMaxTuples.
   static std::pair<CoverageEngine, model::Error> Create(const std::vector<model::Parameter>& params,
-                                                        uint32_t strength);
+                                                        uint32_t strength) {
+    return CreateShared(ShareParameters(params), strength);
+  }
 
   /// @brief Initialize coverage tracking for a subset of parameters.
   ///
@@ -48,7 +66,25 @@ class CoverageEngine {
   /// @return Error if tuple count exceeds kMaxTuples.
   static std::pair<CoverageEngine, model::Error> Create(
       const std::vector<model::Parameter>& all_params, const std::vector<uint32_t>& param_subset,
-      uint32_t strength);
+      uint32_t strength) {
+    return CreateShared(ShareParameters(all_params), param_subset, strength);
+  }
+
+  /// @brief Initialize coverage tracking over an already-shared parameter set.
+  ///
+  /// Building the global engine and one engine per sub-model from a single
+  /// SharedParameters stores the model's strings once for all of them.
+  /// @see Create for the parameter and error semantics.
+  static std::pair<CoverageEngine, model::Error> CreateShared(SharedParameters params,
+                                                              uint32_t strength);
+
+  /// @brief Initialize a subset engine over an already-shared parameter set.
+  /// @see CreateShared, Create.
+  static std::pair<CoverageEngine, model::Error> CreateShared(
+      SharedParameters all_params, const std::vector<uint32_t>& param_subset, uint32_t strength);
+
+  /// @brief The parameter set this engine reads.
+  const std::vector<model::Parameter>& Parameters() const { return *params_; }
 
   /// @brief Mark all tuples covered by the given test case.
   void AddTestCase(const model::TestCase& test_case);
@@ -64,14 +100,37 @@ class CoverageEngine {
     covered_.Reset();
     invalid_tuples_ = 0;
     covered_bits_ = 0;
+    scan_ci_ = 0;
+    scan_vi_ = 0;
   }
 
   /// @brief Score a candidate value for a single parameter position.
   ///
-  /// Used by constructive greedy: given a partial assignment, how many new
-  /// tuples would be covered by setting param_index to value_index?
+  /// Answers a single "what would this one value gain?" query. Constructive
+  /// greedy scores a whole parameter at once instead; see AddValueScores().
   uint32_t ScoreValue(const model::TestCase& partial, uint32_t param_index,
                       uint32_t value_index) const;
+
+  /// @brief Score every value of one parameter against one partial assignment.
+  ///
+  /// Adds the coverage gain of assigning value vi to @p param_index into
+  /// `out_scores[vi]`, for every value vi of that parameter. The caller owns the
+  /// buffer, which must hold at least `Parameters()[param_index].size()` entries
+  /// and be zeroed (or already hold another engine's contribution) on entry.
+  ///
+  /// Each relevant (combination, position) pair is visited once, and the shared
+  /// part of the mixed-radix index is computed once per combination, so the
+  /// extra work per candidate value is a single bit test. Scoring values one at
+  /// a time repeats the whole sweep for every value.
+  void AddValueScores(const model::TestCase& partial, uint32_t param_index,
+                      uint32_t* out_scores) const;
+
+  /// @brief Parameter combinations visited by AddValueScores() since construction.
+  ///
+  /// Diagnostic accessor. Each call adds its relevant-combination count once, so
+  /// the counter costs nothing per value. Lets tests pin that scoring a
+  /// parameter stays independent of how many values that parameter has.
+  uint64_t ValueScoreComboVisits() const { return value_score_combo_visits_; }
 
   /// @brief Score a complete candidate test case.
   uint32_t ScoreCandidate(const model::TestCase& candidate) const;
@@ -141,8 +200,22 @@ class CoverageEngine {
   /// global parameter space, leaving all other positions kUnassigned. Used by the
   /// generator's completion phase to construct a test covering this tuple
   /// directly, rather than relying on randomized greedy construction.
+  ///
+  /// The scan resumes from an internal cursor instead of restarting at the first
+  /// tuple. Coverage bits are only ever set until ResetCoverage() clears them and
+  /// rewinds the cursor, so every index below the cursor is known to be covered
+  /// or excluded and the returned tuple is still the lowest-indexed uncovered
+  /// one. A whole pass of interleaved FirstUncovered() and AddTestCase() /
+  /// ExcludeTuple() calls therefore stays linear in tuples plus calls.
   /// @return true if an uncovered tuple was found and written to @p out.
   bool FirstUncovered(UncoveredAssignment& out) const;
+
+  /// @brief Coverage bits examined by FirstUncovered() since construction.
+  ///
+  /// Diagnostic accessor. A call tests exactly the bits it advances the cursor
+  /// past plus the one it stops on, so the counter is updated once per call and
+  /// adds nothing per bit. Lets tests bound the scan cost of a whole pass.
+  uint64_t ScanBitTests() const { return scan_bit_tests_; }
 
   /// @brief Exclude a tuple (by global index) from the coverage target.
   ///
@@ -152,9 +225,9 @@ class CoverageEngine {
   void ExcludeTuple(uint32_t index);
 
  private:
-  CoverageEngine() = default;
+  CoverageEngine() : params_(std::make_shared<const std::vector<model::Parameter>>()) {}
 
-  std::vector<model::Parameter> params_;
+  SharedParameters params_;
   uint32_t strength_ = 0;
   uint32_t total_tuples_ = 0;
   uint32_t invalid_tuples_ = 0;
@@ -187,6 +260,17 @@ class CoverageEngine {
   /// Used for additive mixed-radix encoding instead of iterative multiply-accumulate.
   std::vector<uint32_t> combo_multipliers_;
 
+  /// @brief Resume point of the FirstUncovered() scan: value tuple scan_vi_ of
+  /// combination scan_ci_. Every tuple index below it is covered or excluded.
+  mutable uint32_t scan_ci_ = 0;
+  mutable uint32_t scan_vi_ = 0;
+
+  /// @brief Bits examined by FirstUncovered(), see ScanBitTests().
+  mutable uint64_t scan_bit_tests_ = 0;
+
+  /// @brief Combinations visited by AddValueScores(), see ValueScoreComboVisits().
+  mutable uint64_t value_score_combo_visits_ = 0;
+
   /// @brief Pointer to the stride-strength_ index block for combination ci.
   const uint32_t* Combo(uint32_t ci) const {
     return &param_combinations_[static_cast<size_t>(ci) * strength_];
@@ -195,6 +279,11 @@ class CoverageEngine {
   /// @brief Pointer to the stride-strength_ multiplier block for combination ci.
   const uint32_t* Mults(uint32_t ci) const {
     return &combo_multipliers_[static_cast<size_t>(ci) * strength_];
+  }
+
+  /// @brief Flat tuple index the FirstUncovered() scan resumes at.
+  uint32_t ScanPosition() const {
+    return scan_ci_ < num_combinations_ ? combination_offsets_[scan_ci_] + scan_vi_ : total_tuples_;
   }
 
   void InitCombinations();
@@ -219,7 +308,7 @@ class CoverageEngine {
       // Compute radixes once per combination.
       uint32_t product = 1;
       for (uint32_t j = 0; j < strength_; ++j) {
-        radixes[j] = params_[combo[j]].size();
+        radixes[j] = Parameters()[combo[j]].size();
         product *= radixes[j];
       }
 
@@ -242,7 +331,7 @@ class CoverageEngine {
       const uint32_t* combo = Combo(ci);
       uint32_t product = 1;
       for (uint32_t j = 0; j < strength_; ++j) {
-        radixes[j] = params_[combo[j]].size();
+        radixes[j] = Parameters()[combo[j]].size();
         product *= radixes[j];
       }
       for (uint32_t vi = 0; vi < product; ++vi) {

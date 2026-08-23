@@ -319,6 +319,194 @@ describe('CoverageEngine', () => {
     });
   });
 
+  describe('firstUncovered()', () => {
+    /// Drive the deterministic completion loop the generator uses: repeatedly
+    /// cover the first uncovered tuple, filling the positions the tuple leaves
+    /// unassigned with each parameter's first value.
+    function driveCompletion(
+      engine: CoverageEngine,
+      params: Parameter[],
+    ): { produced: string[]; calls: number } {
+      const produced: string[] = [];
+      let calls = 0;
+      while (!engine.isComplete) {
+        ++calls;
+        const uncovered = engine.firstUncovered();
+        if (uncovered === null) {
+          break;
+        }
+        const values = uncovered.assignment.map((v) => (v === UNASSIGNED ? 0 : v));
+        engine.addTestCase({ values });
+        produced.push(params.map((p, pi) => `${p.name}=${p.values[values[pi]]}`).join(','));
+      }
+      return { produced, calls };
+    }
+
+    it('produces a stable completion order for a model with invalid values', () => {
+      // Invalid values leave large excluded regions in the coverage bitmap, which
+      // is exactly where the incremental scan must not change which tuple is
+      // picked. The pinned suite matches the C++ surface (see
+      // coverage_engine_test.cpp: CompletionOrderIsStableForModelWithInvalidValues).
+      const params = [
+        new Parameter('os', ['win', 'mac', 'beos'], [false, false, true]),
+        new Parameter('browser', ['chrome', 'safari']),
+        new Parameter('auth', ['oauth', 'basic', 'none'], [false, false, true]),
+        new Parameter('region', ['us', 'eu']),
+      ];
+      const engine = CoverageEngine.create(params, 2).engine;
+      engine.excludeInvalidValues();
+
+      const { produced } = driveCompletion(engine, params);
+
+      expect(produced).toEqual([
+        'os=win,browser=chrome,auth=oauth,region=us',
+        'os=win,browser=safari,auth=oauth,region=us',
+        'os=mac,browser=chrome,auth=oauth,region=us',
+        'os=mac,browser=safari,auth=oauth,region=us',
+        'os=win,browser=chrome,auth=basic,region=us',
+        'os=mac,browser=chrome,auth=basic,region=us',
+        'os=win,browser=chrome,auth=oauth,region=eu',
+        'os=mac,browser=chrome,auth=oauth,region=eu',
+        'os=win,browser=safari,auth=basic,region=us',
+        'os=win,browser=safari,auth=oauth,region=eu',
+        'os=win,browser=chrome,auth=basic,region=eu',
+      ]);
+      expect(engine.isComplete).toBe(true);
+    });
+
+    it('rewinds after resetCoverage()', () => {
+      // The scan may only skip a prefix while coverage bits are monotonically
+      // set. resetCoverage() clears them, so the next scan must start over from
+      // the very first tuple.
+      const params = [
+        new Parameter('a', ['0', '1']),
+        new Parameter('b', ['0', '1']),
+        new Parameter('c', ['0', '1']),
+      ];
+      const engine = CoverageEngine.create(params, 2).engine;
+
+      const first = engine.firstUncovered();
+      expect(first).not.toBeNull();
+
+      driveCompletion(engine, params);
+      expect(engine.isComplete).toBe(true);
+
+      engine.resetCoverage();
+      expect(engine.firstUncovered()).toEqual(first);
+    });
+
+    it('keeps the scan cost linear over a completion pass', () => {
+      // 8 params x 4 values at strength 3: C(8,3) = 56 combinations x 64 value
+      // tuples = 3584 tuple indices. The last value of every parameter is
+      // invalid, so exclusion sets most of those bits up front and the completion
+      // loop scans across long excluded stretches -- the case that made a
+      // from-scratch rescan quadratic.
+      const universe = 56 * 64;
+      const params = Array.from(
+        { length: 8 },
+        (_, pi) => new Parameter(`p${pi}`, ['v0', 'v1', 'v2', 'bad'], [false, false, false, true]),
+      );
+      const engine = CoverageEngine.create(params, 3).engine;
+      expect(engine.totalTuples).toBe(universe);
+      engine.excludeInvalidValues();
+
+      const { calls } = driveCompletion(engine, params);
+      expect(engine.isComplete).toBe(true);
+      expect(calls).toBeGreaterThan(10);
+
+      // Every tuple index is examined at most once across the whole pass, plus
+      // the one uncovered index each call stops on.
+      expect(engine.scanBitTests).toBeLessThanOrEqual(universe + calls);
+      // Restarting each scan at index 0 would test on the order of half the
+      // universe per call; this keeps that regression from passing unnoticed.
+      expect(engine.scanBitTests).toBeLessThan((calls * universe) / 4);
+    });
+  });
+
+  describe('addValueScores()', () => {
+    it('agrees with scoring each value on its own', () => {
+      const params = [
+        new Parameter('A', ['a0', 'a1', 'a2']),
+        new Parameter('B', ['b0', 'b1']),
+        new Parameter('C', ['c0', 'c1', 'c2', 'c3']),
+      ];
+      const { engine, error } = CoverageEngine.create(params, 2);
+      expect(error.code).toBe(ErrorCode.Ok);
+      engine.addTestCase({ values: [0, 0, 0] });
+      engine.addTestCase({ values: [1, 1, 2] });
+
+      // Partial assignments covering the interesting shapes: nothing else
+      // assigned, one neighbour assigned, and every neighbour assigned.
+      const partials: TestCase[] = [
+        { values: [UNASSIGNED, UNASSIGNED, UNASSIGNED] },
+        { values: [UNASSIGNED, 1, UNASSIGNED] },
+        { values: [UNASSIGNED, 0, 3] },
+      ];
+      for (const partial of partials) {
+        for (let pi = 0; pi < params.length; ++pi) {
+          if (partial.values[pi] !== UNASSIGNED) {
+            continue;
+          }
+          const batched = new Array<number>(params[pi].size).fill(0);
+          engine.addValueScores(partial, pi, batched);
+          for (let vi = 0; vi < params[pi].size; ++vi) {
+            expect(batched[vi]).toBe(engine.scoreValue(partial, pi, vi));
+          }
+        }
+      }
+    });
+
+    it('costs the same number of combination visits at any value count', () => {
+      // Scoring one value at a time re-walks the parameter's combinations once
+      // per value. The visit counter must stay at one walk per call, so a
+      // parameter with ten times the values costs the same number of visits.
+      const visitsFor = (valueCount: number): number => {
+        const params = Array.from(
+          { length: 4 },
+          (_, pi) =>
+            new Parameter(
+              `P${pi}`,
+              Array.from({ length: valueCount }, (_, vi) => `v${vi}`),
+            ),
+        );
+        const { engine, error } = CoverageEngine.create(params, 2);
+        expect(error.code).toBe(ErrorCode.Ok);
+        const scores = new Array<number>(valueCount).fill(0);
+        engine.addValueScores({ values: [UNASSIGNED, 0, 0, 0] }, 0, scores);
+        return engine.valueScoreComboVisits;
+      };
+
+      const few = visitsFor(2);
+      expect(few).toBeGreaterThan(0);
+      expect(visitsFor(20)).toBe(few);
+    });
+  });
+
+  describe('strength 0', () => {
+    it('yields an empty tuple universe from both factories', () => {
+      // Strength 0 selects no parameters, so there is no combination stride to
+      // divide by and no tuple to cover. Both factories must agree on that
+      // instead of evaluating an undefined expression.
+      const params = [new Parameter('A', ['a0', 'a1']), new Parameter('B', ['b0', 'b1'])];
+
+      const { engine, error } = CoverageEngine.create(params, 0);
+      expect(error.code).toBe(ErrorCode.Ok);
+      expect(engine.totalTuples).toBe(0);
+      expect(engine.coveredCount).toBe(0);
+      expect(engine.coverageRatio).toBe(1);
+      expect(engine.isComplete).toBe(true);
+      expect(engine.firstUncovered()).toBeNull();
+      engine.addTestCase({ values: [0, 0] });
+      expect(engine.coveredCount).toBe(0);
+      expect(engine.getUncoveredTuples(params)).toEqual([]);
+
+      const sub = CoverageEngine.createFromSubset(params, [0], 0);
+      expect(sub.error.code).toBe(ErrorCode.Ok);
+      expect(sub.engine.totalTuples).toBe(0);
+      expect(sub.engine.isComplete).toBe(true);
+    });
+  });
+
   describe('3 params x 3 values', () => {
     it('has totalTuples = C(3,2) * 3 * 3 = 27', () => {
       const params = [

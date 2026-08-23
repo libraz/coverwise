@@ -63,6 +63,17 @@ export class CoverageEngine {
   /// mults(ci)[j] = product of value counts for positions j+1..t-1.
   private comboMultipliers_: number[] = [];
 
+  /// Resume point of the firstUncovered() scan: value tuple scanVi_ of
+  /// combination scanCi_. Every tuple index below it is covered or excluded.
+  private scanCi_ = 0;
+  private scanVi_ = 0;
+
+  /// Bits examined by firstUncovered(), see the scanBitTests getter.
+  private scanBitTests_ = 0;
+
+  /// Combinations visited by addValueScores, see the valueScoreComboVisits getter.
+  private valueScoreComboVisits_ = 0;
+
   private constructor() {}
 
   /// Initialize coverage tracking for the given parameters and strength.
@@ -149,8 +160,8 @@ export class CoverageEngine {
 
   /// Score a candidate value for a single parameter position.
   ///
-  /// Used by constructive greedy: given a partial assignment, how many new
-  /// tuples would be covered by setting paramIndex to valueIndex?
+  /// Answers a single "what would this one value gain?" query. Constructive
+  /// greedy scores a whole parameter at once instead; see addValueScores.
   scoreValue(partial: TestCase, paramIndex: number, valueIndex: number): number {
     let score = 0;
     const relevantCombos = this.paramToCombos_[paramIndex];
@@ -186,6 +197,68 @@ export class CoverageEngine {
     }
 
     return score;
+  }
+
+  /// Score every value of one parameter against one partial assignment.
+  ///
+  /// Adds the coverage gain of assigning value vi to `paramIndex` into
+  /// `outScores[vi]`, for every value vi of that parameter. The caller owns the
+  /// buffer, which must hold at least `params[paramIndex].size` entries and be
+  /// zeroed (or already hold another engine's contribution) on entry.
+  ///
+  /// Each relevant (combination, position) pair is visited once, and the shared
+  /// part of the mixed-radix index is computed once per combination, so the
+  /// extra work per candidate value is a single bit test. Scoring values one at
+  /// a time repeats the whole sweep for every value.
+  addValueScores(partial: TestCase, paramIndex: number, outScores: number[]): void {
+    const relevantCombos = this.paramToCombos_[paramIndex];
+    const positions = this.paramPositionInCombo_[paramIndex];
+    const numRelevant = relevantCombos.length;
+    const numValues = this.params_[paramIndex].size;
+    this.valueScoreComboVisits_ += numRelevant;
+
+    for (let k = 0; k < numRelevant; ++k) {
+      const ci = relevantCombos[k];
+      const pos = positions[k];
+      const base = ci * this.strength_;
+
+      // The other positions of this combination are the same for every candidate
+      // value, so their share of the mixed-radix index is computed once here
+      // rather than once per value.
+      let allAssigned = true;
+      let baseIndex = 0;
+      for (let j = 0; j < this.strength_; ++j) {
+        if (j === pos) {
+          continue;
+        }
+        const v = partial.values[this.paramCombinations_[base + j]];
+        if (v === UNASSIGNED) {
+          allAssigned = false;
+          break;
+        }
+        baseIndex += v * this.comboMultipliers_[base + j];
+      }
+      if (!allAssigned) {
+        continue;
+      }
+
+      const first = this.combinationOffsets_[ci] + baseIndex;
+      const stride = this.comboMultipliers_[base + pos];
+      for (let vi = 0; vi < numValues; ++vi) {
+        if (!this.covered_.test(first + vi * stride)) {
+          ++outScores[vi];
+        }
+      }
+    }
+  }
+
+  /// Parameter combinations visited by addValueScores since construction.
+  ///
+  /// Diagnostic accessor. Each call adds its relevant-combination count once, so
+  /// the counter costs nothing per value. Lets tests pin that scoring a
+  /// parameter stays independent of how many values that parameter has.
+  get valueScoreComboVisits(): number {
+    return this.valueScoreComboVisits_;
   }
 
   /// Score a complete candidate test case.
@@ -394,17 +467,60 @@ export class CoverageEngine {
   /// global parameter space, leaving all other positions UNASSIGNED. Used by the
   /// generator's completion phase to construct a test covering this tuple
   /// directly instead of relying on randomized greedy construction.
+  ///
+  /// The scan resumes from an internal cursor instead of restarting at the first
+  /// tuple. Coverage bits are only ever set until resetCoverage() clears them and
+  /// rewinds the cursor, so every index below the cursor is known to be covered
+  /// or excluded and the returned tuple is still the lowest-indexed uncovered
+  /// one. A whole pass of interleaved firstUncovered() and addTestCase() /
+  /// excludeTuple() calls therefore stays linear in tuples plus calls.
   firstUncovered(): { index: number; assignment: number[] } | null {
-    let found: { index: number; assignment: number[] } | null = null;
-    this.forEachTuple((ci, vi, combo, valueIndices) => {
-      const assignment = new Array<number>(this.params_.length).fill(UNASSIGNED);
-      for (let j = 0; j < combo.length; ++j) {
-        assignment[combo[j]] = valueIndices[j];
+    const start = this.scanPosition();
+    const combo: number[] = new Array(this.strength_);
+    const radixes: number[] = new Array(this.strength_);
+
+    while (this.scanCi_ < this.numCombinations_) {
+      const cbase = this.scanCi_ * this.strength_;
+      let product = 1;
+      for (let j = 0; j < this.strength_; ++j) {
+        combo[j] = this.paramCombinations_[cbase + j];
+        radixes[j] = this.params_[combo[j]].size;
+        product *= radixes[j];
       }
-      found = { index: this.combinationOffsets_[ci] + vi, assignment };
-      return false; // Stop after the first uncovered tuple.
-    });
-    return found;
+
+      while (this.scanVi_ < product) {
+        const globalIndex = this.combinationOffsets_[this.scanCi_] + this.scanVi_;
+        if (this.covered_.test(globalIndex)) {
+          ++this.scanVi_;
+          continue;
+        }
+        const assignment = new Array<number>(this.params_.length).fill(UNASSIGNED);
+        let remainder = this.scanVi_;
+        for (let j = this.strength_ - 1; j >= 0; --j) {
+          assignment[combo[j]] = remainder % radixes[j];
+          remainder = Math.floor(remainder / radixes[j]);
+        }
+        // Every index the cursor advanced past was tested and found covered; the
+        // tuple the cursor stops on accounts for the one remaining bit test.
+        this.scanBitTests_ += globalIndex - start + 1;
+        return { index: globalIndex, assignment };
+      }
+
+      ++this.scanCi_;
+      this.scanVi_ = 0;
+    }
+
+    this.scanBitTests_ += this.totalTuples_ - start;
+    return null;
+  }
+
+  /// Coverage bits examined by firstUncovered() since construction.
+  ///
+  /// Diagnostic accessor. A call tests exactly the bits it advances the cursor
+  /// past plus the one it stops on, so the counter is updated once per call and
+  /// adds nothing per bit. Lets tests bound the scan cost of a whole pass.
+  get scanBitTests(): number {
+    return this.scanBitTests_;
   }
 
   /// Exclude a tuple (by global index) from the coverage target.
@@ -431,9 +547,18 @@ export class CoverageEngine {
     this.covered_.reset();
     this.invalidTuples_ = 0;
     this.coveredBits_ = 0;
+    this.scanCi_ = 0;
+    this.scanVi_ = 0;
   }
 
   // --- Private methods ---
+
+  /// Flat tuple index the firstUncovered() scan resumes at.
+  private scanPosition(): number {
+    return this.scanCi_ < this.numCombinations_
+      ? this.combinationOffsets_[this.scanCi_] + this.scanVi_
+      : this.totalTuples_;
+  }
 
   /// Iterate over all uncovered tuples, calling fn for each.
   ///
@@ -482,12 +607,25 @@ export class CoverageEngine {
   }
 
   private initCombinations(): void {
+    // Strength 0 selects no parameters at all: there is no combination to store
+    // and no stride to divide by. preflightModel already accepts it as an empty
+    // tuple universe, so the engine is built empty rather than rejected.
+    if (this.strength_ === 0) {
+      this.paramCombinations_ = [];
+      this.numCombinations_ = 0;
+      return;
+    }
     const n = this.params_.length;
     this.paramCombinations_ = generateCombinationsFlat(n, this.strength_);
     this.numCombinations_ = this.paramCombinations_.length / this.strength_;
   }
 
   private initCombinationsFromSubset(): void {
+    if (this.strength_ === 0) {
+      this.paramCombinations_ = [];
+      this.numCombinations_ = 0;
+      return;
+    }
     const n = this.paramSubset_.length;
     this.paramCombinations_ = generateCombinationsFlat(n, this.strength_);
     for (let i = 0; i < this.paramCombinations_.length; ++i) {

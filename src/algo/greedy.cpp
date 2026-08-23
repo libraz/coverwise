@@ -3,21 +3,23 @@
 #include "algo/greedy.h"
 
 #include <algorithm>
-#include <numeric>
-#include <optional>
 #include <vector>
 
 namespace coverwise {
 namespace algo {
 
-namespace {
+void GreedyScratch::Reserve(const std::vector<model::Parameter>& params) {
+  order.reserve(params.size());
+  uint32_t max_values = 0;
+  for (const auto& param : params) {
+    max_values = std::max(max_values, param.size());
+  }
+  scores.reserve(max_values);
+  best_values.reserve(max_values);
+}
 
-/// @brief Break ties among best_values using weights, then RNG for remaining ties.
-///
-/// Uses weighted random selection: each tied value's probability is proportional
-/// to its weight. This biases toward higher-weighted values while maintaining
-/// enough randomness for the greedy algorithm to explore diverse test cases.
-/// @return The chosen value index.
+namespace detail {
+
 uint32_t BreakTieWithWeights(const std::vector<uint32_t>& best_values,
                              const std::vector<std::vector<double>>& weights, uint32_t pi,
                              util::Rng& rng) {
@@ -54,103 +56,6 @@ uint32_t BreakTieWithWeights(const std::vector<uint32_t>& best_values,
   return best_values[idx];
 }
 
-}  // namespace
-
-std::optional<model::TestCase> GreedyConstruct(const std::vector<model::Parameter>& params,
-                                               ScoreFn score_fn,
-                                               const std::vector<model::Constraint>& constraints,
-                                               util::Rng& rng,
-                                               const std::vector<std::vector<bool>>& allowed_values,
-                                               const std::vector<std::vector<double>>& weights) {
-  const auto num_params = static_cast<uint32_t>(params.size());
-
-  model::TestCase tc;
-  tc.values.assign(num_params, model::kUnassigned);
-
-  // Fisher-Yates shuffle for parameter order
-  std::vector<uint32_t> order(num_params);
-  std::iota(order.begin(), order.end(), 0);
-  for (uint32_t i = num_params; i > 1; --i) {
-    uint32_t j = rng.NextUint32(i);
-    std::swap(order[i - 1], order[j]);
-  }
-
-  // Single-pass, no-backtracking construction: each parameter is assigned once in
-  // shuffled order. This is a deliberate approximation favouring speed — a greedy
-  // local choice may leave some satisfiable tuples uncovered, which the caller
-  // surfaces as coverage < 1.0 rather than retrying exhaustively.
-  for (uint32_t pi : order) {
-    uint32_t best_score = 0;
-    std::vector<uint32_t> best_values;
-
-    for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
-      if (!allowed_values.empty() && !allowed_values[pi][vi]) continue;
-
-      // Temporarily assign value for constraint evaluation
-      tc.values[pi] = vi;
-
-      // Evaluate constraints using three-valued logic
-      bool pruned = false;
-      for (const auto& constraint : constraints) {
-        auto result = constraint->Evaluate(tc.values);
-        if (result == model::ConstraintResult::kFalse) {
-          pruned = true;
-          break;
-        }
-        // kTrue and kUnknown: continue
-      }
-
-      // Reset before deciding
-      tc.values[pi] = model::kUnassigned;
-
-      if (pruned) continue;
-
-      uint32_t score = score_fn(tc, pi, vi);
-      if (best_values.empty() || score > best_score) {
-        best_score = score;
-        best_values.clear();
-        best_values.push_back(vi);
-      } else if (score == best_score) {
-        best_values.push_back(vi);
-      }
-    }
-
-    if (best_values.empty()) {
-      // Fallback: pick the first allowed value that satisfies constraints.
-      uint32_t fallback = model::kUnassigned;
-      for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
-        if (!allowed_values.empty() && !allowed_values[pi][vi]) continue;
-
-        tc.values[pi] = vi;
-        bool pruned = false;
-        for (const auto& constraint : constraints) {
-          auto result = constraint->Evaluate(tc.values);
-          if (result == model::ConstraintResult::kFalse) {
-            pruned = true;
-            break;
-          }
-        }
-        tc.values[pi] = model::kUnassigned;
-
-        if (!pruned) {
-          fallback = vi;
-          break;
-        }
-      }
-      if (fallback != model::kUnassigned) {
-        tc.values[pi] = fallback;
-      } else {
-        // No constraint-satisfying value exists for this parameter. Signal
-        // construction failure rather than writing a constraint-violating value.
-        return std::nullopt;
-      }
-    } else {
-      tc.values[pi] = BreakTieWithWeights(best_values, weights, pi, rng);
-    }
-  }
-
-  return tc;
-}
-
+}  // namespace detail
 }  // namespace algo
 }  // namespace coverwise

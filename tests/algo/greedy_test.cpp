@@ -14,7 +14,8 @@
 #include "util/rng.h"
 
 using coverwise::algo::GreedyConstruct;
-using coverwise::algo::ScoreFn;
+using coverwise::algo::GreedyResult;
+using coverwise::algo::GreedyScratch;
 using coverwise::core::CoverageEngine;
 using coverwise::model::Constraint;
 using coverwise::model::ConstraintResult;
@@ -26,19 +27,47 @@ using coverwise::model::Parameter;
 using coverwise::model::TestCase;
 using coverwise::util::Rng;
 
-/// @brief Helper to create a ScoreFn from a CoverageEngine reference.
-inline ScoreFn MakeScoreFn(const CoverageEngine& engine) {
-  return [&engine](const TestCase& partial, uint32_t pi, uint32_t vi) {
-    return engine.ScoreValue(partial, pi, vi);
+/// @brief Constraint that rejects every assignment and counts its evaluations.
+class CountingRejectAll final : public coverwise::model::ConstraintNode {
+ public:
+  explicit CountingRejectAll(uint32_t* counter) : counter_(counter) {}
+
+  ConstraintResult Evaluate(const std::vector<uint32_t>& /*assignment*/) const override {
+    ++*counter_;
+    return ConstraintResult::kFalse;
+  }
+
+ private:
+  uint32_t* counter_;
+};
+
+/// @brief Scoring callback adding one engine's per-value scores into the buffer.
+inline auto MakeScoreFn(const CoverageEngine& engine) {
+  return [&engine](const TestCase& partial, uint32_t pi, uint32_t* scores) {
+    engine.AddValueScores(partial, pi, scores);
   };
 }
 
-/// @brief Unwrap a GreedyConstruct result, asserting that construction
+/// @brief Run one construction with a throwaway scratch buffer.
+///
+/// Production code reuses a single scratch across a whole generation pass; these
+/// tests drive individual constructions, so each call gets its own.
+template <typename ScoreValuesFn>
+std::optional<GreedyResult> Construct(const std::vector<Parameter>& params,
+                                      ScoreValuesFn&& score_values,
+                                      const std::vector<Constraint>& constraints, Rng& rng,
+                                      const std::vector<std::vector<bool>>& allowed = {},
+                                      const std::vector<std::vector<double>>& weights = {}) {
+  GreedyScratch scratch;
+  return GreedyConstruct(params, score_values, constraints, rng, scratch, allowed, weights);
+}
+
+/// @brief Unwrap a construction result, asserting that construction
 /// succeeded. Tests that expect a valid test case use this helper; tests that
 /// exercise construction failure inspect the std::optional directly.
-inline TestCase Unwrap(std::optional<TestCase> result) {
+inline TestCase Unwrap(std::optional<GreedyResult> result) {
   EXPECT_TRUE(result.has_value()) << "GreedyConstruct unexpectedly failed";
-  return result.value_or(TestCase{});
+  return result.has_value() ? std::move(result->test_case) : TestCase{};
 }
 
 // ---------------------------------------------------------------------------
@@ -57,7 +86,7 @@ TEST(GreedyConstructTest, AllParametersAssigned) {
 
   Rng rng(42);
   std::vector<Constraint> constraints;
-  auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
+  auto tc = Unwrap(Construct(params, MakeScoreFn(engine), constraints, rng));
 
   ASSERT_EQ(tc.values.size(), 3u);
   for (uint32_t v : tc.values) {
@@ -78,7 +107,7 @@ TEST(GreedyConstructTest, SingleParameter) {
 
   Rng rng(0);
   std::vector<Constraint> constraints;
-  auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
+  auto tc = Unwrap(Construct(params, MakeScoreFn(engine), constraints, rng));
 
   ASSERT_EQ(tc.values.size(), 1u);
   EXPECT_NE(tc.values[0], kUnassigned);
@@ -94,7 +123,7 @@ TEST(GreedyConstructTest, HandlesFiniteExtremeTieWeightsWithoutOverflow) {
   std::vector<bool> selected(2, false);
   for (uint64_t seed = 0; seed < 32; ++seed) {
     Rng rng(seed);
-    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), {}, rng, {}, {{max, max}}));
+    auto tc = Unwrap(Construct(params, MakeScoreFn(engine), {}, rng, {}, {{max, max}}));
     ASSERT_EQ(tc.values.size(), 1u);
     selected[tc.values[0]] = true;
   }
@@ -124,7 +153,7 @@ TEST(GreedyConstructTest, CoverageMaximization) {
   std::vector<Constraint> constraints;
   // Generate enough tests to cover remaining 3 tuples.
   for (int i = 0; i < 10 && !engine.IsComplete(); ++i) {
-    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
+    auto tc = Unwrap(Construct(params, MakeScoreFn(engine), constraints, rng));
     engine.AddTestCase(tc);
   }
   EXPECT_TRUE(engine.IsComplete());
@@ -145,7 +174,7 @@ TEST(GreedyConstructTest, FullCoverageThreeParams) {
   std::vector<Constraint> constraints;
   int count = 0;
   while (!engine.IsComplete() && count < 20) {
-    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
+    auto tc = Unwrap(Construct(params, MakeScoreFn(engine), constraints, rng));
     engine.AddTestCase(tc);
     ++count;
   }
@@ -178,7 +207,7 @@ TEST(GreedyConstructTest, ConstraintPruning) {
   Rng rng(12);
   for (int i = 0; i < 20; ++i) {
     rng.Seed(static_cast<uint64_t>(i));
-    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
+    auto tc = Unwrap(Construct(params, MakeScoreFn(engine), constraints, rng));
     if (tc.values[0] == 0) {
       EXPECT_NE(tc.values[1], 1u) << "Constraint violated: A=a0 and B=b1";
     }
@@ -201,7 +230,7 @@ TEST(GreedyConstructTest, ConstraintUnknownAllowed) {
   constraints.push_back(std::make_unique<NotEqualsNode>(1, 1));  // B != b1
 
   Rng rng(0);
-  auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
+  auto tc = Unwrap(Construct(params, MakeScoreFn(engine), constraints, rng));
   // A should still get assigned (not pruned by the B constraint).
   EXPECT_NE(tc.values[0], kUnassigned);
   // B should be 0 (b1 is pruned by the constraint).
@@ -229,7 +258,7 @@ TEST(GreedyConstructTest, AllowedValuesFiltering) {
 
   Rng rng(5);
   std::vector<Constraint> constraints;
-  auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng, allowed));
+  auto tc = Unwrap(Construct(params, MakeScoreFn(engine), constraints, rng, allowed));
 
   EXPECT_EQ(tc.values[0], 1u);  // only a1 is allowed
   EXPECT_TRUE(tc.values[1] == 0u || tc.values[1] == 2u);
@@ -255,7 +284,7 @@ TEST(GreedyConstructTest, AllValuesConstrainedFailsConstruction) {
   constraints.push_back(std::make_unique<NotEqualsNode>(0, 1));
 
   Rng rng(0);
-  auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
+  auto tc = Construct(params, MakeScoreFn(engine), constraints, rng);
 
   // No constraint-satisfying value exists for A => construction fails.
   EXPECT_FALSE(tc.has_value());
@@ -284,7 +313,7 @@ TEST(GreedyConstructTest, AllValuesConstrainedWithAllowedMaskFailsConstruction) 
   };
 
   Rng rng(0);
-  auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng, allowed);
+  auto tc = Construct(params, MakeScoreFn(engine), constraints, rng, allowed);
 
   // Every allowed value of A is constraint-pruned => construction fails.
   EXPECT_FALSE(tc.has_value());
@@ -318,7 +347,7 @@ TEST(GreedyConstructTest, WeightBasedTieBreaking) {
     Rng rng(seed);
     auto [eng, e] = CoverageEngine::Create(params, 2);
     ASSERT_TRUE(e.ok());
-    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(eng), constraints, rng, {}, weights));
+    auto tc = Unwrap(Construct(params, MakeScoreFn(eng), constraints, rng, {}, weights));
     if (tc.values[0] == 2) {
       ++a2_count;
     }
@@ -345,12 +374,12 @@ TEST(GreedyConstructTest, Determinism) {
     auto [engine1, err1] = CoverageEngine::Create(params, 2);
     ASSERT_TRUE(err1.ok());
     Rng rng1(seed);
-    auto tc1 = Unwrap(GreedyConstruct(params, MakeScoreFn(engine1), constraints, rng1));
+    auto tc1 = Unwrap(Construct(params, MakeScoreFn(engine1), constraints, rng1));
 
     auto [engine2, err2] = CoverageEngine::Create(params, 2);
     ASSERT_TRUE(err2.ok());
     Rng rng2(seed);
-    auto tc2 = Unwrap(GreedyConstruct(params, MakeScoreFn(engine2), constraints, rng2));
+    auto tc2 = Unwrap(Construct(params, MakeScoreFn(engine2), constraints, rng2));
 
     ASSERT_EQ(tc1.values.size(), tc2.values.size());
     for (size_t i = 0; i < tc1.values.size(); ++i) {
@@ -381,13 +410,14 @@ TEST(GreedyConstructTest, MultiEngineSumsScores) {
   ASSERT_TRUE(result2.second.ok());
   auto eng2 = std::move(result2.first);
 
-  auto multi_score = [&](const TestCase& partial, uint32_t pi, uint32_t vi) -> uint32_t {
-    return eng1.ScoreValue(partial, pi, vi) + eng2.ScoreValue(partial, pi, vi);
+  auto multi_score = [&](const TestCase& partial, uint32_t pi, uint32_t* scores) {
+    eng1.AddValueScores(partial, pi, scores);
+    eng2.AddValueScores(partial, pi, scores);
   };
   std::vector<Constraint> constraints;
   Rng rng(77);
 
-  auto tc = Unwrap(GreedyConstruct(params, multi_score, constraints, rng));
+  auto tc = Unwrap(Construct(params, multi_score, constraints, rng));
 
   ASSERT_EQ(tc.values.size(), 3u);
   for (uint32_t v : tc.values) {
@@ -398,7 +428,7 @@ TEST(GreedyConstructTest, MultiEngineSumsScores) {
   eng1.AddTestCase(tc);
   eng2.AddTestCase(tc);
 
-  auto tc2 = Unwrap(GreedyConstruct(params, multi_score, constraints, rng));
+  auto tc2 = Unwrap(Construct(params, multi_score, constraints, rng));
   ASSERT_EQ(tc2.values.size(), 3u);
   for (uint32_t v : tc2.values) {
     EXPECT_NE(v, kUnassigned);
@@ -420,7 +450,7 @@ TEST(GreedyConstructTest, MultiEngineFullCoverage) {
 
   int count = 0;
   while (!engine1.IsComplete() && count < 20) {
-    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine1), constraints, rng));
+    auto tc = Unwrap(Construct(params, MakeScoreFn(engine1), constraints, rng));
     engine1.AddTestCase(tc);
     ++count;
   }
@@ -444,7 +474,7 @@ TEST(GreedyConstructTest, MultiEngineConstraintPruning) {
 
   for (int i = 0; i < 10; ++i) {
     rng.Seed(static_cast<uint64_t>(i));
-    auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng));
+    auto tc = Unwrap(Construct(params, MakeScoreFn(engine), constraints, rng));
     EXPECT_NE(tc.values[0], 0u) << "Constraint violated at seed " << i;
   }
 }
@@ -465,7 +495,7 @@ TEST(GreedyConstructTest, MultiEngineAllPrunedFailsConstruction) {
   constraints.push_back(std::make_unique<NotEqualsNode>(0, 1));
 
   Rng rng(0);
-  auto tc = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng);
+  auto tc = Construct(params, MakeScoreFn(engine), constraints, rng);
 
   // No constraint-satisfying value exists for A => construction fails.
   EXPECT_FALSE(tc.has_value());
@@ -495,7 +525,109 @@ TEST(GreedyConstructTest, EqualWeightsUniform) {
   std::vector<std::vector<double>> weights = {{1.0, 1.0}, {1.0, 1.0}};
   Rng rng(42);
   std::vector<Constraint> constraints;
-  auto tc = Unwrap(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng, {}, weights));
+  auto tc = Unwrap(Construct(params, MakeScoreFn(engine), constraints, rng, {}, weights));
   // Should succeed without crash
   EXPECT_EQ(tc.values.size(), 2u);
+}
+
+// ---------------------------------------------------------------------------
+// Reported gain and scratch reuse
+// ---------------------------------------------------------------------------
+
+TEST(GreedyConstructTest, ReportedGainMatchesScoringTheFinishedTestCase) {
+  // Coverage does not change while a test case is being built, so the gains the
+  // construction already summed must equal a full scan of the finished case.
+  // This is what lets the caller skip that scan.
+  std::vector<Parameter> params = {
+      {"A", {"a0", "a1", "a2"}, {}},
+      {"B", {"b0", "b1"}, {}},
+      {"C", {"c0", "c1", "c2"}, {}},
+      {"D", {"d0", "d1"}, {}},
+  };
+  auto global_result = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(global_result.second.ok());
+  auto engine = std::move(global_result.first);
+  std::vector<uint32_t> subset = {0, 2, 3};
+  auto sub_result = CoverageEngine::Create(params, subset, 3);
+  ASSERT_TRUE(sub_result.second.ok());
+  auto sub_engine = std::move(sub_result.first);
+
+  auto score_both = [&](const TestCase& partial, uint32_t pi, uint32_t* scores) {
+    engine.AddValueScores(partial, pi, scores);
+    sub_engine.AddValueScores(partial, pi, scores);
+  };
+
+  Rng rng(42);
+  std::vector<Constraint> constraints;
+  GreedyScratch scratch;
+  uint32_t nonzero_gains = 0;
+  for (int i = 0; i < 12 && !(engine.IsComplete() && sub_engine.IsComplete()); ++i) {
+    auto built = GreedyConstruct(params, score_both, constraints, rng, scratch);
+    ASSERT_TRUE(built.has_value());
+    EXPECT_EQ(built->score,
+              engine.ScoreCandidate(built->test_case) + sub_engine.ScoreCandidate(built->test_case))
+        << "iteration " << i;
+    if (built->score > 0) ++nonzero_gains;
+    engine.AddTestCase(built->test_case);
+    sub_engine.AddTestCase(built->test_case);
+  }
+  // Both a fresh bitmap (every gain counted) and a saturated one (gains of zero)
+  // must be exercised for the equality above to mean anything.
+  EXPECT_GT(nonzero_gains, 0u);
+  EXPECT_GT(engine.CoveredCount(), 0u);
+}
+
+TEST(GreedyConstructTest, ReusesCallerScratchWithoutGrowingItPerConstruction) {
+  // The scratch is the whole point of handing buffers in from outside: after it
+  // has been sized once, no later construction may reallocate any of them,
+  // whatever the parameter or value counts.
+  std::vector<Parameter> params;
+  for (uint32_t pi = 0; pi < 12; ++pi) {
+    Parameter p;
+    p.name = "P" + std::to_string(pi);
+    for (uint32_t vi = 0; vi <= pi; ++vi) p.values.push_back("v" + std::to_string(vi));
+    params.push_back(std::move(p));
+  }
+  auto [engine, err] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(err.ok());
+
+  GreedyScratch scratch;
+  scratch.Reserve(params);
+  const auto order_capacity = scratch.order.capacity();
+  const auto scores_capacity = scratch.scores.capacity();
+  const auto best_values_capacity = scratch.best_values.capacity();
+  ASSERT_GE(order_capacity, params.size());
+
+  Rng rng(7);
+  std::vector<Constraint> constraints;
+  for (int i = 0; i < 25; ++i) {
+    auto built = GreedyConstruct(params, MakeScoreFn(engine), constraints, rng, scratch);
+    ASSERT_TRUE(built.has_value());
+    engine.AddTestCase(built->test_case);
+    EXPECT_EQ(scratch.order.capacity(), order_capacity) << "iteration " << i;
+    EXPECT_EQ(scratch.scores.capacity(), scores_capacity) << "iteration " << i;
+    EXPECT_EQ(scratch.best_values.capacity(), best_values_capacity) << "iteration " << i;
+  }
+}
+
+TEST(GreedyConstructTest, PrunedParameterIsEvaluatedOncePerValue) {
+  // Every value allowed by the mask that survives the constraints is recorded by
+  // the selection loop, and constraint evaluation is a pure function of the same
+  // partial assignment, so re-running it could not rescue a parameter with no
+  // usable value. Construction must therefore fail after a single pass rather
+  // than paying for a second one on every failed build.
+  std::vector<Parameter> params = {
+      {"A", {"a0", "a1", "a2", "a3"}, {}},
+  };
+  auto [engine, err] = CoverageEngine::Create(params, 1);
+  ASSERT_TRUE(err.ok());
+
+  uint32_t evaluations = 0;
+  std::vector<Constraint> constraints;
+  constraints.push_back(std::make_unique<CountingRejectAll>(&evaluations));
+
+  Rng rng(3);
+  GreedyScratch scratch;
+  ASSERT_FALSE(GreedyConstruct(params, MakeScoreFn(engine), constraints, rng, scratch).has_value());
+  EXPECT_EQ(evaluations, params[0].size());
 }

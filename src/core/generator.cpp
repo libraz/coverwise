@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "algo/greedy.h"
@@ -13,6 +16,7 @@
 #include "model/constraint_ast.h"
 #include "model/constraint_parser.h"
 #include "model/options_validation.h"
+#include "model/surface_error.h"
 #include "util/rng.h"
 #include "util/string_util.h"
 #include "validator/coverage_validator.h"
@@ -52,6 +56,51 @@ std::pair<std::vector<uint32_t>, std::string> ResolveParamNames(
   return {indices, {}};
 }
 
+/// @brief The tuple space one coverage engine enumerates.
+///
+/// A tuple is identified by its parameter set and value tuple, not by the
+/// engine that reports it, so two engines describe the same interaction exactly
+/// when their shapes overlap. Kept beside the engines because the engine itself
+/// does not expose its subset or strength.
+struct EngineShape {
+  std::vector<uint32_t> params;  ///< Global parameter indices, ascending.
+  uint32_t strength = 0;
+};
+
+/// @brief Whether two engines can enumerate a common tuple.
+///
+/// Tuple identity includes the parameter set, so engines of different strengths
+/// never collide, and engines sharing fewer than `strength` parameters have no
+/// parameter combination in common either.
+bool ShapesOverlap(const EngineShape& a, const EngineShape& b) {
+  if (a.strength != b.strength) return false;
+  std::vector<uint32_t> shared;
+  std::set_intersection(a.params.begin(), a.params.end(), b.params.begin(), b.params.end(),
+                        std::back_inserter(shared));
+  return shared.size() >= a.strength;
+}
+
+/// @brief Whether @p engine still counts the tuple @p indices as uncovered.
+///
+/// Scoring one (parameter, value) pair against a partial assignment that fixes
+/// the tuple's remaining pairs isolates a single parameter combination: no other
+/// combination containing the scored parameter is fully assigned. The score is
+/// therefore 1 when that combination's value tuple is still uncovered here, and
+/// 0 when it is covered, excluded, or outside the engine's parameter subset.
+/// Only meaningful for an engine whose strength equals the tuple size, which
+/// ShapesOverlap() establishes before this is called.
+bool EngineNeedsTuple(const CoverageEngine& engine,
+                      const std::vector<std::pair<uint32_t, uint32_t>>& indices,
+                      size_t param_count) {
+  if (indices.empty()) return false;
+  model::TestCase partial;
+  partial.values.assign(param_count, model::kUnassigned);
+  for (size_t k = 1; k < indices.size(); ++k) {
+    partial.values[indices[k].first] = indices[k].second;
+  }
+  return engine.ScoreValue(partial, indices[0].first, indices[0].second) == 1;
+}
+
 /// @brief Check if all engines are complete.
 bool AllComplete(const CoverageEngine& global, const std::vector<CoverageEngine>& sub_engines) {
   if (!global.IsComplete()) return false;
@@ -61,15 +110,17 @@ bool AllComplete(const CoverageEngine& global, const std::vector<CoverageEngine>
   return true;
 }
 
-/// @brief Sum ScoreCandidate across all engines.
-uint32_t TotalScore(const CoverageEngine& global, const std::vector<CoverageEngine>& sub_engines,
-                    const model::TestCase& tc) {
-  uint32_t score = global.ScoreCandidate(tc);
-  for (const auto& eng : sub_engines) {
-    score += eng.ScoreCandidate(tc);
-  }
-  return score;
-}
+/// @brief Scratch state held for the length of one generation pass.
+///
+/// Everything a hot loop would otherwise rebuild per iteration is owned here and
+/// borrowed by the loop: the greedy construction buffers and the feasibility
+/// solver's parameter order. The order depends only on the allowed-value mask,
+/// so it is rebuilt exactly when that mask changes — once for the positive
+/// phase, once per invalid value in the negative phase — and never per witness.
+struct GenerationScratch {
+  algo::GreedyScratch greedy;
+  SolveParameterOrder solve_order;
+};
 
 /// @brief Build an allowed_values mask that only permits valid values.
 std::vector<std::vector<bool>> BuildValidOnlyMask(const std::vector<model::Parameter>& params) {
@@ -97,6 +148,19 @@ std::string ValidatePositiveSeed(const model::TestCase& seed,
   for (uint32_t pi = 0; pi < static_cast<uint32_t>(params.size()); ++pi) {
     uint32_t vi = seed.values[pi];
     if (vi >= params[pi].size()) {
+      // A row the caller recorded is described back to them in their own terms.
+      // The index here is kUnassigned whenever the row drifted from the model,
+      // and printing that sentinel tells the caller nothing about which part of
+      // what they submitted no longer fits.
+      if (pi < seed.unresolved.size() && !seed.unresolved[pi].empty()) {
+        return "value '" + seed.unresolved[pi] + "' is not declared by parameter " +
+               params[pi].name;
+      }
+      if (vi == model::kUnassigned) {
+        return "no value recorded for parameter " + params[pi].name;
+      }
+      // Reached only through the embedding API, which supplies indices itself,
+      // so the index is the caller's own input rather than an internal one.
       return "value index " + std::to_string(vi) + " is out of range for parameter " +
              params[pi].name;
     }
@@ -143,7 +207,7 @@ std::vector<std::vector<bool>> BuildNegativeMask(const std::vector<model::Parame
 model::Error GenerateNegativeTests(const std::vector<model::Parameter>& params,
                                    const std::vector<model::Constraint>& constraints,
                                    CoverageEngine& fresh_cov, uint32_t max_tests,
-                                   size_t positive_test_count,
+                                   size_t positive_test_count, GenerationScratch& scratch,
                                    std::vector<model::TestCase>& negative_tests,
                                    model::NegativeCoverage& metrics,
                                    std::vector<std::string>& warnings) {
@@ -169,6 +233,10 @@ model::Error GenerateNegativeTests(const std::vector<model::Parameter>& params,
       }
       const bool no_feasible_target = fresh_cov.TotalTuples() == 0;
 
+      // The mask is fixed for the whole inner loop, so the solver order derived
+      // from it is built once here rather than once per witness.
+      scratch.solve_order = BuildAllowedSolveParameterOrder(params, neg_mask);
+
       // Cover every feasible requested-strength tuple containing the fixed
       // invalid value. FirstUncovered + CompleteAssignment is the same
       // deterministic completion path used by positive generation.
@@ -182,7 +250,8 @@ model::Error GenerateNegativeTests(const std::vector<model::Parameter>& params,
         if (!fresh_cov.FirstUncovered(uncovered)) break;
         model::TestCase witness{std::move(uncovered.assignment)};
         SolveBudget budget;
-        if (!CompleteAssignment(params, constraints, neg_mask, witness, &budget)) {
+        if (!CompleteAssignment(params, constraints, neg_mask, witness, &budget,
+                                &scratch.solve_order)) {
           if (budget.exceeded) {
             return {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
                     "A negative coverage witness could not be found within the search budget"};
@@ -286,8 +355,7 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
 
   result.error = model::ValidateGenerateOptions(options);
   if (!result.error.ok()) {
-    result.warnings.push_back(result.error.message +
-                              (result.error.detail.empty() ? "" : ": " + result.error.detail));
+    result.warnings.push_back(model::SurfaceError(result.error).text());
     return result;
   }
 
@@ -298,24 +366,28 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
   auto expanded_param_error = model::ValidateParameters(opts.parameters);
   if (!expanded_param_error.ok()) {
     result.error = expanded_param_error;
-    result.warnings.push_back(result.error.message);
+    result.warnings.push_back(model::SurfaceError(result.error).text());
     return result;
   }
 
   bool has_invalid = model::HasInvalidValues(opts.parameters);
 
-  auto coverage_result = CoverageEngine::Create(opts.parameters, opts.strength);
+  // Every engine over this model reads the same parameters, so they are shared
+  // rather than copied once per engine.
+  auto shared_params = CoverageEngine::ShareParameters(opts.parameters);
+  auto coverage_result = CoverageEngine::CreateShared(shared_params, opts.strength);
   if (!coverage_result.second.ok()) {
-    result.warnings.push_back(coverage_result.second.message + ": " +
-                              coverage_result.second.detail);
+    result.warnings.push_back(model::SurfaceError(coverage_result.second).text());
     result.error = coverage_result.second;
     return result;
   }
   auto coverage = std::move(coverage_result.first);
   uint64_t allocated_tuples = coverage.TotalTuples();
 
-  // Create sub-model engines.
+  // Create sub-model engines. Their tuple spaces are recorded alongside so the
+  // uncovered diagnostics can tell overlapping engines apart from disjoint ones.
   std::vector<CoverageEngine> sub_engines;
+  std::vector<EngineShape> sub_shapes;
   for (const auto& sm : opts.sub_models) {
     auto [indices, resolve_err] = ResolveParamNames(sm.parameter_names, opts.parameters);
     if (!resolve_err.empty()) {
@@ -330,9 +402,9 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
       result.error = {model::Error::Code::kInvalidInput, msg, ""};
       return result;
     }
-    auto [eng, sm_err] = CoverageEngine::Create(opts.parameters, indices, sm.strength);
+    auto [eng, sm_err] = CoverageEngine::CreateShared(shared_params, indices, sm.strength);
     if (!sm_err.ok()) {
-      result.warnings.push_back(sm_err.message + ": " + sm_err.detail);
+      result.warnings.push_back(model::SurfaceError(sm_err).text());
       result.error = sm_err;
       return result;
     }
@@ -340,11 +412,12 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
       result.error = {model::Error::Code::kTupleExplosion,
                       "Combined global and sub-model tuple count exceeds safe limit",
                       "limit=" + std::to_string(CoverageEngine::kMaxTuples)};
-      result.warnings.push_back(result.error.message + ": " + result.error.detail);
+      result.warnings.push_back(model::SurfaceError(result.error).text());
       return result;
     }
     allocated_tuples += eng.TotalTuples();
     sub_engines.push_back(std::move(eng));
+    sub_shapes.push_back(EngineShape{indices, sm.strength});
   }
 
   // Parse constraint expressions into AST.
@@ -353,7 +426,7 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
     auto parse_result = model::ParseConstraint(expr, opts.parameters);
     if (!parse_result.error.ok()) {
       model::Error err = model::AnnotateConstraintError(expr, parse_result.error);
-      result.warnings.push_back(err.message + ": " + err.detail);
+      result.warnings.push_back(model::SurfaceError(err).text());
       result.error = err;
       return result;
     }
@@ -376,7 +449,7 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
         result.error = {model::Error::Code::kConstraintError, "Constraints are unsatisfiable",
                         "No complete assignment using valid values satisfies all constraints"};
       }
-      result.warnings.push_back(result.error.message + ": " + result.error.detail);
+      result.warnings.push_back(model::SurfaceError(result.error).text());
       return result;
     }
   }
@@ -390,7 +463,7 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
   if (exclude_budget_exceeded) {
     result.error = {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
                     "Tuple feasibility could not be determined within the search budget"};
-    result.warnings.push_back(result.error.message + ": " + result.error.detail);
+    result.warnings.push_back(model::SurfaceError(result.error).text());
     return result;
   }
 
@@ -447,17 +520,20 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
                               "); some seeds were dropped");
   }
 
-  // Scoring lambdas: avoid std::function wrapper on the hot path.
-  auto simple_score_fn = [&](const model::TestCase& partial, uint32_t pi, uint32_t vi) {
-    return coverage.ScoreValue(partial, pi, vi);
+  // Scratch borrowed by the construction and completion loops below.
+  GenerationScratch scratch;
+  scratch.greedy.Reserve(opts.parameters);
+
+  // Scoring callbacks are passed to GreedyConstruct as template arguments, so
+  // the per-parameter call is a direct call rather than a type-erased one.
+  auto simple_score_values = [&](const model::TestCase& partial, uint32_t pi, uint32_t* scores) {
+    coverage.AddValueScores(partial, pi, scores);
   };
-  auto combined_score_fn = [&](const model::TestCase& partial, uint32_t pi,
-                               uint32_t vi) -> uint32_t {
-    uint32_t score = coverage.ScoreValue(partial, pi, vi);
+  auto combined_score_values = [&](const model::TestCase& partial, uint32_t pi, uint32_t* scores) {
+    coverage.AddValueScores(partial, pi, scores);
     for (const auto& eng : sub_engines) {
-      score += eng.ScoreValue(partial, pi, vi);
+      eng.AddValueScores(partial, pi, scores);
     }
-    return score;
   };
 
   // Constructive greedy generation loop (positive tests only).
@@ -465,23 +541,25 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
   uint32_t retries = 0;
   while (!AllComplete(coverage, sub_engines) &&
          (opts.max_tests == 0 || result.tests.size() < static_cast<size_t>(opts.max_tests))) {
-    auto tc_opt = sub_engines.empty()
-                      ? algo::GreedyConstruct(opts.parameters, simple_score_fn, constraints, rng,
-                                              valid_mask, resolved_weights)
-                      : algo::GreedyConstruct(opts.parameters, combined_score_fn, constraints, rng,
-                                              valid_mask, resolved_weights);
+    auto built = sub_engines.empty()
+                     ? algo::GreedyConstruct(opts.parameters, simple_score_values, constraints, rng,
+                                             scratch.greedy, valid_mask, resolved_weights)
+                     : algo::GreedyConstruct(opts.parameters, combined_score_values, constraints,
+                                             rng, scratch.greedy, valid_mask, resolved_weights);
     // A failed construction (no constraint-satisfying value for some parameter)
     // is treated like a zero-score candidate: retry with a different shuffle.
-    if (!tc_opt) {
+    if (!built) {
       if (++retries >= kMaxRetries) break;
       continue;
     }
-    auto& tc = *tc_opt;
-    uint32_t score = TotalScore(coverage, sub_engines, tc);
-    if (score == 0) {
+    // Construction already summed the gain of every combination it completed,
+    // and coverage does not change while a test case is being built, so the
+    // candidate needs no second full scan of the coverage bitmaps.
+    if (built->score == 0) {
       if (++retries >= kMaxRetries) break;
       continue;
     }
+    auto& tc = built->test_case;
     retries = 0;
     coverage.AddTestCase(tc);
     for (auto& eng : sub_engines) {
@@ -500,11 +578,16 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
   // as a shortfall. This runs after greedy so the common case keeps a small
   // suite while completeness is still guaranteed for every feasible tuple.
   bool completion_budget_exceeded = false;
+  // The mask this order derives from is fixed for the whole positive phase, so
+  // it is built once instead of once per uncovered tuple.
+  scratch.solve_order = has_invalid ? BuildAllowedSolveParameterOrder(opts.parameters, valid_mask)
+                                    : BuildValidSolveParameterOrder(opts.parameters);
   auto complete_partial = [&](model::TestCase& witness) {
     SolveBudget budget;
-    bool ok = has_invalid
-                  ? CompleteAssignment(opts.parameters, constraints, valid_mask, witness, &budget)
-                  : CompleteValidAssignment(opts.parameters, constraints, witness, &budget);
+    bool ok = has_invalid ? CompleteAssignment(opts.parameters, constraints, valid_mask, witness,
+                                               &budget, &scratch.solve_order)
+                          : CompleteValidAssignment(opts.parameters, constraints, witness, &budget,
+                                                    &scratch.solve_order);
     if (budget.exceeded) completion_budget_exceeded = true;
     return ok;
   };
@@ -539,7 +622,7 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
   if (completion_budget_exceeded) {
     result.error = {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
                     "A coverage witness could not be found within the search budget"};
-    result.warnings.push_back(result.error.message + ": " + result.error.detail);
+    result.warnings.push_back(model::SurfaceError(result.error).text());
     return result;
   }
 
@@ -554,22 +637,61 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
     }
   }
 
-  // Collect uncovered tuples from all engines.
+  // Collect uncovered tuples from all engines. A sub-model can enumerate the
+  // same interaction as the global model or as another sub-model, so both the
+  // total and the diagnostic list describe the union over engines: every
+  // distinct tuple is counted once, listed once, and suggested once.
   if (!AllComplete(coverage, sub_engines)) {
+    EngineShape global_shape;
+    global_shape.params.reserve(opts.parameters.size());
+    for (uint32_t pi = 0; pi < static_cast<uint32_t>(opts.parameters.size()); ++pi) {
+      global_shape.params.push_back(pi);
+    }
+    global_shape.strength = opts.strength;
+
+    // The global engine is counted first, so every tuple it needs is new. An
+    // engine whose tuple space is disjoint from all earlier ones contributes its
+    // whole shortfall; only an overlap has to be resolved tuple by tuple.
     result.uncovered_count = coverage.TotalTuples() - coverage.CoveredCount();
-    for (const auto& eng : sub_engines) {
-      result.uncovered_count += eng.TotalTuples() - eng.CoveredCount();
+    for (size_t i = 0; i < sub_engines.size(); ++i) {
+      std::vector<const CoverageEngine*> earlier;
+      if (ShapesOverlap(sub_shapes[i], global_shape)) earlier.push_back(&coverage);
+      for (size_t j = 0; j < i; ++j) {
+        if (ShapesOverlap(sub_shapes[i], sub_shapes[j])) earlier.push_back(&sub_engines[j]);
+      }
+      uint32_t shortfall = sub_engines[i].TotalTuples() - sub_engines[i].CoveredCount();
+      if (earlier.empty()) {
+        result.uncovered_count += shortfall;
+        continue;
+      }
+      for (const auto& ut : sub_engines[i].GetUncoveredTuples(opts.parameters, shortfall)) {
+        bool already_counted = false;
+        for (const CoverageEngine* eng : earlier) {
+          if (EngineNeedsTuple(*eng, ut.indices, opts.parameters.size())) {
+            already_counted = true;
+            break;
+          }
+        }
+        if (!already_counted) ++result.uncovered_count;
+      }
     }
 
-    auto global_uncovered = coverage.GetUncoveredTuples(opts.parameters);
-    result.uncovered.insert(result.uncovered.end(), global_uncovered.begin(),
-                            global_uncovered.end());
+    // Fill the diagnostic budget with distinct tuples: each engine is asked for
+    // a full budget's worth rather than the remaining slots, so tuples already
+    // listed by an earlier engine do not shrink the report.
+    std::set<std::vector<std::pair<uint32_t, uint32_t>>> listed;
+    auto append_distinct = [&](std::vector<model::UncoveredTuple> tuples) {
+      for (auto& ut : tuples) {
+        if (result.uncovered.size() >= CoverageEngine::kMaxDiagnosticTuples) return;
+        if (!listed.insert(ut.indices).second) continue;
+        result.uncovered.push_back(std::move(ut));
+      }
+    };
+    append_distinct(coverage.GetUncoveredTuples(opts.parameters));
     for (const auto& eng : sub_engines) {
-      uint32_t remaining = result.uncovered.size() >= CoverageEngine::kMaxDiagnosticTuples
-                               ? 0
-                               : CoverageEngine::kMaxDiagnosticTuples - result.uncovered.size();
-      auto sub_uncovered = eng.GetUncoveredTuples(opts.parameters, remaining);
-      result.uncovered.insert(result.uncovered.end(), sub_uncovered.begin(), sub_uncovered.end());
+      if (result.uncovered.size() >= CoverageEngine::kMaxDiagnosticTuples) break;
+      append_distinct(
+          eng.GetUncoveredTuples(opts.parameters, CoverageEngine::kMaxDiagnosticTuples));
     }
     result.omitted_uncovered = result.uncovered_count - result.uncovered.size();
 
@@ -620,14 +742,20 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
   if (has_invalid) {
     model::NegativeCoverage negative_coverage;
     model::Error negative_error = GenerateNegativeTests(
-        opts.parameters, constraints, coverage, opts.max_tests, result.tests.size(),
+        opts.parameters, constraints, coverage, opts.max_tests, result.tests.size(), scratch,
         result.negative_tests, negative_coverage, result.warnings);
-    result.negative_coverage = negative_coverage;
+    // A pass that stopped on an exhausted search budget never reached the
+    // omitted/ratio finalization, so its counters do not describe a whole tuple
+    // universe. Leave the field unset instead of publishing a self-contradictory
+    // report, matching how class coverage reports its own failures.
+    if (negative_error.ok()) {
+      result.negative_coverage = negative_coverage;
+    }
     result.stats.test_count =
         static_cast<uint32_t>(result.tests.size() + result.negative_tests.size());
     if (!negative_error.ok()) {
       result.error = negative_error;
-      result.warnings.push_back(result.error.message + ": " + result.error.detail);
+      result.warnings.push_back(model::SurfaceError(result.error).text());
     }
   }
 
@@ -651,7 +779,7 @@ model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
                         "maxTests cannot be smaller than the existing test count",
                         "maxTests=" + std::to_string(opts.max_tests) +
                             ", existing=" + std::to_string(existing.size())};
-        result.warnings.push_back(result.error.message + ": " + result.error.detail);
+        result.warnings.push_back(model::SurfaceError(result.error).text());
         return result;
       }
       opts.seeds.insert(opts.seeds.begin(), existing.begin(), existing.end());
@@ -701,7 +829,8 @@ ModelStats EstimateModel(const GenerateOptions& options) {
   // Compute the raw global + sub-model tuple upper bound using the same engine
   // definitions and combined allocation budget as generation. Constraints are
   // intentionally not subtracted because estimation does not solve the model.
-  auto [coverage, err] = CoverageEngine::Create(opts.parameters, opts.strength);
+  auto shared_params = CoverageEngine::ShareParameters(opts.parameters);
+  auto [coverage, err] = CoverageEngine::CreateShared(shared_params, opts.strength);
   if (!err.ok()) {
     stats.error = err;
     return stats;
@@ -713,7 +842,8 @@ ModelStats EstimateModel(const GenerateOptions& options) {
       stats.error = {model::Error::Code::kInvalidInput, resolve_error, ""};
       return stats;
     }
-    auto [sub_coverage, sub_error] = CoverageEngine::Create(opts.parameters, indices, sm.strength);
+    auto [sub_coverage, sub_error] =
+        CoverageEngine::CreateShared(shared_params, indices, sm.strength);
     if (!sub_error.ok()) {
       stats.error = sub_error;
       return stats;

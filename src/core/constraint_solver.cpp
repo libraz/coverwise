@@ -22,41 +22,86 @@ bool ConstraintsCanStillPass(const std::vector<model::Constraint>& constraints,
   return true;
 }
 
+/// @brief Smallest usable value index at or after @p start, or the domain size.
+uint32_t NextUsableValue(const std::vector<model::Parameter>& params,
+                         const std::vector<std::vector<bool>>* allowed_values, uint32_t param,
+                         uint32_t start) {
+  for (uint32_t vi = start; vi < params[param].size(); ++vi) {
+    if (allowed_values == nullptr ? !params[param].is_invalid(vi) : (*allowed_values)[param][vi]) {
+      return vi;
+    }
+  }
+  return static_cast<uint32_t>(params[param].size());
+}
+
+/// @brief Depth-first feasibility search driven by an explicit stack.
+///
+/// The search depth grows with the parameter count, and a satisfiable chain
+/// spends only one node of the budget per level, so the node budget alone does
+/// not bound how deep the search goes. Keeping the frames on the heap makes
+/// stack use independent of the model size while preserving the recursive
+/// enumeration order, budget accounting and assignment side effects: on success
+/// @p assignment holds the witness, and on failure every parameter this search
+/// assigned is restored to model::kUnassigned.
 bool Search(const std::vector<model::Parameter>& params,
             const std::vector<model::Constraint>& constraints, std::vector<uint32_t>& assignment,
             const SolveParameterOrder& parameter_order, uint32_t order_position,
             const std::vector<std::vector<bool>>* allowed_values, SolveBudget& budget) {
-  if (budget.remaining == 0) {
-    budget.exceeded = true;
-    return false;
-  }
-  --budget.remaining;
-  if (!ConstraintsCanStillPass(constraints, assignment)) {
-    return false;
-  }
-  while (order_position < parameter_order.size() &&
-         assignment[parameter_order[order_position]] != model::kUnassigned) {
-    ++order_position;
-  }
-  if (order_position == parameter_order.size()) return true;
-  uint32_t next = parameter_order[order_position];
+  struct Frame {
+    uint32_t param;          ///< Parameter assigned at this level.
+    uint32_t value;          ///< Value currently being tried.
+    uint32_t next_position;  ///< Order position the level below starts from.
+  };
+  std::vector<Frame> stack;
+  uint32_t position = order_position;
+  bool expand = true;
 
-  for (uint32_t vi = 0; vi < params[next].size(); ++vi) {
-    if (allowed_values == nullptr ? params[next].is_invalid(vi) : !(*allowed_values)[next][vi]) {
+  for (;;) {
+    if (expand) {
+      expand = false;
+      bool dead = false;
+      if (budget.remaining == 0) {
+        budget.exceeded = true;
+        dead = true;
+      } else {
+        --budget.remaining;
+        dead = !ConstraintsCanStillPass(constraints, assignment);
+      }
+      if (!dead) {
+        while (position < parameter_order.size() &&
+               assignment[parameter_order[position]] != model::kUnassigned) {
+          ++position;
+        }
+        if (position == parameter_order.size()) return true;
+        uint32_t next = parameter_order[position];
+        uint32_t vi = NextUsableValue(params, allowed_values, next, 0);
+        if (vi < params[next].size()) {
+          assignment[next] = vi;
+          ++position;
+          stack.push_back({next, vi, position});
+          expand = true;
+          continue;
+        }
+      }
+    }
+
+    // Backtrack. An exhausted budget unwinds without trying further values, so
+    // the caller sees an untouched assignment together with budget.exceeded.
+    if (stack.empty()) return false;
+    Frame& top = stack.back();
+    uint32_t vi = budget.exceeded
+                      ? static_cast<uint32_t>(params[top.param].size())
+                      : NextUsableValue(params, allowed_values, top.param, top.value + 1);
+    if (vi < params[top.param].size()) {
+      top.value = vi;
+      assignment[top.param] = vi;
+      position = top.next_position;
+      expand = true;
       continue;
     }
-    assignment[next] = vi;
-    if (Search(params, constraints, assignment, parameter_order, order_position + 1, allowed_values,
-               budget)) {
-      return true;
-    }
-    if (budget.exceeded) {
-      assignment[next] = model::kUnassigned;
-      return false;
-    }
+    assignment[top.param] = model::kUnassigned;
+    stack.pop_back();
   }
-  assignment[next] = model::kUnassigned;
-  return false;
 }
 
 SolveParameterOrder BuildSolveParameterOrder(const std::vector<model::Parameter>& params,

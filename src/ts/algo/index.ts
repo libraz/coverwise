@@ -1,1 +1,8 @@
-export { type GreedyParam, greedyConstruct, type ScoreFn } from './greedy.js';
+export {
+  createGreedyScratch,
+  type GreedyParam,
+  type GreedyResult,
+  type GreedyScratch,
+  greedyConstruct,
+  type ScoreValuesFn,
+} from './greedy.js';

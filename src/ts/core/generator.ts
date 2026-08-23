@@ -1,21 +1,28 @@
 /// @file generator.ts
 /// @brief Main test generation orchestrator.
 
-import { greedyConstruct, type ScoreFn } from '../algo/greedy.js';
+import {
+  createGreedyScratch,
+  type GreedyScratch,
+  greedyConstruct,
+  type ScoreValuesFn,
+} from '../algo/greedy.js';
 import { expandBoundaryValues } from '../model/boundary.js';
 import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
 import { annotateConstraintError, parseConstraint } from '../model/constraint-parser.js';
-import { ErrorCode } from '../model/error.js';
+import { ErrorCode, type ErrorInfo, okError } from '../model/error.js';
 import {
   createModelStats,
   ExtendMode,
   type GenerateOptions,
+  getBoundaryConfig,
+  hasBoundaryConfigs,
   isWeightConfigEmpty,
   type ModelStats,
   validateGenerateOptions,
   type WeightConfig,
 } from '../model/generate-options.js';
-import { hasInvalidValues, Parameter } from '../model/parameter.js';
+import { hasInvalidValues, Parameter, validateParameters } from '../model/parameter.js';
 import {
   createGenerateResult,
   type GenerateResult,
@@ -23,16 +30,28 @@ import {
   type Suggestion,
   type TestCase,
   UNASSIGNED,
+  type UncoveredTuple,
   uncoveredTupleToString,
 } from '../model/test-case.js';
 import { Rng } from '../util/rng.js';
 import { annotateClassCoverage } from '../validator/coverage-validator.js';
 import {
+  buildAllowedSolveParameterOrder,
+  buildValidSolveParameterOrder,
   completeAssignment,
   completeValidAssignment,
   createSolveBudget,
+  type SolveParameterOrder,
 } from './constraint-solver.js';
 import { CoverageEngine } from './coverage-engine.js';
+
+/// The one representation of a failure that reaches a caller as text.
+///
+/// Mirrors `model::SurfaceError` in the C++ core: the absent-detail case is
+/// decided in one place, so no call site can leave a dangling ": " behind.
+function surfaceErrorText(error: ErrorInfo): string {
+  return error.detail ? `${error.message}: ${error.detail}` : error.message;
+}
 
 /// Resolve parameter names to sorted indices.
 /// Returns indices array and error message (empty string on success).
@@ -59,6 +78,74 @@ function resolveParamNames(
   return { indices, error: '' };
 }
 
+/// The tuple space one coverage engine enumerates.
+///
+/// A tuple is identified by its parameter set and value tuple, not by the engine
+/// that reports it, so two engines describe the same interaction exactly when
+/// their shapes overlap. Kept beside the engines because the engine itself does
+/// not expose its subset or strength.
+interface EngineShape {
+  /// Global parameter indices, ascending.
+  params: number[];
+  strength: number;
+}
+
+/// Whether two engines can enumerate a common tuple.
+///
+/// Tuple identity includes the parameter set, so engines of different strengths
+/// never collide, and engines sharing fewer than `strength` parameters have no
+/// parameter combination in common either.
+function shapesOverlap(a: EngineShape, b: EngineShape): boolean {
+  if (a.strength !== b.strength) {
+    return false;
+  }
+  let shared = 0;
+  let i = 0;
+  let j = 0;
+  while (i < a.params.length && j < b.params.length) {
+    if (a.params[i] === b.params[j]) {
+      ++shared;
+      ++i;
+      ++j;
+    } else if (a.params[i] < b.params[j]) {
+      ++i;
+    } else {
+      ++j;
+    }
+  }
+  return shared >= a.strength;
+}
+
+/// Whether the engine still counts the tuple `indices` as uncovered.
+///
+/// Scoring one (parameter, value) pair against a partial assignment that fixes
+/// the tuple's remaining pairs isolates a single parameter combination: no other
+/// combination containing the scored parameter is fully assigned. The score is
+/// therefore 1 when that combination's value tuple is still uncovered here, and
+/// 0 when it is covered, excluded, or outside the engine's parameter subset.
+/// Only meaningful for an engine whose strength equals the tuple size, which
+/// shapesOverlap() establishes before this is called.
+function engineNeedsTuple(
+  engine: CoverageEngine,
+  indices: Array<[number, number]>,
+  paramCount: number,
+): boolean {
+  if (indices.length === 0) {
+    return false;
+  }
+  const partial = new Array<number>(paramCount).fill(UNASSIGNED);
+  for (let k = 1; k < indices.length; ++k) {
+    partial[indices[k][0]] = indices[k][1];
+  }
+  return engine.scoreValue({ values: partial }, indices[0][0], indices[0][1]) === 1;
+}
+
+/// Identity key of a tuple: (parameter index, value index) pairs in ascending
+/// parameter order, rendered so distinct tuples compare as distinct strings.
+function tupleKey(indices: Array<[number, number]> | undefined): string {
+  return (indices ?? []).map(([pi, vi]) => `${pi}:${vi}`).join(',');
+}
+
 /// Check if all engines are complete.
 function allComplete(global: CoverageEngine, subEngines: CoverageEngine[]): boolean {
   if (!global.isComplete) {
@@ -72,13 +159,16 @@ function allComplete(global: CoverageEngine, subEngines: CoverageEngine[]): bool
   return true;
 }
 
-/// Sum scoreCandidate across all engines.
-function totalScore(global: CoverageEngine, subEngines: CoverageEngine[], tc: TestCase): number {
-  let score = global.scoreCandidate(tc);
-  for (const eng of subEngines) {
-    score += eng.scoreCandidate(tc);
-  }
-  return score;
+/// Scratch state held for the length of one generation pass.
+///
+/// Everything a hot loop would otherwise rebuild per iteration is owned here and
+/// borrowed by the loop: the greedy construction buffers and the feasibility
+/// solver's parameter order. The order depends only on the allowed-value mask,
+/// so it is rebuilt exactly when that mask changes — once for the positive
+/// phase, once per invalid value in the negative phase — and never per witness.
+interface GenerationScratch {
+  greedy: GreedyScratch;
+  solveOrder: SolveParameterOrder;
 }
 
 /// Build an allowedValues mask that only permits valid values.
@@ -106,6 +196,19 @@ function validatePositiveSeed(
   for (let pi = 0; pi < params.length; ++pi) {
     const vi = seed.values[pi];
     if (!Number.isInteger(vi) || vi < 0 || vi >= params[pi].size) {
+      // A row the caller recorded is described back to them in their own terms.
+      // The index here is UNASSIGNED whenever the row drifted from the model,
+      // and printing that sentinel tells the caller nothing about which part of
+      // what they submitted no longer fits.
+      const supplied = seed.unresolved?.[pi];
+      if (supplied) {
+        return `value '${supplied}' is not declared by parameter ${params[pi].name}`;
+      }
+      if (vi === UNASSIGNED) {
+        return `no value recorded for parameter ${params[pi].name}`;
+      }
+      // Reached only through direct engine use, where the caller supplies
+      // indices itself, so the index is the caller's own input.
       return `value index ${vi} is out of range for parameter ${params[pi].name}`;
     }
     if (params[pi].isInvalid(vi)) {
@@ -147,17 +250,25 @@ function buildNegativeMask(
   return mask;
 }
 
-/** Generate deterministic single-fault negative coverage using a reused engine. */
+/**
+ * Generate deterministic single-fault negative coverage using a reused engine.
+ *
+ * @returns An ok error on success, or the constraint-budget error that stopped
+ *   the pass. The two budget exits are reported apart: failing to classify the
+ *   target universe and failing to find a witness for a classified target are
+ *   distinguishable outcomes, and the C++ core reports them as such.
+ */
 function generateNegativeTests(
   params: Parameter[],
   constraints: ConstraintNode[],
   freshCov: CoverageEngine,
   maxTests: number,
   positiveTestCount: number,
+  scratch: GenerationScratch,
   negativeTests: TestCase[],
   metrics: NegativeCoverage,
   warnings: string[],
-): { budgetExceeded: boolean } {
+): ErrorInfo {
   let stoppedAtMaxTests = false;
 
   for (let pi = 0; pi < params.length; ++pi) {
@@ -177,9 +288,17 @@ function generateNegativeTests(
       const exclusionBudget = { value: false };
       freshCov.excludeInvalidTuples(constraints, negMask, exclusionBudget);
       if (exclusionBudget.value) {
-        return { budgetExceeded: true };
+        return {
+          code: ErrorCode.ConstraintError,
+          message: 'Constraint search budget exceeded',
+          detail: 'Negative coverage targets could not be classified within the search budget',
+        };
       }
       const noFeasibleTarget = freshCov.totalTuples === 0;
+
+      // The mask is fixed for the whole inner loop, so the solver order derived
+      // from it is built once here rather than once per witness.
+      scratch.solveOrder = buildAllowedSolveParameterOrder(params, negMask);
 
       // Use the same FirstUncovered + deterministic completion path as
       // positive generation, rather than a retry-limited random greedy pass.
@@ -199,10 +318,15 @@ function generateNegativeTests(
           negMask,
           { values: uncovered.assignment },
           budget,
+          scratch.solveOrder,
         );
         if (witness === null) {
           if (budget.exceeded) {
-            return { budgetExceeded: true };
+            return {
+              code: ErrorCode.ConstraintError,
+              message: 'Constraint search budget exceeded',
+              detail: 'A negative coverage witness could not be found within the search budget',
+            };
           }
           freshCov.excludeTuple(uncovered.index);
           continue;
@@ -228,7 +352,7 @@ function generateNegativeTests(
       `Negative generation stopped at maxTests (${maxTests}) before reaching full coverage`,
     );
   }
-  return { budgetExceeded: false };
+  return okError();
 }
 
 /// Resolve string-based WeightConfig to index-based weight vectors.
@@ -241,17 +365,21 @@ function resolveWeights(params: Parameter[], config: WeightConfig): number[][] {
   const resolved: number[][] = new Array(params.length);
   for (let pi = 0; pi < params.length; ++pi) {
     resolved[pi] = new Array<number>(params[pi].size);
-    const paramWeights = config.entries[params[pi].name];
+    const paramWeights = Object.hasOwn(config.entries, params[pi].name)
+      ? config.entries[params[pi].name]
+      : undefined;
     for (let vi = 0; vi < params[pi].size; ++vi) {
-      // Resolve by key presence (not getWeight's 1.0 sentinel) so an explicit
-      // weight of 1.0 is honored and a weight keyed by one of the value's aliases
-      // is not silently dropped to the default.
+      // Resolve by own-key presence (not getWeight's 1.0 sentinel) so an explicit
+      // weight of 1.0 is honored, a weight keyed by one of the value's aliases is
+      // not silently dropped to the default, and a parameter or value named after
+      // an Object.prototype member is not read as a configured weight.
       let w = 1.0;
       if (paramWeights !== undefined) {
-        let entry = paramWeights[params[pi].values[vi]];
+        const valueName = params[pi].values[vi];
+        let entry = Object.hasOwn(paramWeights, valueName) ? paramWeights[valueName] : undefined;
         if (entry === undefined) {
           for (const alias of params[pi].aliases(vi)) {
-            if (paramWeights[alias] !== undefined) {
+            if (Object.hasOwn(paramWeights, alias)) {
               entry = paramWeights[alias];
               break;
             }
@@ -269,29 +397,35 @@ function resolveWeights(params: Parameter[], config: WeightConfig): number[][] {
 
 /// Apply boundary value expansion to parameters with boundary configs.
 ///
-/// When a parameter has a boundary config its value set is regenerated, so
-/// aliases and equivalence classes (which are keyed to the original values) are
-/// intentionally dropped — mirroring expandBoundaryValues. Otherwise the aliases
-/// and classes carried on the options are restored on the rebuilt Parameter so
-/// constraint resolution and class coverage see them.
+/// The aliases and equivalence classes carried on the options are restored on
+/// the rebuilt Parameter before expansion, not after the branch: expansion
+/// regenerates a value set but carries per-value metadata across by value
+/// identity, so a retained value keeps its aliases and its class. Mirrors the
+/// C++ ApplyBoundaryExpansion, which expands Parameters that already hold their
+/// own metadata.
 function applyBoundaryExpansion(opts: GenerateOptions): { params: Parameter[]; seeds: TestCase[] } {
   const params: Parameter[] = [];
   for (const p of opts.parameters) {
     const param = p.invalid
       ? new Parameter(p.name, p.values, p.invalid)
       : new Parameter(p.name, p.values);
-    const bc = opts.boundaryConfigs[p.name];
-    if (bc) {
-      params.push(expandBoundaryValues(param, bc));
-    } else {
-      if (p.aliases?.some((a) => a.length > 0)) {
-        param.setAliases(p.aliases);
-      }
-      if (p.equivalenceClasses?.some((c) => c.length > 0)) {
-        param.setEquivalenceClasses(p.equivalenceClasses);
-      }
-      params.push(param);
+    if (p.aliases?.some((a) => a.length > 0)) {
+      param.setAliases(p.aliases);
     }
+    if (p.equivalenceClasses?.some((c) => c.length > 0)) {
+      param.setEquivalenceClasses(p.equivalenceClasses);
+    }
+    const bc = getBoundaryConfig(opts, p.name);
+    params.push(bc ? expandBoundaryValues(param, bc) : param);
+  }
+  // Only boundary expansion regenerates a value set, so without a single config
+  // the seed indices still address the same values and the remap below is a
+  // no-op. Mirrors the C++ early return in ApplyBoundaryExpansion.
+  if (!hasBoundaryConfigs(opts)) {
+    return {
+      params,
+      seeds: opts.seeds.map((seed) => ({ values: [...seed.values], unresolved: seed.unresolved })),
+    };
   }
   const seeds = opts.seeds.map((seed) => {
     const values = [...seed.values];
@@ -313,7 +447,9 @@ function applyBoundaryExpansion(opts: GenerateOptions): { params: Parameter[]; s
         values[pi] = newIndex;
       }
     }
-    return { values };
+    // The text a position failed to resolve to belongs to the row, not to the
+    // value space, so it survives expansion unchanged.
+    return { values, unresolved: seed.unresolved };
   });
   return { params, seeds };
 }
@@ -325,11 +461,7 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
 
   result.error = validateGenerateOptions(options);
   if (result.error.code !== ErrorCode.Ok) {
-    result.warnings.push(
-      result.error.detail
-        ? `${result.error.message}: ${result.error.detail}`
-        : result.error.message,
-    );
+    result.warnings.push(surfaceErrorText(result.error));
     return result;
   }
 
@@ -338,19 +470,32 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
   const params = expanded.params;
   result.parameters = params;
 
+  // Expansion regenerates a value set, so the collection is judged again on the
+  // values the engine will actually use: a generated boundary value can collide
+  // with a spelled-out value or with an alias that was unambiguous beforehand.
+  // Mirrors the re-validation in the C++ GenerateImpl.
+  const expandedParamError = validateParameters(params);
+  if (expandedParamError.length > 0) {
+    result.error = { code: ErrorCode.InvalidInput, message: expandedParamError, detail: '' };
+    result.warnings.push(surfaceErrorText(result.error));
+    return result;
+  }
+
   const hasInvalid = hasInvalidValues(params);
 
   const coverageResult = CoverageEngine.create(params, options.strength);
   if (coverageResult.error.code !== ErrorCode.Ok) {
-    result.warnings.push(`${coverageResult.error.message}: ${coverageResult.error.detail}`);
+    result.warnings.push(surfaceErrorText(coverageResult.error));
     result.error = coverageResult.error;
     return result;
   }
   const coverage = coverageResult.engine;
   let allocatedTuples = coverage.totalTuples;
 
-  // Create sub-model engines.
+  // Create sub-model engines. Their tuple spaces are recorded alongside so the
+  // uncovered diagnostics can tell overlapping engines apart from disjoint ones.
   const subEngines: CoverageEngine[] = [];
+  const subShapes: EngineShape[] = [];
   for (const sm of options.subModels) {
     const resolved = resolveParamNames(sm.parameterNames, params);
     if (resolved.error.length > 0) {
@@ -371,7 +516,7 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
     }
     const smResult = CoverageEngine.createFromSubset(params, resolved.indices, sm.strength);
     if (smResult.error.code !== ErrorCode.Ok) {
-      result.warnings.push(`${smResult.error.message}: ${smResult.error.detail}`);
+      result.warnings.push(surfaceErrorText(smResult.error));
       result.error = smResult.error;
       return result;
     }
@@ -381,11 +526,12 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
         message: 'Combined global and sub-model tuple count exceeds safe limit',
         detail: `limit=${CoverageEngine.MAX_TUPLES}`,
       };
-      result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+      result.warnings.push(surfaceErrorText(result.error));
       return result;
     }
     allocatedTuples += smResult.engine.totalTuples;
     subEngines.push(smResult.engine);
+    subShapes.push({ params: resolved.indices, strength: sm.strength });
   }
 
   // Parse constraint expressions into AST.
@@ -394,7 +540,7 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
     const parseResult = parseConstraint(expr, params);
     if (parseResult.error.code !== ErrorCode.Ok) {
       const err = annotateConstraintError(expr, parseResult.error);
-      result.warnings.push(`${err.message}: ${err.detail}`);
+      result.warnings.push(surfaceErrorText(err));
       result.error = err;
       return result;
     }
@@ -430,7 +576,7 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
             message: 'Constraints are unsatisfiable',
             detail: 'No complete assignment using valid values satisfies all constraints',
           };
-      result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+      result.warnings.push(surfaceErrorText(result.error));
       return result;
     }
   }
@@ -447,7 +593,7 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
       message: 'Constraint search budget exceeded',
       detail: 'Tuple feasibility could not be determined within the search budget',
     };
-    result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    result.warnings.push(surfaceErrorText(result.error));
     return result;
   }
 
@@ -505,19 +651,24 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
     );
   }
 
+  // Scratch borrowed by the construction and completion loops below.
+  const scratch: GenerationScratch = {
+    greedy: createGreedyScratch(params),
+    solveOrder: [],
+  };
+
   // Build scoring function that sums across all engines.
-  let scoreFn: ScoreFn;
+  let scoreValues: ScoreValuesFn;
   if (subEngines.length === 0) {
-    scoreFn = (partial, pi, vi) => {
-      return coverage.scoreValue(partial, pi, vi);
+    scoreValues = (partial, pi, scores) => {
+      coverage.addValueScores(partial, pi, scores);
     };
   } else {
-    scoreFn = (partial, pi, vi) => {
-      let score = coverage.scoreValue(partial, pi, vi);
+    scoreValues = (partial, pi, scores) => {
+      coverage.addValueScores(partial, pi, scores);
       for (const eng of subEngines) {
-        score += eng.scoreValue(partial, pi, vi);
+        eng.addValueScores(partial, pi, scores);
       }
-      return score;
     };
   }
 
@@ -528,22 +679,33 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
     !allComplete(coverage, subEngines) &&
     (options.maxTests === 0 || result.tests.length < options.maxTests)
   ) {
-    const tc = greedyConstruct(params, scoreFn, constraints, rng, validMask, resolvedWeights);
+    const built = greedyConstruct(
+      params,
+      scoreValues,
+      constraints,
+      rng,
+      scratch.greedy,
+      validMask,
+      resolvedWeights,
+    );
     // A failed construction (no constraint-satisfying value for some parameter)
     // is treated like a zero-score candidate: retry with a different shuffle.
-    if (tc === null) {
+    if (built === null) {
       if (++retries >= kMaxRetries) {
         break;
       }
       continue;
     }
-    const score = totalScore(coverage, subEngines, tc);
-    if (score === 0) {
+    // Construction already summed the gain of every combination it completed,
+    // and coverage does not change while a test case is being built, so the
+    // candidate needs no second full scan of the coverage bitmaps.
+    if (built.score === 0) {
       if (++retries >= kMaxRetries) {
         break;
       }
       continue;
     }
+    const tc = built.testCase;
     retries = 0;
     coverage.addTestCase(tc);
     for (const eng of subEngines) {
@@ -561,11 +723,29 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
   // infeasible and is excluded from the coverage target so it no longer counts
   // as a shortfall.
   let completionBudgetExceeded = false;
+  // The mask this order derives from is fixed for the whole positive phase, so
+  // it is built once instead of once per uncovered tuple.
+  scratch.solveOrder = hasInvalid
+    ? buildAllowedSolveParameterOrder(params, validMask)
+    : buildValidSolveParameterOrder(params);
   const completePartial = (partial: number[]): TestCase | null => {
     const budget = createSolveBudget();
     const witness = hasInvalid
-      ? completeAssignment(params, constraints, validMask, { values: partial }, budget)
-      : completeValidAssignment(params, constraints, { values: partial }, budget);
+      ? completeAssignment(
+          params,
+          constraints,
+          validMask,
+          { values: partial },
+          budget,
+          scratch.solveOrder,
+        )
+      : completeValidAssignment(
+          params,
+          constraints,
+          { values: partial },
+          budget,
+          scratch.solveOrder,
+        );
     if (budget.exceeded) {
       completionBudgetExceeded = true;
     }
@@ -611,7 +791,7 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
       message: 'Constraint search budget exceeded',
       detail: 'A coverage witness could not be found within the search budget',
     };
-    result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    result.warnings.push(surfaceErrorText(result.error));
     return result;
   }
 
@@ -627,22 +807,66 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
     }
   }
 
-  // Collect uncovered tuples from all engines.
+  // Collect uncovered tuples from all engines. A sub-model can enumerate the
+  // same interaction as the global model or as another sub-model, so both the
+  // total and the diagnostic list describe the union over engines: every
+  // distinct tuple is counted once, listed once, and suggested once.
   if (!allComplete(coverage, subEngines)) {
+    const globalShape: EngineShape = {
+      params: params.map((_, pi) => pi),
+      strength: options.strength,
+    };
+
+    // The global engine is counted first, so every tuple it needs is new. An
+    // engine whose tuple space is disjoint from all earlier ones contributes its
+    // whole shortfall; only an overlap has to be resolved tuple by tuple.
     result.uncoveredCount = coverage.totalTuples - coverage.coveredCount;
-    for (const eng of subEngines) {
-      result.uncoveredCount += eng.totalTuples - eng.coveredCount;
+    for (let i = 0; i < subEngines.length; ++i) {
+      const earlier: CoverageEngine[] = [];
+      if (shapesOverlap(subShapes[i], globalShape)) {
+        earlier.push(coverage);
+      }
+      for (let j = 0; j < i; ++j) {
+        if (shapesOverlap(subShapes[i], subShapes[j])) {
+          earlier.push(subEngines[j]);
+        }
+      }
+      const shortfall = subEngines[i].totalTuples - subEngines[i].coveredCount;
+      if (earlier.length === 0) {
+        result.uncoveredCount += shortfall;
+        continue;
+      }
+      for (const ut of subEngines[i].getUncoveredTuples(params, shortfall)) {
+        const indices = ut.indices ?? [];
+        if (!earlier.some((eng) => engineNeedsTuple(eng, indices, params.length))) {
+          ++result.uncoveredCount;
+        }
+      }
     }
-    const globalUncovered = coverage.getUncoveredTuples(params);
-    for (const ut of globalUncovered) {
-      result.uncovered.push(ut);
-    }
-    for (const eng of subEngines) {
-      const remaining = Math.max(0, CoverageEngine.MAX_DIAGNOSTIC_TUPLES - result.uncovered.length);
-      const subUncovered = eng.getUncoveredTuples(params, remaining);
-      for (const ut of subUncovered) {
+
+    // Fill the diagnostic budget with distinct tuples: each engine is asked for
+    // a full budget's worth rather than the remaining slots, so tuples already
+    // listed by an earlier engine do not shrink the report.
+    const listed = new Set<string>();
+    const appendDistinct = (tuples: UncoveredTuple[]): void => {
+      for (const ut of tuples) {
+        if (result.uncovered.length >= CoverageEngine.MAX_DIAGNOSTIC_TUPLES) {
+          return;
+        }
+        const key = tupleKey(ut.indices);
+        if (listed.has(key)) {
+          continue;
+        }
+        listed.add(key);
         result.uncovered.push(ut);
       }
+    };
+    appendDistinct(coverage.getUncoveredTuples(params));
+    for (const eng of subEngines) {
+      if (result.uncovered.length >= CoverageEngine.MAX_DIAGNOSTIC_TUPLES) {
+        break;
+      }
+      appendDistinct(eng.getUncoveredTuples(params, CoverageEngine.MAX_DIAGNOSTIC_TUPLES));
     }
     result.omittedUncovered = result.uncoveredCount - result.uncovered.length;
     for (const ut of result.uncovered) {
@@ -700,25 +924,28 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
       omittedTuples: 0,
       coverageRatio: 1,
     };
-    const negativeOutcome = generateNegativeTests(
+    const negativeError = generateNegativeTests(
       params,
       constraints,
       coverage,
       options.maxTests,
       result.tests.length,
+      scratch,
       result.negativeTests,
       negativeCoverage,
       result.warnings,
     );
-    result.negativeCoverage = negativeCoverage;
+    // A pass that stopped on an exhausted search budget never reached the
+    // omitted/ratio finalization, so its counters do not describe a whole tuple
+    // universe. Leave the field unset instead of publishing a self-contradictory
+    // report, matching how class coverage reports its own failures.
+    if (negativeError.code === ErrorCode.Ok) {
+      result.negativeCoverage = negativeCoverage;
+    }
     result.stats.testCount = result.tests.length + result.negativeTests.length;
-    if (negativeOutcome.budgetExceeded) {
-      result.error = {
-        code: ErrorCode.ConstraintError,
-        message: 'Constraint search budget exceeded',
-        detail: 'A negative coverage witness could not be found within the search budget',
-      };
-      result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    if (negativeError.code !== ErrorCode.Ok) {
+      result.error = negativeError;
+      result.warnings.push(surfaceErrorText(result.error));
     }
   }
 
@@ -742,7 +969,7 @@ export function extend(
       message: `Unsupported extend mode: ${String(mode)}`,
       detail: 'Supported modes: strict',
     };
-    result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    result.warnings.push(surfaceErrorText(result.error));
     return result;
   }
   if (options.maxTests > 0 && existing.length > options.maxTests) {
@@ -752,7 +979,7 @@ export function extend(
       message: 'maxTests cannot be smaller than the existing test count',
       detail: `maxTests=${options.maxTests}, existing=${existing.length}`,
     };
-    result.warnings.push(`${result.error.message}: ${result.error.detail}`);
+    result.warnings.push(surfaceErrorText(result.error));
     return result;
   }
   const opts: GenerateOptions = {

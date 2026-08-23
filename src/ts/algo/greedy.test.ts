@@ -6,15 +6,60 @@ import {
   NotEqualsNode,
 } from '../model/constraint-ast.js';
 import { UNASSIGNED } from '../model/parameter.js';
+import type { TestCase } from '../model/test-case.js';
 import { Rng } from '../util/rng.js';
-import { greedyConstruct, type ScoreFn } from './greedy.js';
+import {
+  createGreedyScratch,
+  type GreedyParam,
+  greedyConstruct,
+  type ScoreValuesFn,
+} from './greedy.js';
+
+/// Score every value the same, so the RNG decides.
+const uniform: ScoreValuesFn = (_partial, _pi, scores) => {
+  for (let vi = 0; vi < scores.length; ++vi) {
+    scores[vi] += 1;
+  }
+};
+
+/// Score `preferred` far above every other value of every parameter.
+function prefers(preferred: number): ScoreValuesFn {
+  return (_partial, _pi, scores) => {
+    for (let vi = 0; vi < scores.length; ++vi) {
+      scores[vi] += vi === preferred ? 100 : 0;
+    }
+  };
+}
+
+/// Run one construction with a throwaway scratch buffer.
+///
+/// Production code reuses a single scratch across a whole generation pass; these
+/// tests drive individual constructions, so each call gets its own.
+function construct(
+  params: readonly GreedyParam[],
+  scoreValues: ScoreValuesFn,
+  constraints: readonly ConstraintNode[],
+  rng: Rng,
+  allowedValues: boolean[][] = [],
+  weights: number[][] = [],
+): TestCase | null {
+  const built = greedyConstruct(
+    params,
+    scoreValues,
+    constraints,
+    rng,
+    createGreedyScratch(params),
+    allowedValues,
+    weights,
+  );
+  return built === null ? null : built.testCase;
+}
 
 describe('greedyConstruct', () => {
   it('returns a test case with all values assigned', () => {
     const params = [{ size: 3 }, { size: 2 }];
-    const scoreFn: ScoreFn = () => 1;
     const rng = new Rng(42);
-    const tc = greedyConstruct(params, scoreFn, [], rng);
+    const tc = construct(params, uniform, [], rng);
     expect(tc).not.toBeNull();
     if (tc === null) {
       return;
@@ -29,14 +74,11 @@ describe('greedyConstruct', () => {
     expect(tc.values[1]).toBeLessThan(2);
   });
 
-  it('uses scoreFn to pick higher-scoring values', () => {
+  it('uses the scoring callback to pick higher-scoring values', () => {
     // Single param with 3 values. Score function strongly prefers value 2.
     const params = [{ size: 3 }];
-    const scoreFn: ScoreFn = (_partial, _pi, vi) => {
-      return vi === 2 ? 100 : 0;
-    };
     const rng = new Rng(42);
-    const tc = greedyConstruct(params, scoreFn, [], rng);
+    const tc = construct(params, prefers(2), [], rng);
     expect(tc).not.toBeNull();
     if (tc === null) {
       return;
@@ -49,9 +91,9 @@ describe('greedyConstruct', () => {
     const params = [{ size: 2 }];
     const selected = new Set<number>();
     for (let seed = 0; seed < 32; ++seed) {
-      const tc = greedyConstruct(
+      const tc = construct(
         params,
-        () => 1,
+        uniform,
         [],
         new Rng(seed),
         [],
@@ -70,15 +112,11 @@ describe('greedyConstruct', () => {
     const params = [{ size: 2 }, { size: 3 }];
 
     // Score function that always picks mac (value 1) for os and ie (value 1) for browser.
-    const scoreFn: ScoreFn = (_partial, _pi, vi) => {
-      return vi === 1 ? 100 : 0;
-    };
-
     // Constraint: IF param0=1 (mac) THEN param1!=1 (ie)
     const constraint = new ImpliesNode(new EqualsNode(0, 1), new NotEqualsNode(1, 1));
 
     const rng = new Rng(42);
-    const tc = greedyConstruct(params, scoreFn, [constraint], rng);
+    const tc = construct(params, prefers(1), [constraint], rng);
     expect(tc).not.toBeNull();
     if (tc === null) {
       return;
@@ -99,13 +137,12 @@ describe('greedyConstruct', () => {
     // 2 params with 4 values each. Only allow values 0 and 2 for param 0,
     // and only value 3 for param 1.
     const params = [{ size: 4 }, { size: 4 }];
-    const scoreFn: ScoreFn = () => 1;
     const allowedValues = [
       [true, false, true, false], // param 0: only 0 and 2
       [false, false, false, true], // param 1: only 3
     ];
     const rng = new Rng(42);
-    const tc = greedyConstruct(params, scoreFn, [], rng, allowedValues);
+    const tc = construct(params, uniform, [], rng, allowedValues);
     expect(tc).not.toBeNull();
     if (tc === null) {
       return;
@@ -118,7 +155,6 @@ describe('greedyConstruct', () => {
   it('fails construction when all allowed values are pruned by constraints', () => {
     // Single param with 3 values. Constraint rejects all values.
     const params = [{ size: 3 }];
-    const scoreFn: ScoreFn = () => 1;
 
     // A constraint that always returns False for any assigned value.
     const alwaysFalse: ConstraintNode = {
@@ -132,7 +168,7 @@ describe('greedyConstruct', () => {
 
     const allowedValues = [[true, true, false]]; // values 0 and 1 allowed
     const rng = new Rng(42);
-    const tc = greedyConstruct(params, scoreFn, [alwaysFalse], rng, allowedValues);
+    const tc = construct(params, uniform, [alwaysFalse], rng, allowedValues);
 
     // No constraint-satisfying value exists => construction fails (null) rather
     // than emitting a constraint-violating value.
@@ -141,7 +177,6 @@ describe('greedyConstruct', () => {
 
   it('fails construction when no allowed mask and all values are pruned', () => {
     const params = [{ size: 3 }];
-    const scoreFn: ScoreFn = () => 1;
 
     const alwaysFalse: ConstraintNode = {
       evaluate(assignment: number[]): ConstraintResult {
@@ -153,21 +188,39 @@ describe('greedyConstruct', () => {
     };
 
     const rng = new Rng(42);
-    const tc = greedyConstruct(params, scoreFn, [alwaysFalse], rng);
+    const tc = construct(params, uniform, [alwaysFalse], rng);
 
     // No constraint-satisfying value exists => construction fails (null).
     expect(tc).toBeNull();
   });
 
+  it('evaluates a fully pruned parameter once per value before failing', () => {
+    // Every value allowed by the mask that survives the constraints is recorded
+    // by the selection loop, and constraint evaluation is a pure function of the
+    // same partial assignment, so re-running it could not rescue a parameter
+    // with no usable value. Construction must fail after a single pass rather
+    // than paying for a second one on every failed build.
+    const params = [{ size: 4 }];
+    let evaluations = 0;
+    const countingRejectAll: ConstraintNode = {
+      evaluate(): ConstraintResult {
+        ++evaluations;
+        return ConstraintResult.False;
+      },
+    };
+
+    expect(construct(params, uniform, [countingRejectAll], new Rng(3))).toBeNull();
+    expect(evaluations).toBe(params[0].size);
+  });
+
   it('produces deterministic results with the same seed', () => {
     const params = [{ size: 5 }, { size: 4 }, { size: 3 }];
-    const scoreFn: ScoreFn = () => 1; // All equal scores, RNG decides.
 
     const rng1 = new Rng(77);
-    const tc1 = greedyConstruct(params, scoreFn, [], rng1);
+    const tc1 = construct(params, uniform, [], rng1);
 
     const rng2 = new Rng(77);
-    const tc2 = greedyConstruct(params, scoreFn, [], rng2);
+    const tc2 = construct(params, uniform, [], rng2);
 
     expect(tc1).not.toBeNull();
     expect(tc2).not.toBeNull();
@@ -179,13 +232,12 @@ describe('greedyConstruct', () => {
 
   it('produces different results with different seeds', () => {
     const params = [{ size: 10 }, { size: 10 }, { size: 10 }];
-    const scoreFn: ScoreFn = () => 1;
 
     const rng1 = new Rng(1);
-    const tc1 = greedyConstruct(params, scoreFn, [], rng1);
+    const tc1 = construct(params, uniform, [], rng1);
 
     const rng2 = new Rng(9999);
-    const tc2 = greedyConstruct(params, scoreFn, [], rng2);
+    const tc2 = construct(params, uniform, [], rng2);
 
     expect(tc1).not.toBeNull();
     expect(tc2).not.toBeNull();
@@ -196,5 +248,62 @@ describe('greedyConstruct', () => {
     // different test cases with very high probability.
     const same = tc1.values.every((v, i) => v === tc2.values[i]);
     expect(same).toBe(false);
+  });
+
+  it('reports the gain it accumulated while building the test case', () => {
+    // The caller drops a full rescan of the finished case in favour of this
+    // figure, so the two must agree. Each parameter contributes the score of the
+    // value it settled on.
+    const params = [{ size: 3 }, { size: 2 }, { size: 4 }];
+    const perValue = [
+      [5, 1, 1],
+      [7, 2],
+      [3, 3, 9, 3],
+    ];
+    const scoreValues: ScoreValuesFn = (_partial, pi, scores) => {
+      for (let vi = 0; vi < scores.length; ++vi) {
+        scores[vi] += perValue[pi][vi];
+      }
+    };
+
+    const built = greedyConstruct(
+      params,
+      scoreValues,
+      [],
+      new Rng(11),
+      createGreedyScratch(params),
+    );
+    expect(built).not.toBeNull();
+    if (built === null) {
+      return;
+    }
+    // Scores here do not depend on the partial assignment, so the greedy pick is
+    // the highest-scoring value of each parameter.
+    expect(built.testCase.values).toEqual([0, 0, 2]);
+    expect(built.score).toBe(5 + 7 + 9);
+  });
+
+  it('reuses the caller scratch without growing it per construction', () => {
+    // The scratch is the whole point of handing buffers in from outside: after
+    // it has been sized once, no later construction may replace or grow any of
+    // them, whatever the parameter or value counts.
+    const params = Array.from({ length: 12 }, (_, pi) => ({ size: pi + 1 }));
+    const scratch = createGreedyScratch(params);
+    const orderRef = scratch.order;
+    const scoresRef = scratch.scores;
+    const bestValuesRef = scratch.bestValues;
+    const maxValues = params[params.length - 1].size;
+
+    const rng = new Rng(7);
+    for (let i = 0; i < 25; ++i) {
+      const built = greedyConstruct(params, uniform, [], rng, scratch);
+      expect(built).not.toBeNull();
+      expect(scratch.order).toBe(orderRef);
+      expect(scratch.scores).toBe(scoresRef);
+      expect(scratch.bestValues).toBe(bestValuesRef);
+      expect(scratch.order.length).toBe(params.length);
+      expect(scratch.scores.length).toBeLessThanOrEqual(maxValues);
+      expect(scratch.bestValues.length).toBeLessThanOrEqual(maxValues);
+    }
   });
 });
