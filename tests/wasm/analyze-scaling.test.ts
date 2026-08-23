@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { init, type Parameter, analyzeCoverage as wasmAnalyzeCoverage } from '../../js/index';
 import { analyzeCoverage as pureAnalyzeCoverage } from '../../js/pure/index';
+import { fastestEach } from '../util/timing.js';
 
 /// Argument conversion cost of the WASM surface on a large recorded suite.
 ///
@@ -40,46 +41,51 @@ function buildRows(count: number, paramCount: number = PARAM_COUNT): Array<Recor
   return rows;
 }
 
-/// Fastest of several runs: the floor is what the implementation costs, while
-/// the mean also reports whatever else the machine was doing.
-function fastest(runs: number, fn: () => void): number {
-  let best = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < runs; ++i) {
-    const start = performance.now();
-    fn();
-    best = Math.min(best, performance.now() - start);
-  }
-  return best;
-}
+/// Repetitions per measurement. Chosen by watching the estimator settle rather
+/// than by preference: past eight the ratios below stop moving, and every gate
+/// here is an upper bound, so what matters is that the high side has converged.
+const RUNS = 10;
 
 describe('WASM coverage analysis on a large suite', () => {
   const params = buildParams();
-  const timings = new Map<number, number>();
+  const ratios = new Map<number, number>();
 
   beforeAll(async () => {
     await init();
-    for (const rowCount of [BASE_ROWS, BASE_ROWS * 2, BASE_ROWS * 4]) {
-      const rows = buildRows(rowCount);
-      // Warm up so the first measured run does not also pay JIT cost.
-      wasmAnalyzeCoverage(params, rows.slice(0, 100), 2);
-      timings.set(
-        rowCount,
-        fastest(3, () => {
-          wasmAnalyzeCoverage(params, rows, 2);
-        }),
+    const base = buildRows(BASE_ROWS);
+    // Warm up so the first measured run does not also pay JIT cost.
+    wasmAnalyzeCoverage(params, base.slice(0, 100), 2);
+    // Each multiple is paired against its own measurement of the base suite, so
+    // the two halves of a ratio come from the same stretch of machine time.
+    for (const multiple of [2, 4]) {
+      const scaled = buildRows(BASE_ROWS * multiple);
+      wasmAnalyzeCoverage(params, scaled.slice(0, 100), 2);
+      const [baseMs, scaledMs] = fastestEach(
+        RUNS,
+        () => {
+          wasmAnalyzeCoverage(params, base, 2);
+        },
+        () => {
+          wasmAnalyzeCoverage(params, scaled, 2);
+        },
       );
+      ratios.set(multiple, scaledMs / baseMs);
     }
   }, 600_000);
 
   it('scales linearly in the row count', { timeout: MEASUREMENT_TIMEOUT_MS }, () => {
-    const base = timings.get(BASE_ROWS) as number;
-    const doubled = timings.get(BASE_ROWS * 2) as number;
-    const quadrupled = timings.get(BASE_ROWS * 4) as number;
-
-    // Linear scaling puts these at 2x and 4x. The allowance absorbs measurement
-    // noise while still failing a per-row cost that grows with the suite.
-    expect(doubled / base).toBeLessThan(3.5);
-    expect(quadrupled / base).toBeLessThan(7);
+    // Converting a row costs the same whatever else is in the suite, so these
+    // land on the row multiple itself: 2 and 4. What the bounds separate that
+    // from is a per-row cost that grows with the suite, which is quadratic and
+    // would put them at 4 and 16.
+    //
+    // The two are the same property read at two scales, and they are not
+    // equally good at it. Doubling separates 2 from 4 and quadrupling separates
+    // 4 from 16, so the detection lives in the second one; the first is a
+    // near-scale check whose regimes are close enough together that its bound
+    // cannot be far from either.
+    expect(ratios.get(2) as number).toBeLessThan(3.0);
+    expect(ratios.get(4) as number).toBeLessThan(7);
   });
 
   // Row count is the wrong axis for the cost this guards. Resolving a row's keys
@@ -98,12 +104,15 @@ describe('WASM coverage analysis on a large suite', () => {
     wasmAnalyzeCoverage(narrowParams, narrowRows.slice(0, 100), 2);
     wasmAnalyzeCoverage(wideParams, wideRows.slice(0, 100), 2);
 
-    const narrow = fastest(5, () => {
-      wasmAnalyzeCoverage(narrowParams, narrowRows, 2);
-    });
-    const wide = fastest(5, () => {
-      wasmAnalyzeCoverage(wideParams, wideRows, 2);
-    });
+    const [narrow, wide] = fastestEach(
+      RUNS,
+      () => {
+        wasmAnalyzeCoverage(narrowParams, narrowRows, 2);
+      },
+      () => {
+        wasmAnalyzeCoverage(wideParams, wideRows, 2);
+      },
+    );
 
     // Linear in the model puts this at 2x and a per-cell rescan at 4x. The
     // measured ratio is not 2x but around 2.4, because doubling the model also
@@ -112,6 +121,13 @@ describe('WASM coverage analysis on a large suite', () => {
     // implementation measures rather than midway between the two ideals, so a
     // loaded machine does not read as a rescan; it stays below 4x, so a rescan
     // still does.
+    //
+    // That leaves it narrow on both sides — 2.4 measured against 4 for the
+    // rescan, with the bound between them and close to each. What holds it is
+    // the precision of the sampling above rather than any room in the bound, so
+    // a failure here is not answered by raising the number: past 4 the gate
+    // detects nothing. It is answered by measuring the conversion against a
+    // baseline that does not scale with the model.
     expect(wide / narrow).toBeLessThan(3.5);
   });
 
@@ -138,12 +154,15 @@ describe('WASM coverage analysis on a large suite', () => {
     wasmAnalyzeCoverage(wideParams, wideRows.slice(0, 100), 2);
     pureAnalyzeCoverage(wideParams, wideRows.slice(0, 100), 2);
 
-    const wasm = fastest(5, () => {
-      wasmAnalyzeCoverage(wideParams, wideRows, 2);
-    });
-    const pure = fastest(5, () => {
-      pureAnalyzeCoverage(wideParams, wideRows, 2);
-    });
+    const [wasm, pure] = fastestEach(
+      RUNS,
+      () => {
+        wasmAnalyzeCoverage(wideParams, wideRows, 2);
+      },
+      () => {
+        pureAnalyzeCoverage(wideParams, wideRows, 2);
+      },
+    );
 
     expect(wasm / pure).toBeLessThan(2);
   });
