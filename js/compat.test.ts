@@ -330,6 +330,159 @@ describe('WASM / TS compatibility', () => {
       expect(pureAnalyzeCoverage(parameters, tests)).toEqual(analyzeCoverage(parameters, tests));
     });
 
+    // A constraint changes two things at once on the analyze path: it shrinks
+    // the tuple universe (tuples with no satisfying completion leave it) and it
+    // rejects whole test rows that violate it. The pure surface parses and
+    // applies constraints through its own code, so a scenario without an active
+    // constraint leaves that implementation entirely unwitnessed.
+    describe('constrained analyzeCoverage', () => {
+      const parameters: Parameter[] = [
+        { name: 'os', values: ['win', 'mac'] },
+        { name: 'browser', values: ['chrome', 'safari'] },
+      ];
+      const constraints = ['IF os = mac THEN browser != chrome'];
+
+      it('returns an identical whole public result for a satisfying suite', () => {
+        const tests: TestCase[] = [
+          { os: 'win', browser: 'chrome' },
+          { os: 'mac', browser: 'safari' },
+        ];
+        const wasmReport = analyzeCoverage(parameters, tests, 2, constraints);
+        expect(pureAnalyzeCoverage(parameters, tests, 2, constraints)).toEqual(wasmReport);
+
+        // The constraint removes (os=mac, browser=chrome) from the universe;
+        // reporting all four pairs would mean the constraint never reached the
+        // enumeration.
+        expect(wasmReport.totalTuples).toBe(3);
+        expect(wasmReport.coveredTuples).toBe(2);
+        expect(wasmReport.invalidTests).toEqual([]);
+      });
+
+      it('returns an identical whole public result for a suite with a rejected row', () => {
+        const tests: TestCase[] = [
+          { os: 'win', browser: 'chrome' },
+          { os: 'mac', browser: 'chrome' },
+          { os: 'mac', browser: 'safari' },
+        ];
+        const wasmReport = analyzeCoverage(parameters, tests, 2, constraints);
+        expect(pureAnalyzeCoverage(parameters, tests, 2, constraints)).toEqual(wasmReport);
+
+        // Row 1 violates the constraint, so it is rejected whole rather than
+        // counted as coverage.
+        expect(wasmReport.invalidTests).toHaveLength(1);
+        expect(wasmReport.invalidTests[0].testIndex).toBe(1);
+        expect(wasmReport.invalidTests[0].reason).toContain('violates constraint #1');
+        expect(wasmReport.totalTuples).toBe(3);
+        expect(wasmReport.coveredTuples).toBe(2);
+      });
+
+      it('reports an identical constraint error from both surfaces', () => {
+        const bad = ['IF os = mac THEN nosuchparam != chrome'];
+        const wasmError = captureError(() => analyzeCoverage(parameters, [], 2, bad));
+        expect(captureError(() => pureAnalyzeCoverage(parameters, [], 2, bad))).toEqual(wasmError);
+        expect(wasmError.code).toBe('CONSTRAINT_ERROR');
+      });
+    });
+
+    // The tuple universe an accepted model produces is never empty, so the ratio
+    // an analyze reports is always a real quotient. The inputs that would empty
+    // it are rejected before enumeration, and both surfaces have to reject them
+    // the same way rather than answer with a vacuous 100%.
+    describe('analyzeCoverage tuple universe', () => {
+      const parameters: Parameter[] = [
+        { name: 'os', values: ['win', 'mac'] },
+        { name: 'browser', values: ['chrome', 'safari'] },
+      ];
+
+      it('rejects a strength above the parameter count on both surfaces', () => {
+        const wasmError = captureError(() => analyzeCoverage(parameters, [], 3));
+        expect(captureError(() => pureAnalyzeCoverage(parameters, [], 3))).toEqual(wasmError);
+        expect(wasmError.code).toBe('INVALID_INPUT');
+      });
+
+      it('rejects an unsatisfiable constraint model on both surfaces', () => {
+        const contradiction = ['os = win', 'os = mac'];
+        const wasmError = captureError(() => analyzeCoverage(parameters, [], 2, contradiction));
+        expect(captureError(() => pureAnalyzeCoverage(parameters, [], 2, contradiction))).toEqual(
+          wasmError,
+        );
+        expect(wasmError.code).toBe('CONSTRAINT_ERROR');
+      });
+
+      it('keeps a tuple left for the narrowest model a constraint can pin down', () => {
+        // The constraint leaves exactly one satisfying assignment, so the
+        // universe shrinks to the single pair that assignment contains.
+        const pinned = ['os = win AND browser = chrome'];
+        const wasmReport = analyzeCoverage(
+          parameters,
+          [{ os: 'win', browser: 'chrome' }],
+          2,
+          pinned,
+        );
+        expect(
+          pureAnalyzeCoverage(parameters, [{ os: 'win', browser: 'chrome' }], 2, pinned),
+        ).toEqual(wasmReport);
+
+        expect(wasmReport.totalTuples).toBe(1);
+        expect(wasmReport.coveredTuples).toBe(1);
+        expect(wasmReport.coverageRatio).toBe(1);
+      });
+    });
+
+    // negativeCoverage is documented as part of GenerateResult on every shipping
+    // surface; the two engines fill it through separate code, so parity plus the
+    // covered + omitted == total identity has to hold on both.
+    describe('negativeCoverage', () => {
+      const fullInput: GenerateInput = {
+        parameters: [
+          { name: 'A', values: ['a0', { value: 'bad', invalid: true }] },
+          { name: 'B', values: ['b0', 'b1', 'b2'] },
+          { name: 'C', values: ['c0', 'c1', 'c2'] },
+          { name: 'D', values: ['d0', 'd1', 'd2'] },
+        ],
+        strength: 4,
+        seed: 42,
+      };
+
+      const truncatedInput: GenerateInput = {
+        parameters: [
+          { name: 'A', values: ['a0', { value: 'bad', invalid: true }] },
+          { name: 'B', values: ['b0', 'b1'] },
+        ],
+        strength: 2,
+        maxTests: 3,
+        seed: 42,
+      };
+
+      it('is identical on both surfaces when negative coverage completes', () => {
+        const wasmResult = generate(fullInput);
+        expect(pureGenerate(fullInput).negativeCoverage).toEqual(wasmResult.negativeCoverage);
+
+        const negative = wasmResult.negativeCoverage;
+        expect(negative).toBeDefined();
+        if (!negative) {
+          return;
+        }
+        expect(negative.coveredTuples + negative.omittedTuples).toBe(negative.totalTuples);
+        expect(negative.omittedTuples).toBe(0);
+        expect(negative.coverageRatio).toBe(1);
+      });
+
+      it('is identical on both surfaces when maxTests truncates the negative suite', () => {
+        const wasmResult = generate(truncatedInput);
+        expect(pureGenerate(truncatedInput).negativeCoverage).toEqual(wasmResult.negativeCoverage);
+
+        const negative = wasmResult.negativeCoverage;
+        expect(negative).toBeDefined();
+        if (!negative) {
+          return;
+        }
+        expect(negative.coveredTuples + negative.omittedTuples).toBe(negative.totalTuples);
+        expect(negative.omittedTuples).toBeGreaterThan(0);
+        expect(negative.coverageRatio).toBeLessThan(1);
+      });
+    });
+
     it('extendTests returns an identical whole public result', () => {
       const input: GenerateInput = {
         parameters: [
@@ -342,22 +495,48 @@ describe('WASM / TS compatibility', () => {
       expect(pureExtendTests(existing, input)).toEqual(extendTests(existing, input));
     });
 
-    it('reports code, message, and detail identically', () => {
-      const input = {
-        parameters: [{ name: 'A', values: ['a0'] }],
-        constraints: ['missing = value'],
-      } as GenerateInput;
-      const capture = (fn: () => unknown) => {
-        try {
-          fn();
-        } catch (error) {
-          const typed = error as { code?: unknown; message?: unknown; detail?: unknown };
-          return { code: typed.code, message: typed.message, detail: typed.detail };
+    // Both an error that carries a detail and one that does not, because the two
+    // surfaces build the detail through different code paths: only an error with
+    // no detail can expose the empty-string / undefined divergence.
+    const errorFixtures: Array<{ label: string; input: GenerateInput; hasDetail: boolean }> = [
+      {
+        label: 'an error with a detail',
+        input: {
+          parameters: [{ name: 'A', values: ['a0'] }],
+          constraints: ['missing = value'],
+        } as GenerateInput,
+        hasDetail: true,
+      },
+      {
+        label: 'an error with no detail',
+        input: { parameters: [] } as GenerateInput,
+        hasDetail: false,
+      },
+    ];
+
+    const captureError = (fn: () => unknown) => {
+      try {
+        fn();
+      } catch (error) {
+        const typed = error as { code?: unknown; message?: unknown; detail?: unknown };
+        return { code: typed.code, message: typed.message, detail: typed.detail };
+      }
+      throw new Error('expected an error');
+    };
+
+    for (const { label, input, hasDetail } of errorFixtures) {
+      it(`reports code, message, and detail identically for ${label}`, () => {
+        const wasmError = captureError(() => generate(input));
+        expect(captureError(() => pureGenerate(input))).toEqual(wasmError);
+        if (hasDetail) {
+          expect(wasmError.detail).toBeTruthy();
+        } else {
+          // Absent, not empty — `detail?: string` means missing, and a caller
+          // branching on it must see the same value from either surface.
+          expect(wasmError.detail).toBeUndefined();
         }
-        throw new Error('expected an error');
-      };
-      expect(capture(() => pureGenerate(input))).toEqual(capture(() => generate(input)));
-    });
+      });
+    }
   });
 
   // Internal engine parity remains useful as a lower-level diagnostic, but the
@@ -815,8 +994,8 @@ describe('WASM / TS compatibility', () => {
 
   // The class-based Coverwise API must be a thin delegation over the free
   // functions — every method has to return a result identical to the free
-  // function it wraps. A regression here is exactly the H-4 drift (the class
-  // reimplementing generation) that the length-only compat scenarios missed.
+  // function it wraps. The drift this guards against is the class reimplementing
+  // generation, which length-only compat scenarios cannot detect.
   describe('class API parity', () => {
     it('every Coverwise method matches its free-function counterpart exactly', async () => {
       const cw = await Coverwise.create();
@@ -990,6 +1169,76 @@ describe('WASM / TS compatibility', () => {
       }`) as GenerateInput;
       expect(() => pureGenerate(input)).toThrow(/Unknown parameter in weights: __proto__/);
       expect(() => generate(input)).toThrow(/Unknown parameter in weights: __proto__/);
+    });
+  });
+
+  // A parameter named after an Object.prototype member must not be mistaken for
+  // one carrying a boundary config: expansion regenerates the value set and drops
+  // aliases and equivalence classes, which would silently contradict the model
+  // while the engine still reported full coverage.
+  describe('prototype-named parameter metadata parity', () => {
+    const input: GenerateInput = {
+      parameters: [
+        {
+          name: 'constructor',
+          values: [
+            { value: 'fast', aliases: ['quick'], class: 'speed' },
+            { value: 'slow', class: 'speed' },
+          ],
+        },
+        {
+          name: '__proto__',
+          values: [
+            { value: 'alpha', class: 'greek' },
+            { value: 'beta', class: 'greek' },
+          ],
+        },
+        { name: 'toString', values: ['on', 'off'] },
+        { name: 'valueOf', values: ['1', '2'] },
+        { name: 'hasOwnProperty', values: ['yes', 'no'] },
+      ],
+      constraints: ['IF constructor = quick THEN toString = on'],
+      strength: 2,
+      seed: 42,
+    };
+
+    /** Declared value set per parameter; a row may render any declared alias. */
+    const declared = new Map(
+      input.parameters.map((parameter) => [
+        parameter.name,
+        new Set(
+          parameter.values.flatMap((value) =>
+            typeof value === 'object' ? [value.value, ...(value.aliases ?? [])] : [value],
+          ),
+        ),
+      ]),
+    );
+
+    it('honors aliases and equivalence classes and reaches full coverage', () => {
+      const pure = pureGenerate(input);
+
+      expect(pure.tests.length).toBeGreaterThan(0);
+      for (const test of pure.tests) {
+        for (const [name, value] of Object.entries(test)) {
+          expect(declared.get(name)?.has(value as string)).toBe(true);
+        }
+      }
+      expect(pure.classCoverage).toBeDefined();
+      expect(pure.classCoverage?.totalClassTuples).toBeGreaterThan(0);
+      expect(pure.coverage).toBe(1);
+
+      // The independent validator must agree with the engine's own claim.
+      const report = pureAnalyzeCoverage(input.parameters, pure.tests, 2, input.constraints);
+      expect(report.coverageRatio).toBe(1);
+      expect(report.invalidTests).toEqual([]);
+    });
+
+    it('produces identical results on WASM and pure-JS', () => {
+      const wasm = generate(input);
+      const pure = pureGenerate(input);
+      expect(pure.tests).toEqual(wasm.tests);
+      expect(pure.coverage).toBe(wasm.coverage);
+      expect(pure.classCoverage).toEqual(wasm.classCoverage);
     });
   });
 

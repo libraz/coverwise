@@ -5,7 +5,7 @@
 
 // --- Re-export public types ---
 
-export type { Condition, ConditionStart, Constraint } from '../constraint.js';
+export type { Condition, ConditionStart, Constraint, IfConstraint } from '../constraint.js';
 export { allOf, anyOf, not, when } from '../constraint.js';
 export type {
   BoundaryParameter,
@@ -19,6 +19,7 @@ export type {
   GenerateStats,
   IntegerBoundaryParameter,
   ModelStats,
+  NegativeCoverage,
   Parameter,
   ParameterValue,
   ParamStats,
@@ -192,11 +193,7 @@ export function extendTests(existing: TestCase[], input: ExtendInput): GenerateR
   const result = internalExtend(internalExisting, opts);
   throwOnResultError(result.error);
 
-  const publicResult = toPublicResult(result, params, strength);
-  for (let i = 0; i < existing.length; ++i) {
-    publicResult.tests[i] = existing[i];
-  }
-  return publicResult;
+  return toPublicResult(result, params, strength, existing);
 }
 
 /**
@@ -225,6 +222,10 @@ export function estimateModel(input: GenerateInput): ModelStats {
  * const result = cw.generate({ parameters: [...] });
  */
 export class Coverwise {
+  // Constructed through create() only, matching the WASM surface so a program
+  // can move between the two entry points by swapping the import specifier.
+  private constructor() {}
+
   /**
    * Create a Coverwise instance.
    * Returns immediately (no WASM loading needed).

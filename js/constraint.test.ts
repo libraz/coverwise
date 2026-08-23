@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { ConstraintResult } from '../src/ts/model/constraint-ast.js';
 import { parseConstraint } from '../src/ts/model/constraint-parser.js';
 import { Parameter } from '../src/ts/model/parameter.js';
 import { allOf, anyOf, not, when } from './constraint';
+import { generate, init } from './index.js';
+import { generate as pureGenerate } from './pure/index.js';
+import type { GenerateInput } from './types.js';
 import { CoverwiseError } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -11,7 +14,7 @@ import { CoverwiseError } from './types.js';
 
 describe('when().eq()', () => {
   it('simple string value', () => {
-    expect(when('os').eq('Windows').toString()).toBe('os = Windows');
+    expect(when('os').eq('Windows').toString()).toBe('os = "Windows"');
   });
 
   it('number value is unquoted', () => {
@@ -49,7 +52,7 @@ describe('when().eq()', () => {
 
 describe('when().ne()', () => {
   it('simple string value', () => {
-    expect(when('browser').ne('Safari').toString()).toBe('browser != Safari');
+    expect(when('browser').ne('Safari').toString()).toBe('browser != "Safari"');
   });
 
   it('number value is unquoted', () => {
@@ -141,69 +144,69 @@ describe('when().like()', () => {
 describe('and()', () => {
   it('two conditions', () => {
     const c = when('os').eq('win').and(when('browser').eq('chrome'));
-    expect(c.toString()).toBe('os = win AND browser = chrome');
+    expect(c.toString()).toBe('os = "win" AND browser = "chrome"');
   });
 
   it('three chained conditions', () => {
     const c = when('a').eq('1').and(when('b').eq('2')).and(when('c').eq('3'));
-    expect(c.toString()).toBe('a = 1 AND b = 2 AND c = 3');
+    expect(c.toString()).toBe('a = "1" AND b = "2" AND c = "3"');
   });
 
   it('wraps OR operands in parens for precedence', () => {
     const orCond = when('a').eq('1').or(when('b').eq('2'));
     const result = orCond.and(when('c').eq('3'));
-    expect(result.toString()).toBe('(a = 1 OR b = 2) AND c = 3');
+    expect(result.toString()).toBe('(a = "1" OR b = "2") AND c = "3"');
   });
 
   it('does not mistake parentheses inside quoted values for expression grouping', () => {
     const result = when('a').eq('(').or(when('b').eq('2')).and(when('c').eq('3'));
-    expect(result.toString()).toBe('(a = "(" OR b = 2) AND c = 3');
+    expect(result.toString()).toBe('(a = "(" OR b = "2") AND c = "3"');
   });
 });
 
 describe('or()', () => {
   it('two conditions', () => {
     const c = when('os').eq('win').or(when('os').eq('linux'));
-    expect(c.toString()).toBe('os = win OR os = linux');
+    expect(c.toString()).toBe('os = "win" OR os = "linux"');
   });
 
   it('three chained conditions (no unnecessary wrapping)', () => {
     const c = when('a').eq('1').or(when('b').eq('2')).or(when('c').eq('3'));
     // or() does not wrap left operand — OR is already the lowest precedence binary op
-    expect(c.toString()).toBe('a = 1 OR b = 2 OR c = 3');
+    expect(c.toString()).toBe('a = "1" OR b = "2" OR c = "3"');
   });
 });
 
 describe('not()', () => {
   it('simple condition', () => {
-    expect(not(when('os').eq('win')).toString()).toBe('NOT (os = win)');
+    expect(not(when('os').eq('win')).toString()).toBe('NOT (os = "win")');
   });
 
   it('compound condition', () => {
     expect(not(allOf(when('a').eq('1'), when('b').eq('2'))).toString()).toBe(
-      'NOT (a = 1 AND b = 2)',
+      'NOT (a = "1" AND b = "2")',
     );
   });
 
   it('double negation', () => {
-    expect(not(not(when('x').eq('y'))).toString()).toBe('NOT (NOT (x = y))');
+    expect(not(not(when('x').eq('y'))).toString()).toBe('NOT (NOT (x = "y"))');
   });
 });
 
 describe('allOf()', () => {
   it('single condition passes through', () => {
     const c = allOf(when('os').eq('win'));
-    expect(c.toString()).toBe('os = win');
+    expect(c.toString()).toBe('os = "win"');
   });
 
   it('multiple conditions', () => {
     const c = allOf(when('a').eq('1'), when('b').eq('2'), when('c').eq('3'));
-    expect(c.toString()).toBe('a = 1 AND b = 2 AND c = 3');
+    expect(c.toString()).toBe('a = "1" AND b = "2" AND c = "3"');
   });
 
   it('wraps OR sub-expressions', () => {
     const c = allOf(when('a').eq('1').or(when('a').eq('2')), when('b').eq('3'));
-    expect(c.toString()).toBe('(a = 1 OR a = 2) AND b = 3');
+    expect(c.toString()).toBe('(a = "1" OR a = "2") AND b = "3"');
   });
 
   it('throws a CoverwiseError on empty', () => {
@@ -215,12 +218,12 @@ describe('allOf()', () => {
 describe('anyOf()', () => {
   it('single condition passes through', () => {
     const c = anyOf(when('os').eq('win'));
-    expect(c.toString()).toBe('os = win');
+    expect(c.toString()).toBe('os = "win"');
   });
 
   it('multiple conditions', () => {
     const c = anyOf(when('a').eq('1'), when('b').eq('2'), when('c').eq('3'));
-    expect(c.toString()).toBe('a = 1 OR b = 2 OR c = 3');
+    expect(c.toString()).toBe('a = "1" OR b = "2" OR c = "3"');
   });
 
   it('throws a CoverwiseError on empty', () => {
@@ -236,26 +239,26 @@ describe('anyOf()', () => {
 describe('then()', () => {
   it('IF...THEN', () => {
     const c = when('os').eq('Windows').then(when('browser').ne('Safari'));
-    expect(c.toString()).toBe('IF os = Windows THEN browser != Safari');
+    expect(c.toString()).toBe('IF os = "Windows" THEN browser != "Safari"');
   });
 
   it('IF compound THEN compound', () => {
     const c = allOf(when('os').eq('win'), when('arch').eq('x64')).then(when('browser').ne('ie'));
-    expect(c.toString()).toBe('IF os = win AND arch = x64 THEN browser != ie');
+    expect(c.toString()).toBe('IF os = "win" AND arch = "x64" THEN browser != "ie"');
   });
 });
 
 describe('else()', () => {
   it('IF...THEN...ELSE', () => {
     const c = when('os').eq('mac').then(when('browser').ne('ie')).else(when('arch').ne('arm'));
-    expect(c.toString()).toBe('IF os = mac THEN browser != ie ELSE arch != arm');
+    expect(c.toString()).toBe('IF os = "mac" THEN browser != "ie" ELSE arch != "arm"');
   });
 });
 
 describe('implies()', () => {
   it('basic implies', () => {
     const c = when('os').eq('linux').implies(when('arch').ne('arm'));
-    expect(c.toString()).toBe('os = linux IMPLIES arch != arm');
+    expect(c.toString()).toBe('os = "linux" IMPLIES arch != "arm"');
   });
 });
 
@@ -344,8 +347,8 @@ describe('special characters in values', () => {
 });
 
 describe('unicode and emoji', () => {
-  it('emoji value — no special chars, no quoting needed', () => {
-    expect(when('icon').eq('🚀').toString()).toBe('icon = 🚀');
+  it('emoji value is quoted', () => {
+    expect(when('icon').eq('🚀').toString()).toBe('icon = "🚀"');
   });
 
   it('emoji with spaces is quoted', () => {
@@ -353,7 +356,7 @@ describe('unicode and emoji', () => {
   });
 
   it('CJK characters', () => {
-    expect(when('lang').eq('日本語').toString()).toBe('lang = 日本語');
+    expect(when('lang').eq('日本語').toString()).toBe('lang = "日本語"');
   });
 
   it('mixed unicode and operators', () => {
@@ -361,15 +364,15 @@ describe('unicode and emoji', () => {
   });
 
   it('emoji parameter name', () => {
-    expect(when('🎯').eq('hit').toString()).toBe('🎯 = hit');
+    expect(when('🎯').eq('hit').toString()).toBe('🎯 = "hit"');
   });
 
   it('surrogate pair emoji (multi-codepoint)', () => {
-    expect(when('face').eq('👨‍👩‍👧‍👦').toString()).toBe('face = 👨‍👩‍👧‍👦');
+    expect(when('face').eq('👨‍👩‍👧‍👦').toString()).toBe('face = "👨‍👩‍👧‍👦"');
   });
 
   it('flag emoji', () => {
-    expect(when('country').eq('🇯🇵').toString()).toBe('country = 🇯🇵');
+    expect(when('country').eq('🇯🇵').toString()).toBe('country = "🇯🇵"');
   });
 });
 
@@ -442,12 +445,12 @@ describe('numeric edge cases', () => {
 describe('complex expressions', () => {
   it('nested AND/OR with correct precedence', () => {
     const c = anyOf(when('os').eq('win'), when('os').eq('linux')).and(when('browser').eq('chrome'));
-    expect(c.toString()).toBe('(os = win OR os = linux) AND browser = chrome');
+    expect(c.toString()).toBe('(os = "win" OR os = "linux") AND browser = "chrome"');
   });
 
   it('deeply nested NOT', () => {
     const c = not(not(not(when('x').eq('1'))));
-    expect(c.toString()).toBe('NOT (NOT (NOT (x = 1)))');
+    expect(c.toString()).toBe('NOT (NOT (NOT (x = "1")))');
   });
 
   it('IF with complex condition and ELSE', () => {
@@ -455,13 +458,13 @@ describe('complex expressions', () => {
       .then(anyOf(when('browser').ne('ie'), when('version').gt(11)))
       .else(when('fallback').eq('true'));
     expect(c.toString()).toBe(
-      'IF os = win AND arch = x64 THEN browser != ie OR version > 11 ELSE fallback = true',
+      'IF os = "win" AND arch = "x64" THEN browser != "ie" OR version > 11 ELSE fallback = "true"',
     );
   });
 
-  it('chained implies', () => {
+  it('implies renders the antecedent and consequence around IMPLIES', () => {
     const c = when('a').eq('1').implies(when('b').eq('2'));
-    expect(c.toString()).toBe('a = 1 IMPLIES b = 2');
+    expect(c.toString()).toBe('a = "1" IMPLIES b = "2"');
   });
 
   it('allOf with anyOf children', () => {
@@ -469,7 +472,7 @@ describe('complex expressions', () => {
       anyOf(when('a').eq('1'), when('a').eq('2')),
       anyOf(when('b').eq('3'), when('b').eq('4')),
     );
-    expect(c.toString()).toBe('(a = 1 OR a = 2) AND (b = 3 OR b = 4)');
+    expect(c.toString()).toBe('(a = "1" OR a = "2") AND (b = "3" OR b = "4")');
   });
 
   it('anyOf with allOf children (no extra parens needed)', () => {
@@ -477,7 +480,7 @@ describe('complex expressions', () => {
       allOf(when('a').eq('1'), when('b').eq('2')),
       allOf(when('c').eq('3'), when('d').eq('4')),
     );
-    expect(c.toString()).toBe('a = 1 AND b = 2 OR c = 3 AND d = 4');
+    expect(c.toString()).toBe('a = "1" AND b = "2" OR c = "3" AND d = "4"');
   });
 });
 
@@ -489,29 +492,29 @@ describe('immutability', () => {
   it('and() does not mutate original', () => {
     const a = when('os').eq('win');
     const b = a.and(when('browser').eq('chrome'));
-    expect(a.toString()).toBe('os = win');
-    expect(b.toString()).toBe('os = win AND browser = chrome');
+    expect(a.toString()).toBe('os = "win"');
+    expect(b.toString()).toBe('os = "win" AND browser = "chrome"');
   });
 
   it('or() does not mutate original', () => {
     const a = when('os').eq('win');
     const b = a.or(when('os').eq('mac'));
-    expect(a.toString()).toBe('os = win');
-    expect(b.toString()).toBe('os = win OR os = mac');
+    expect(a.toString()).toBe('os = "win"');
+    expect(b.toString()).toBe('os = "win" OR os = "mac"');
   });
 
   it('then() does not mutate condition', () => {
     const cond = when('os').eq('win');
     const constraint = cond.then(when('browser').ne('ie'));
-    expect(cond.toString()).toBe('os = win');
-    expect(constraint.toString()).toBe('IF os = win THEN browser != ie');
+    expect(cond.toString()).toBe('os = "win"');
+    expect(constraint.toString()).toBe('IF os = "win" THEN browser != "ie"');
   });
 
   it('else() does not mutate constraint', () => {
     const c1 = when('os').eq('win').then(when('browser').ne('ie'));
     const c2 = c1.else(when('arch').eq('arm'));
-    expect(c1.toString()).toBe('IF os = win THEN browser != ie');
-    expect(c2.toString()).toBe('IF os = win THEN browser != ie ELSE arch = arm');
+    expect(c1.toString()).toBe('IF os = "win" THEN browser != "ie"');
+    expect(c2.toString()).toBe('IF os = "win" THEN browser != "ie" ELSE arch = "arm"');
   });
 });
 
@@ -522,17 +525,17 @@ describe('immutability', () => {
 describe('string[] interop', () => {
   it('constraint auto-converts in template literal', () => {
     const c = when('os').eq('win').then(when('browser').ne('ie'));
-    expect(`${c}`).toBe('IF os = win THEN browser != ie');
+    expect(`${c}`).toBe('IF os = "win" THEN browser != "ie"');
   });
 
   it('condition auto-converts in template literal', () => {
     const c = when('os').eq('win');
-    expect(`${c}`).toBe('os = win');
+    expect(`${c}`).toBe('os = "win"');
   });
 
   it('constraint in array works with String()', () => {
     const c = when('os').eq('win').then(when('browser').ne('ie'));
-    expect(String(c)).toBe('IF os = win THEN browser != ie');
+    expect(String(c)).toBe('IF os = "win" THEN browser != "ie"');
   });
 });
 
@@ -546,7 +549,7 @@ describe('double-quote escaping through the builder', () => {
     const str = constraint.toString();
     // The value has spaces so it must be quoted, with inner quotes escaped.
     expect(str).toContain('\\"hello\\"');
-    expect(str).toBe('IF name = "say \\"hello\\"" THEN other = value');
+    expect(str).toBe('IF name = "say \\"hello\\"" THEN other = "value"');
   });
 
   it('escaped constraint string has balanced outer quotes', () => {
@@ -641,7 +644,7 @@ describe('builder output parses on the TS parser', () => {
     ];
     const expr = when('a').eq('(').or(when('b').eq('2')).and(when('c').eq('3')).toString();
     const result = parse(expr, params);
-    expect(expr).toBe('(a = "(" OR b = 2) AND c = 3');
+    expect(expr).toBe('(a = "(" OR b = "2") AND c = "3"');
     expect(result.error.code).toBe(0);
     expect(result.constraint?.evaluate([0, 1, 1])).toBe(ConstraintResult.False);
     expect(result.constraint?.evaluate([0, 1, 0])).toBe(ConstraintResult.True);
@@ -681,6 +684,42 @@ describe('builder output parses on the TS parser', () => {
     expect(result.constraint?.evaluate([2, 0])).toBe(ConstraintResult.False);
   });
 
+  it('IF/THEN/ELSE round-trips', () => {
+    // The one ELSE the grammar admits: directly after an IF ... THEN.
+    const params = [
+      new Parameter('os', ['mac', 'win']),
+      new Parameter('browser', ['ie', 'edge']),
+      new Parameter('arch', ['arm', 'x64']),
+    ];
+    const expr = when('os')
+      .eq('mac')
+      .then(when('browser').ne('ie'))
+      .else(when('arch').ne('arm'))
+      .toString();
+    expect(expr).toBe('IF os = "mac" THEN browser != "ie" ELSE arch != "arm"');
+    const result = parse(expr, params);
+    expect(result.error.code).toBe(0);
+    // os = mac, browser = edge satisfies the THEN branch.
+    expect(result.constraint?.evaluate([0, 1, 0])).toBe(ConstraintResult.True);
+    // os = mac, browser = ie violates it.
+    expect(result.constraint?.evaluate([0, 0, 0])).toBe(ConstraintResult.False);
+    // os = win takes the ELSE branch, which arch = arm violates.
+    expect(result.constraint?.evaluate([1, 0, 0])).toBe(ConstraintResult.False);
+    expect(result.constraint?.evaluate([1, 0, 1])).toBe(ConstraintResult.True);
+  });
+
+  it('renders an equality value that collides with a parameter name as a value', () => {
+    // `target` is both the intended value of `os` and the name of another
+    // parameter. A bare token would resolve to the parameter, turning the
+    // comparison into a parameter-to-parameter test that silently succeeds.
+    const params = [new Parameter('os', ['win', 'mac']), new Parameter('target', ['win', 'linux'])];
+    const expr = when('os').eq('target').toString();
+    expect(expr).toBe('os = "target"');
+    const result = parse(expr, params);
+    expect(result.error.code).not.toBe(0);
+    expect(result.error.message).toContain('target');
+  });
+
   it('reports error positions as codepoint offsets for non-ASCII input', () => {
     // Parity with the C++ test ErrorPositionIsCodepointOffsetForNonAscii. The
     // parameter name "café" contains a non-ASCII codepoint; an unexpected '@'
@@ -693,4 +732,118 @@ describe('builder output parses on the TS parser', () => {
     expect(result.error.message).toContain('position 7');
     expect(result.error.message).not.toContain('position 8');
   });
+});
+
+// ---------------------------------------------------------------------------
+// ELSE placement
+//
+// The grammar admits exactly one ELSE, directly after an IF ... THEN. The
+// builder's return types already make the other placements uncompilable, but a
+// plain-JavaScript consumer has no types: the objects `implies()` and `else()`
+// return still carry an `else` method at runtime. These pin what a caller who
+// reaches past the types actually gets — a rejected expression, never a
+// silently different constraint.
+// ---------------------------------------------------------------------------
+
+describe('ELSE placement the grammar rejects', () => {
+  const params = [
+    new Parameter('os', ['mac', 'win']),
+    new Parameter('browser', ['ie', 'edge']),
+    new Parameter('arch', ['arm', 'x64']),
+  ];
+
+  /** Reach past the builder's types the way untyped JavaScript can. */
+  const elseOf = (constraint: object, alternative: object): string =>
+    (constraint as { else: (alternative: object) => { toString(): string } })
+      .else(alternative)
+      .toString();
+
+  it('accepts the one ELSE the grammar admits, after IF ... THEN', () => {
+    const expr = when('os')
+      .eq('mac')
+      .then(when('browser').ne('ie'))
+      .else(when('arch').ne('arm'))
+      .toString();
+    expect(expr).toBe('IF os = "mac" THEN browser != "ie" ELSE arch != "arm"');
+    expect(parseConstraint(expr, params).error.code).toBe(0);
+  });
+
+  it('rejects an ELSE after IMPLIES', () => {
+    const expr = elseOf(
+      when('os').eq('mac').implies(when('browser').ne('ie')),
+      when('arch').ne('arm'),
+    );
+    expect(expr).toBe('os = "mac" IMPLIES browser != "ie" ELSE arch != "arm"');
+
+    const result = parseConstraint(expr, params);
+    expect(result.error.code).not.toBe(0);
+    expect(result.error.message).toContain('ELSE');
+    expect(result.constraint).toBeNull();
+  });
+
+  it('rejects a second ELSE', () => {
+    const expr = elseOf(
+      when('os').eq('mac').then(when('browser').ne('ie')).else(when('arch').ne('arm')),
+      when('arch').eq('x64'),
+    );
+    expect(expr).toBe('IF os = "mac" THEN browser != "ie" ELSE arch != "arm" ELSE arch = "x64"');
+
+    const result = parseConstraint(expr, params);
+    expect(result.error.code).not.toBe(0);
+    expect(result.error.message).toContain('ELSE');
+    expect(result.constraint).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Builder -> generate() on both public surfaces
+// ---------------------------------------------------------------------------
+
+describe('builder output through generate()', () => {
+  const surfaces: Array<{ name: string; generate: (input: GenerateInput) => unknown }> = [
+    { name: 'wasm', generate },
+    { name: 'pure', generate: pureGenerate },
+  ];
+
+  // `target` is a value the caller meant for `os` and, by coincidence, the name
+  // of another parameter. Resolving it as a parameter reference would build a
+  // different, satisfiable constraint: generation would narrow the suite and
+  // still report full coverage instead of reporting the unknown value.
+  const collidingParameters: GenerateInput['parameters'] = [
+    { name: 'os', values: ['win', 'mac'] },
+    { name: 'target', values: ['win', 'linux'] },
+  ];
+
+  beforeAll(async () => {
+    await init();
+  });
+
+  for (const surface of surfaces) {
+    it(`${surface.name} rejects an eq() value that names another parameter`, () => {
+      let thrown: unknown;
+      try {
+        surface.generate({
+          parameters: collidingParameters,
+          constraints: [when('os').eq('target').toString()],
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(CoverwiseError);
+      expect((thrown as CoverwiseError).code).toBe('CONSTRAINT_ERROR');
+      expect((thrown as CoverwiseError).message).toContain('target');
+    });
+
+    it(`${surface.name} accepts an eq() value that is a real value of the parameter`, () => {
+      const result = surface.generate({
+        parameters: collidingParameters,
+        constraints: [when('os').eq('win').toString()],
+        seed: 1,
+      }) as { tests: Array<Record<string, unknown>> };
+      expect(result.tests.length).toBeGreaterThan(0);
+      for (const test of result.tests) {
+        expect(test.os).toBe('win');
+      }
+    });
+  }
 });

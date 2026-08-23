@@ -7,7 +7,7 @@
 
 // --- Re-exports ---
 
-export type { Condition, ConditionStart, Constraint } from './constraint.js';
+export type { Condition, ConditionStart, Constraint, IfConstraint } from './constraint.js';
 export { allOf, anyOf, not, when } from './constraint.js';
 
 // --- Public Types (re-exported from types module) ---
@@ -24,6 +24,7 @@ export type {
   GenerateStats,
   IntegerBoundaryParameter,
   ModelStats,
+  NegativeCoverage,
   Parameter,
   ParameterValue,
   ParamStats,
@@ -141,7 +142,10 @@ function checkResult<T>(result: unknown): T {
     throw new CoverwiseError(
       code,
       (r.message as string) ?? 'Unknown error',
-      typeof r.detail === 'string' ? r.detail : undefined,
+      // An absent detail is represented as `undefined` on every surface; the
+      // WASM module reports it as an empty string, which must not leak through
+      // as a distinct value.
+      typeof r.detail === 'string' && r.detail !== '' ? r.detail : undefined,
     );
   }
   return result as T;
@@ -195,7 +199,12 @@ export function analyzeCoverage(
   const result = checkResult<CoverageReport>(
     mod.analyzeCoverage(parameters, tests, s, constraints ?? []),
   );
-  // When there are no tuples (e.g. fewer parameters than strength), coverage is vacuously 1.0.
+  // An empty tuple universe leaves the ratio undefined; coverage is then
+  // vacuously 1.0. Every input that could produce one is turned away earlier:
+  // a strength above the parameter count, a parameter with no valid value, and
+  // an unsatisfiable constraint model are all rejected before enumeration, and
+  // any model that survives them has at least one tuple. This is a guard, not a
+  // case with an input to name.
   if (result.totalTuples === 0) {
     result.coverageRatio = 1.0;
   }
@@ -215,9 +224,6 @@ export function extendTests(existing: TestCase[], input: ExtendInput): GenerateR
   const mod = getModule();
   const result = checkResult<GenerateResult>(mod.extendTests(existing, input));
   result.negativeTests = result.negativeTests ?? [];
-  for (let i = 0; i < existing.length; ++i) {
-    result.tests[i] = existing[i];
-  }
   return result;
 }
 

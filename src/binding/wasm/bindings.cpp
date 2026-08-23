@@ -13,8 +13,11 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "core/generator.h"
@@ -42,18 +45,27 @@ namespace {
 /// Numbers are formatted through the JS runtime (String()), so the result is
 /// byte-identical to the pure-JS adapter by construction. This keeps the WASM
 /// and pure-JS surfaces in lockstep with zero duplicated numeric logic.
-std::string JsValueToString(val item) {
-  std::string type = item.typeOf().as<std::string>();
-  if (type == "string") {
+///
+/// The type is decided with the handle predicates rather than by reading
+/// typeOf(), which materializes and marshals a JS string for every value tested.
+///
+/// @param string_ctor The JS `String` constructor. `val::global` resolves a name
+///   against the JS global object on every call, so a conversion loop resolves
+///   it once and passes it in rather than paying that lookup per value.
+std::string JsValueToString(val item, const val& string_ctor) {
+  if (item.isString()) {
     return item.as<std::string>();
   }
-  if (type == "boolean") {
-    return item.as<bool>() ? "true" : "false";
+  if (item.isTrue()) {
+    return "true";
+  }
+  if (item.isFalse()) {
+    return "false";
   }
   // For numbers (and any other type), defer to JS String() conversion, which
   // implements the ECMAScript Number-to-String algorithm. String(42) === "42"
   // (no ".0"), String(-0) === "0", String(1e-7) === "1e-7".
-  return val::global("String").call<std::string>("call", val::null(), item);
+  return string_ctor.call<std::string>("call", val::null(), item);
 }
 
 /// @brief Validate a JS number as a uint32 with public API validation.
@@ -80,7 +92,8 @@ uint32_t ParseUint32Option(val input, const char* field, bool allow_zero) {
   return ParseUint32Value(input[field], field, allow_zero);
 }
 
-std::optional<coverwise::model::BoundaryConfig> ParseBoundaryConfigForParam(val js_param);
+std::optional<coverwise::model::BoundaryConfig> ParseBoundaryConfigForParam(
+    val js_param, const std::string& name);
 
 /// @brief Parse a single JS parameter object into a C++ Parameter.
 ///
@@ -89,10 +102,11 @@ std::optional<coverwise::model::BoundaryConfig> ParseBoundaryConfigForParam(val 
 ///   - Object with value: { value: "ie6", invalid: true }
 ///   - Object with aliases: { value: "chromium", aliases: ["chrome", "edge"] }
 ///
-/// When the parameter carries boundary fields (type/range/step), the value set
-/// is expanded up front so the returned Parameter is the single source of truth
-/// for both generation and rendering.
-coverwise::model::Parameter ParseParameter(val js_param) {
+/// A boundary config found on the parameter is recorded in @p boundary_configs
+/// rather than applied here: expansion belongs to the acceptance gate, which
+/// runs it over the whole model before judging it.
+coverwise::model::Parameter ParseParameter(
+    val js_param, std::map<std::string, coverwise::model::BoundaryConfig>& boundary_configs) {
   coverwise::model::Parameter param;
 
   // Validate shape BEFORE dereferencing. Under DISABLE_EXCEPTION_CATCHING a raw
@@ -119,18 +133,18 @@ coverwise::model::Parameter ParseParameter(val js_param) {
   bool has_aliases = false;
   bool has_classes = false;
 
+  const val string_ctor = val::global("String");
   for (uint32_t i = 0; i < count; ++i) {
     val item = js_values[i];
-    std::string item_type = item.typeOf().as<std::string>();
-    if (item_type == "string" || item_type == "number" || item_type == "boolean") {
+    if (item.isString() || item.isNumber() || item.isTrue() || item.isFalse()) {
       // Scalar value — convert to string
-      param.values.push_back(JsValueToString(item));
+      param.values.push_back(JsValueToString(item, string_ctor));
       invalid_flags.push_back(false);
       aliases.emplace_back();
       eq_classes.emplace_back();
     } else {
       // Object form: { value: "...", invalid?: bool, aliases?: [...], class?: "..." }
-      param.values.push_back(JsValueToString(item["value"]));
+      param.values.push_back(JsValueToString(item["value"], string_ctor));
 
       bool is_invalid = false;
       if (item.hasOwnProperty("invalid")) {
@@ -173,123 +187,155 @@ coverwise::model::Parameter ParseParameter(val js_param) {
     param.set_equivalence_classes(std::move(eq_classes));
   }
 
-  // Apply boundary value expansion up front. ExpandBoundaryValues regenerates
-  // the value set (dropping aliases/classes), so the returned Parameter alone
-  // describes the value space used for both generation and rendering.
-  auto boundary = ParseBoundaryConfigForParam(js_param);
+  auto boundary = ParseBoundaryConfigForParam(js_param, param.name);
   if (boundary) {
-    coverwise::model::GenerateOptions validation;
-    validation.parameters = {param};
-    validation.strength = 1;
-    validation.boundary_configs[param.name] = *boundary;
-    auto boundary_error = coverwise::model::ValidateGenerateOptions(validation);
-    if (!boundary_error.ok()) {
-      throw std::runtime_error(boundary_error.message);
-    }
-    param = coverwise::model::ExpandBoundaryValues(param, *boundary);
+    boundary_configs[param.name] = *boundary;
   }
   return param;
 }
 
 /// @brief Derive a boundary expansion config from a single JS parameter object.
 ///
-/// A parameter participates when it carries a `type` ("integer" | "float") and a
-/// 2-element numeric `range` ([min, max]). For the float type an optional `step`
-/// (default 1.0) sets the spacing. Returns std::nullopt when the parameter does
-/// not opt into boundary expansion. Mirrors the CLI's ParseBoundaryConfigs and
-/// the pure-JS boundaryConfigFromParam canonical shape.
-std::optional<coverwise::model::BoundaryConfig> ParseBoundaryConfigForParam(val js_param) {
-  if (!js_param.hasOwnProperty("type") || !js_param.hasOwnProperty("range")) {
-    return std::nullopt;
-  }
-  val js_type = js_param["type"];
-  if (js_type.typeOf().as<std::string>() != "string") {
-    return std::nullopt;
-  }
-  val js_range = js_param["range"];
-  if (!val::global("Array").call<bool>("isArray", js_range) ||
-      js_range["length"].as<uint32_t>() != 2) {
-    return std::nullopt;
-  }
-  if (js_range[0].typeOf().as<std::string>() != "number" ||
-      js_range[1].typeOf().as<std::string>() != "number") {
+/// A parameter opts in by carrying any of `type` / `range` / `step`; having
+/// opted in it must supply a `type` of "integer" or "float" and a 2-element
+/// numeric `range`, with an optional numeric `step`. A malformed shape is an
+/// error rather than an opt-out — degrading to "no expansion" would generate
+/// over a value space the caller never described. std::nullopt means only that
+/// the parameter carries no boundary fields at all. Mirrors the CLI's
+/// ParseBoundaryConfigs and the pure-JS boundaryConfigFromParam.
+std::optional<coverwise::model::BoundaryConfig> ParseBoundaryConfigForParam(
+    val js_param, const std::string& name) {
+  if (!js_param.hasOwnProperty("type") && !js_param.hasOwnProperty("range") &&
+      !js_param.hasOwnProperty("step")) {
     return std::nullopt;
   }
 
   coverwise::model::BoundaryConfig config;
+  val js_type = js_param["type"];
+  const std::string type =
+      js_type.typeOf().as<std::string>() == "string" ? js_type.as<std::string>() : std::string();
+  if (type == "integer") {
+    config.type = coverwise::model::BoundaryConfig::Type::kInteger;
+  } else if (type == "float") {
+    config.type = coverwise::model::BoundaryConfig::Type::kFloat;
+  } else {
+    throw std::runtime_error("Invalid boundary type for parameter '" + name + "'");
+  }
+
+  val js_range = js_param["range"];
+  if (!val::global("Array").call<bool>("isArray", js_range) ||
+      js_range["length"].as<uint32_t>() != 2 ||
+      js_range[0].typeOf().as<std::string>() != "number" ||
+      js_range[1].typeOf().as<std::string>() != "number") {
+    throw std::runtime_error("Invalid boundary range for parameter '" + name +
+                             "': expected finite [min, max]");
+  }
   config.min_value = js_range[0].as<double>();
   config.max_value = js_range[1].as<double>();
 
-  std::string type = js_type.as<std::string>();
-  if (type == "integer") {
-    config.type = coverwise::model::BoundaryConfig::Type::kInteger;
-    config.step = 1.0;
-  } else if (type == "float") {
-    config.type = coverwise::model::BoundaryConfig::Type::kFloat;
-    if (js_param.hasOwnProperty("step") &&
-        js_param["step"].typeOf().as<std::string>() == "number") {
-      config.step = js_param["step"].as<double>();
-    } else {
-      config.step = 1.0;
+  // `step` is carried through for both types, including integer, where the
+  // acceptance rules reject anything other than 1.
+  if (js_param.hasOwnProperty("step")) {
+    val js_step = js_param["step"];
+    if (js_step.typeOf().as<std::string>() != "number") {
+      throw std::runtime_error("Invalid boundary step for parameter '" + name +
+                               "': expected a positive finite number");
     }
+    config.step = js_step.as<double>();
   } else {
-    return std::nullopt;
+    config.step = 1.0;
   }
   return config;
 }
 
-/// @brief Parse a JS parameters array into a C++ vector.
-std::vector<coverwise::model::Parameter> ParseParameters(val js_params) {
+/// @brief Parse a JS parameters array into @p options and expand its values.
+///
+/// Expansion runs before anything resolves a value name to an index, and before
+/// the parameter set is judged, so the rules apply to the value space the engine
+/// will use. Mirrors the CLI's ParseModelParameters.
+void ParseModelParameters(val js_params, coverwise::model::GenerateOptions& options) {
   if (!val::global("Array").call<bool>("isArray", js_params)) {
     throw std::runtime_error("Invalid parameters: must be an array.");
   }
-  std::vector<coverwise::model::Parameter> params;
   uint32_t count = js_params["length"].as<uint32_t>();
-  params.reserve(count);
+  options.parameters.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
-    params.push_back(ParseParameter(js_params[i]));
+    options.parameters.push_back(ParseParameter(js_params[i], options.boundary_configs));
+  }
+  auto expansion = coverwise::model::ExpandBoundaries(options);
+  if (!expansion.ok()) {
+    throw std::runtime_error(expansion.message);
   }
   // Semantic checks (duplicate names/values, empty values) shared with the
   // pure-JS surface and the CLI via the model layer.
-  auto err = coverwise::model::ValidateParameters(params);
+  auto err = coverwise::model::ValidateParameters(options.parameters);
   if (!err.ok()) {
     throw std::runtime_error(err.message);
   }
-  return params;
 }
+
+/// @brief State a row conversion borrows, built once for a whole suite.
+///
+/// Both members exist to keep the per-row cost linear in the row's own size.
+/// Resolving a key by scanning the parameter vector costs O(keys x params) per
+/// row, which is the dominant term of a large suite; and `val::global` resolves
+/// a name against the JS global object on every call, which a per-cell lookup
+/// pays once per value converted.
+struct RowConversionContext {
+  /// First entry wins, matching the scan it replaces: rows are converted before
+  /// the acceptance gate has ruled out a duplicate parameter name.
+  std::unordered_map<std::string, uint32_t> param_index;
+  val object_ctor;
+  val string_ctor;
+
+  explicit RowConversionContext(const std::vector<coverwise::model::Parameter>& params)
+      : object_ctor(val::global("Object")), string_ctor(val::global("String")) {
+    param_index.reserve(params.size());
+    for (uint32_t i = 0; i < params.size(); ++i) {
+      param_index.emplace(params[i].name, i);
+    }
+  }
+};
 
 /// @brief Parse a JS test case object into a C++ TestCase using parameter definitions.
 ///
 /// The JS test case is a map of param_name -> value_string. We resolve each
-/// value to its index using find_value_index.
+/// value to its index using find_value_index. A key naming no parameter is
+/// skipped, as it was when the parameter vector was scanned for it.
 coverwise::model::TestCase ParseTestCase(val js_test,
                                          const std::vector<coverwise::model::Parameter>& params,
-                                         bool allow_unknown = false) {
+                                         const RowConversionContext& ctx, bool allow_unknown) {
   coverwise::model::TestCase tc;
   tc.values.resize(params.size(), coverwise::model::kUnassigned);
 
   // Build a map from JS object keys to their values.
   // Using Object.keys() avoids hasOwnProperty(const char*) which
   // can fail with non-ASCII (UTF-8) property names in Emscripten.
-  val keys = val::global("Object").call<val>("keys", js_test);
+  val keys = ctx.object_ctor.call<val>("keys", js_test);
   uint32_t key_count = keys["length"].as<uint32_t>();
 
   for (uint32_t k = 0; k < key_count; ++k) {
-    std::string key = keys[k].as<std::string>();
-    // Find matching parameter
-    for (uint32_t i = 0; i < params.size(); ++i) {
-      if (params[i].name == key) {
-        std::string val_str = JsValueToString(js_test[key]);
-        uint32_t idx = params[i].find_value_index(val_str);
-        if (idx == UINT32_MAX) {
-          if (allow_unknown) break;
-          throw std::runtime_error("Unknown value '" + val_str + "' for parameter '" +
-                                   params[i].name + "'");
-        }
-        tc.values[i] = idx;
-        break;
+    // The key is indexed back into the row as the JS value it already is, so a
+    // cell costs one crossing for the name instead of one in each direction.
+    val js_key = keys[k];
+    auto it = ctx.param_index.find(js_key.as<std::string>());
+    if (it == ctx.param_index.end()) continue;
+    const uint32_t i = it->second;
+    std::string val_str = JsValueToString(js_test[js_key], ctx.string_ctor);
+    uint32_t idx = params[i].find_value_index(val_str);
+    if (idx == UINT32_MAX) {
+      if (allow_unknown) {
+        // Filled on first drift only: a row that matches the model costs
+        // nothing, and a row that does not keeps the caller's own text so
+        // the diagnostic can name it instead of an internal index.
+        if (tc.unresolved.empty()) tc.unresolved.resize(params.size());
+        tc.unresolved[i] = std::move(val_str);
+        continue;
       }
+      throw std::runtime_error("Unknown value '" + val_str + "' for parameter '" + params[i].name +
+                               "'");
     }
+    tc.values[i] = idx;
   }
   return tc;
 }
@@ -304,8 +350,9 @@ std::vector<coverwise::model::TestCase> ParseTestCases(
   std::vector<coverwise::model::TestCase> tests;
   uint32_t count = js_tests["length"].as<uint32_t>();
   tests.reserve(count);
+  const RowConversionContext ctx(params);
   for (uint32_t i = 0; i < count; ++i) {
-    tests.push_back(ParseTestCase(js_tests[i], params, allow_unknown));
+    tests.push_back(ParseTestCase(js_tests[i], params, ctx, allow_unknown));
   }
   return tests;
 }
@@ -360,15 +407,15 @@ std::vector<coverwise::model::SubModel> ParseSubModels(val js_sub_models) {
   return sub_models;
 }
 
-/// @brief Parse the full GenerateOptions from a JS input object.
-coverwise::model::GenerateOptions ParseGenerateOptions(val input) {
+/// @brief Parse a JS input object and submit it to the acceptance gate.
+coverwise::model::AcceptedOptions ParseGenerateOptions(val input) {
   coverwise::model::GenerateOptions opts;
 
   // Parameters (required)
   if (!input.hasOwnProperty("parameters")) {
     throw std::runtime_error("Missing required field 'parameters'");
   }
-  opts.parameters = ParseParameters(input["parameters"]);
+  ParseModelParameters(input["parameters"], opts);
 
   // Strength (default 2)
   if (input.hasOwnProperty("strength")) {
@@ -415,11 +462,10 @@ coverwise::model::GenerateOptions ParseGenerateOptions(val input) {
     opts.sub_models = ParseSubModels(input["subModels"]);
   }
 
-  // Boundary expansion is applied during ParseParameter, so opts.parameters
-  // already holds the expanded value set; opts.boundary_configs stays empty to
-  // avoid a second (no-op) expansion in core::Generate.
-
-  return opts;
+  // ParseModelParameters already expanded the boundary parameters and cleared
+  // the configs, so opts.parameters is the final value space and core::Generate
+  // will not expand a second time.
+  return coverwise::model::AcceptOptions(std::move(opts));
 }
 
 // ---------------------------------------------------------------------------
@@ -441,11 +487,23 @@ val TestCaseToJS(const coverwise::model::TestCase& tc,
 }
 
 /// @brief Convert a vector of test cases to a JS array.
+///
+/// @param preserved_rows Rows the caller handed to extend, or undefined. Extend
+///        keeps them exactly as supplied, so they are echoed rather than
+///        rendered from value indices: rendering would substitute the primary
+///        value for an alias the caller wrote, and drop members the model no
+///        longer declares. Echoing here, where a result becomes a JS object, is
+///        what keeps the rule from having to be re-applied by each entry point.
 val TestCasesToJS(const std::vector<coverwise::model::TestCase>& tests,
-                  const std::vector<coverwise::model::Parameter>& params) {
+                  const std::vector<coverwise::model::Parameter>& params,
+                  val preserved_rows = val::undefined()) {
+  const uint32_t preserved_count = val::global("Array").call<bool>("isArray", preserved_rows)
+                                       ? preserved_rows["length"].as<uint32_t>()
+                                       : 0;
   val arr = val::array();
   for (uint32_t i = 0; i < tests.size(); ++i) {
-    arr.call<void>("push", TestCaseToJS(tests[i], params, i));
+    arr.call<void>("push",
+                   i < preserved_count ? preserved_rows[i] : TestCaseToJS(tests[i], params, i));
   }
   return arr;
 }
@@ -487,14 +545,15 @@ val UncoveredToJS(const std::vector<coverwise::model::UncoveredTuple>& uncovered
 
 /// @brief Convert a GenerateResult to a JS object.
 val GenerateResultToJS(const coverwise::model::GenerateResult& result,
-                       const std::vector<coverwise::model::Parameter>& params, uint32_t strength) {
+                       const std::vector<coverwise::model::Parameter>& params, uint32_t strength,
+                       val preserved_rows = val::undefined()) {
   val obj = val::object();
 
   // strength
   obj.set("strength", val(strength));
 
   // tests
-  obj.set("tests", TestCasesToJS(result.tests, params));
+  obj.set("tests", TestCasesToJS(result.tests, params, preserved_rows));
 
   // negativeTests
   obj.set("negativeTests", TestCasesToJS(result.negative_tests, params));
@@ -631,7 +690,11 @@ val MakeError(const coverwise::model::Error& error) {
 ///         suggestions, warnings. On error: { error: true, code, message }.
 val wasmGenerate(val input) {
   try {
-    auto opts = ParseGenerateOptions(input);
+    auto accepted = ParseGenerateOptions(input);
+    if (!accepted.ok()) {
+      return MakeError(accepted.error());
+    }
+    const auto& opts = accepted->get();
     auto result = coverwise::core::Generate(opts);
 
     // Core reports early-exit failures (e.g. constraint parse errors) via
@@ -658,21 +721,40 @@ val wasmAnalyzeCoverage(val js_params, val js_tests, val js_strength, val js_con
     // Validate strength here too: receiving it as a raw embind uint32 would
     // silently truncate a fractional value (e.g. 2.9 → 2) before this layer.
     uint32_t strength = ParseUint32Value(js_strength, "strength", false);
-    auto params = ParseParameters(js_params);
-    auto tests = ParseTestCases(js_tests, params);
+
+    // The analysis strength is not a property of the model: a suite may be
+    // analyzed at a strength above the parameter count, where the tuple
+    // universe is simply empty. Submit the model at strength 1 so the gate
+    // judges the model alone, and hand the requested strength to the validator.
+    coverwise::model::GenerateOptions model_options;
+    model_options.strength = 1;
+    ParseModelParameters(js_params, model_options);
+    if (!js_constraints.isUndefined() && !js_constraints.isNull()) {
+      uint32_t expression_count = js_constraints["length"].as<uint32_t>();
+      for (uint32_t i = 0; i < expression_count; ++i) {
+        model_options.constraint_expressions.push_back(js_constraints[i].as<std::string>());
+      }
+    }
+
+    // A row that no longer matches the model keeps its mismatching positions
+    // unassigned; ValidateCoverage classifies it into invalidTests so the report
+    // covers the whole suite instead of stopping at the first drifted row.
+    auto tests = ParseTestCases(js_tests, model_options.parameters, true);
+
+    auto accepted = coverwise::model::AcceptOptions(std::move(model_options));
+    if (!accepted.ok()) {
+      return MakeError(accepted.error());
+    }
+    const auto& params = accepted->get().parameters;
 
     // Parse optional constraint expressions. Mirrors ParseGenerateOptions.
     std::vector<coverwise::model::Constraint> constraints;
-    if (!js_constraints.isUndefined() && !js_constraints.isNull()) {
-      uint32_t count = js_constraints["length"].as<uint32_t>();
-      for (uint32_t i = 0; i < count; ++i) {
-        std::string expr = js_constraints[i].as<std::string>();
-        auto parse_result = coverwise::model::ParseConstraint(expr, params);
-        if (!parse_result.error.ok()) {
-          return MakeError(coverwise::model::AnnotateConstraintError(expr, parse_result.error));
-        }
-        constraints.push_back(std::move(parse_result.constraint));
+    for (const auto& expr : accepted->get().constraint_expressions) {
+      auto parse_result = coverwise::model::ParseConstraint(expr, params);
+      if (!parse_result.error.ok()) {
+        return MakeError(coverwise::model::AnnotateConstraintError(expr, parse_result.error));
       }
+      constraints.push_back(std::move(parse_result.constraint));
     }
 
     auto report = coverwise::validator::ValidateCoverage(params, tests, strength, constraints);
@@ -692,14 +774,21 @@ val wasmAnalyzeCoverage(val js_params, val js_tests, val js_strength, val js_con
 /// @return JS object with the extended test suite (same format as generate result).
 val wasmExtendTests(val js_existing, val input) {
   try {
-    auto opts = ParseGenerateOptions(input);
+    auto accepted = ParseGenerateOptions(input);
+    if (!accepted.ok()) {
+      return MakeError(accepted.error());
+    }
+    const auto& opts = accepted->get();
+    // A recorded suite drifts from the model it was written against, and filling
+    // the gap is the point of extend, so a drifted row is carried through with
+    // its mismatching positions unassigned rather than failing the call.
     auto existing = ParseTestCases(js_existing, opts.parameters, true);
     auto result = coverwise::core::Extend(existing, opts);
     if (!result.error.ok()) {
       return MakeError(result.error);
     }
     const auto& effective_params = result.parameters.empty() ? opts.parameters : result.parameters;
-    return GenerateResultToJS(result, effective_params, opts.strength);
+    return GenerateResultToJS(result, effective_params, opts.strength, js_existing);
   } catch (const std::exception& e) {
     return MakeError(e.what());
   }
@@ -712,8 +801,11 @@ val wasmExtendTests(val js_existing, val input) {
 ///         estimatedTests, subModelCount, constraintCount, parameters[].
 val wasmEstimateModel(val input) {
   try {
-    auto opts = ParseGenerateOptions(input);
-    auto stats = coverwise::core::EstimateModel(opts);
+    auto accepted = ParseGenerateOptions(input);
+    if (!accepted.ok()) {
+      return MakeError(accepted.error());
+    }
+    auto stats = coverwise::core::EstimateModel(accepted->get());
     if (!stats.error.ok()) {
       return MakeError(stats.error);
     }

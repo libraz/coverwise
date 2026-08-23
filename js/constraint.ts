@@ -6,10 +6,10 @@
  * @example
  * import { when, not, allOf, anyOf } from '@libraz/coverwise/constraint';
  *
- * // IF os = Windows THEN browser != Safari
+ * // IF os = "Windows" THEN browser != "Safari"
  * when('os').eq('Windows').then(when('browser').ne('Safari'))
  *
- * // NOT (os = win AND browser = safari)
+ * // NOT (os = "win" AND browser = "safari")
  * not(allOf(when('os').eq('win'), when('browser').eq('safari')))
  */
 
@@ -60,6 +60,12 @@ function formatNumber(value: number): string {
   return String(value);
 }
 
+/**
+ * Format an equality operand. Strings are always quoted: a bare token on the
+ * right of `=` or `!=` is resolved by the parser as a parameter reference when
+ * one bears that name, which would silently turn a value comparison into a
+ * parameter-to-parameter comparison instead of reporting an unknown value.
+ */
 function formatValue(value: string | number | boolean): string {
   if (typeof value === 'boolean') {
     return String(value);
@@ -67,7 +73,7 @@ function formatValue(value: string | number | boolean): string {
   if (typeof value === 'number') {
     return formatNumber(value);
   }
-  return canEmitBare(value, false) ? value : quote(value);
+  return quote(value);
 }
 
 /**
@@ -109,15 +115,23 @@ function formatPattern(pattern: string): string {
 export interface Condition {
   and(other: Condition): Condition;
   or(other: Condition): Condition;
-  then(consequence: Condition): Constraint;
+  then(consequence: Condition): IfConstraint;
   implies(consequence: Condition): Constraint;
   toString(): string;
 }
 
-/** A complete constraint (IF...THEN with optional ELSE). */
+/** A complete constraint expression, ready to be passed as a constraint string. */
 export interface Constraint {
-  else(alternative: Condition): Constraint;
   toString(): string;
+}
+
+/**
+ * An `IF ... THEN` constraint, the only form the grammar lets an `ELSE` branch
+ * follow. `else()` yields a plain {@link Constraint}, because a second `ELSE`
+ * has no reading in the grammar and so must not be constructible.
+ */
+export interface IfConstraint extends Constraint {
+  else(alternative: Condition): Constraint;
 }
 
 /** Starting point for building a condition on a parameter. */
@@ -198,7 +212,7 @@ class ConditionImpl implements Condition {
   }
 
   // biome-ignore lint/suspicious/noThenProperty: fluent API requires .then() for IF...THEN syntax
-  then(consequence: Condition): Constraint {
+  then(consequence: Condition): IfConstraint {
     return new ConstraintImpl(
       `IF ${renderCondition(this.node)} THEN ${renderCondition(nodeFromCondition(consequence))}`,
     );
@@ -215,7 +229,7 @@ class ConditionImpl implements Condition {
   }
 }
 
-class ConstraintImpl implements Constraint {
+class ConstraintImpl implements IfConstraint {
   private readonly expr: string;
 
   constructor(expr: string) {
@@ -309,7 +323,7 @@ class ConditionStartImpl implements ConditionStart {
  * @returns A builder for specifying the comparison operator and value.
  *
  * @example
- * when('os').eq('Windows')         // os = Windows
+ * when('os').eq('Windows')         // os = "Windows"
  * when('version').gt(3)            // version > 3
  * when('start_date').lt('end_date') // start_date < end_date
  */
@@ -322,10 +336,10 @@ export function when(param: string): ConditionStart {
  *
  * @example
  * not(when('os').eq('win'))
- * // NOT (os = win)
+ * // NOT (os = "win")
  *
  * not(allOf(when('os').eq('win'), when('browser').eq('safari')))
- * // NOT (os = win AND browser = safari)
+ * // NOT (os = "win" AND browser = "safari")
  */
 export function not(condition: Condition): Condition {
   return new ConditionImpl({ kind: 'not', operand: nodeFromCondition(condition) });
@@ -336,7 +350,7 @@ export function not(condition: Condition): Condition {
  *
  * @example
  * allOf(when('os').eq('win'), when('browser').eq('chrome'))
- * // os = win AND browser = chrome
+ * // os = "win" AND browser = "chrome"
  */
 export function allOf(...conditions: Condition[]): Condition {
   if (conditions.length === 0) {
@@ -355,7 +369,7 @@ export function allOf(...conditions: Condition[]): Condition {
  *
  * @example
  * anyOf(when('os').eq('win'), when('os').eq('linux'))
- * // os = win OR os = linux
+ * // os = "win" OR os = "linux"
  */
 export function anyOf(...conditions: Condition[]): Condition {
   if (conditions.length === 0) {

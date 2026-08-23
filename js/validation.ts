@@ -11,6 +11,14 @@
  * both provide the canonical CoverwiseError factory.
  */
 
+import {
+  MAX_AGGREGATE_STRING_BYTES,
+  MAX_CONSTRAINTS,
+  MAX_PARAMETERS,
+  MAX_STRING_BYTES,
+  MAX_TESTS,
+  MAX_VALUES_PER_PARAMETER,
+} from '../src/ts/model/limits.js';
 import type { GenerateInput } from './types.js';
 import { CoverwiseError } from './types.js';
 
@@ -91,14 +99,6 @@ function isParameterScalar(value: unknown): value is string | number | boolean {
   );
 }
 
-const DECIMAL_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
-const MAX_PARAMETERS = 1_024;
-const MAX_VALUES_PER_PARAMETER = 16_384;
-const MAX_TESTS = 100_000;
-const MAX_CONSTRAINTS = 256;
-const MAX_STRING_BYTES = 64 * 1024;
-const MAX_AGGREGATE_STRING_BYTES = 1 * 1024 * 1024;
-
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
@@ -136,27 +136,15 @@ function validateAggregateStringBudget(value: unknown): void {
   visit(value);
 }
 
-function validateBoundaryValue(
-  value: unknown,
-  parameter: Record<string, unknown>,
-  name: string,
-): void {
-  const scalar = isRecord(value) && Object.hasOwn(value, 'value') ? value.value : value;
-  if (typeof scalar !== 'number' && typeof scalar !== 'string') {
-    return;
-  }
-  if (typeof scalar === 'string' && !DECIMAL_RE.test(scalar)) {
-    return;
-  }
-  const numeric = typeof scalar === 'number' ? scalar : Number(scalar);
-  if (!Number.isFinite(numeric)) {
-    invalid(`Boundary parameter '${name}' contains a non-finite numeric value.`);
-  }
-  if (parameter.type === 'integer' && !Number.isSafeInteger(numeric)) {
-    invalid(`Integer boundary parameter '${name}' contains a non-integral value.`);
-  }
-}
-
+/**
+ * Check the shape of a parameter's boundary fields.
+ *
+ * Only the shape: whether `type`, `range` and `step` are the kinds of JS value
+ * the engine can convert. Whether the range is ordered, whether the endpoints
+ * are safe integers, whether the step is one an integer expansion can honor —
+ * those are acceptance rules, and they live once in the model layer so the CLI,
+ * the WASM binding and this module cannot disagree about them.
+ */
 function validateBoundary(parameter: Record<string, unknown>, name: string): void {
   const hasBoundary =
     Object.hasOwn(parameter, 'type') ||
@@ -174,33 +162,12 @@ function validateBoundary(parameter: Record<string, unknown>, name: string): voi
     !Array.isArray(range) ||
     range.length !== 2 ||
     typeof range[0] !== 'number' ||
-    typeof range[1] !== 'number' ||
-    !Number.isFinite(range[0]) ||
-    !Number.isFinite(range[1]) ||
-    range[0] > range[1]
+    typeof range[1] !== 'number'
   ) {
     invalid(`Invalid boundary range for parameter '${name}': expected finite [min, max].`);
   }
-  if (parameter.type === 'integer') {
-    if (
-      !Number.isSafeInteger(range[0]) ||
-      !Number.isSafeInteger(range[1]) ||
-      range[0] <= Number.MIN_SAFE_INTEGER ||
-      range[1] >= Number.MAX_SAFE_INTEGER
-    ) {
-      invalid(`Invalid integer boundary range for parameter '${name}'.`);
-    }
-    if (parameter.step !== undefined && parameter.step !== 1) {
-      invalid(`Integer boundary step for parameter '${name}' must be 1 when provided.`);
-    }
-  } else {
-    const step = parameter.step ?? 1;
-    if (typeof step !== 'number' || !Number.isFinite(step) || step <= 0) {
-      invalid(`Invalid boundary step for parameter '${name}': expected a positive finite number.`);
-    }
-    if (!Number.isFinite(range[0] - step) || !Number.isFinite(range[1] + step)) {
-      invalid(`Boundary expansion for parameter '${name}' produces a non-finite value.`);
-    }
+  if (parameter.step !== undefined && typeof parameter.step !== 'number') {
+    invalid(`Invalid boundary step for parameter '${name}': expected a positive finite number.`);
   }
 }
 
@@ -240,34 +207,21 @@ export function validateParameters(parameters: unknown): void {
     if (parameter.values.length === 0 && parameter.type === undefined) {
       invalid(`Parameter '${parameter.name}' must have at least one value`);
     }
-    const boundaryNumericIdentities = new Set<number>();
     for (let vi = 0; vi < parameter.values.length; ++vi) {
       const value = parameter.values[vi];
-      if (parameter.type !== undefined) {
-        validateBoundaryValue(value, parameter, parameter.name);
-        const scalar = isRecord(value) && Object.hasOwn(value, 'value') ? value.value : value;
-        if (
-          (typeof scalar === 'number' || (typeof scalar === 'string' && DECIMAL_RE.test(scalar))) &&
-          Number.isFinite(Number(scalar))
-        ) {
-          const numeric = Number(scalar);
-          if (boundaryNumericIdentities.has(numeric)) {
-            invalid(`Boundary parameter '${parameter.name}' has duplicate numeric identities.`);
-          }
-          boundaryNumericIdentities.add(numeric);
-        }
-      }
       if (isParameterScalar(value)) {
         if (typeof value === 'string') {
           validateStringBudget(value, `${parameter.name}[${vi}]`, aggregate);
         }
         continue;
       }
-      if (typeof value.value === 'string') {
-        validateStringBudget(value.value, `${parameter.name}[${vi}]`, aggregate);
-      }
+      // Establish the object shape before reading `.value`; `null`, `undefined`
+      // and sparse holes must surface as a structured error, not a TypeError.
       if (!isRecord(value) || !Object.hasOwn(value, 'value') || !isParameterScalar(value.value)) {
         invalid(`Invalid value at ${parameter.name}[${vi}]: expected string, number, or boolean.`);
+      }
+      if (typeof value.value === 'string') {
+        validateStringBudget(value.value, `${parameter.name}[${vi}]`, aggregate);
       }
       if (value.invalid !== undefined && typeof value.invalid !== 'boolean') {
         invalid(`Invalid flag at ${parameter.name}[${vi}] must be boolean.`);

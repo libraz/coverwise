@@ -1,14 +1,12 @@
 /// Adapter between public API types and internal TS engine types.
 
-import {
-  type BoundaryConfig,
-  BoundaryType,
-  expandBoundaryValues,
-} from '../../src/ts/model/boundary.js';
+import { type BoundaryConfig, BoundaryType } from '../../src/ts/model/boundary.js';
+import { ErrorCode } from '../../src/ts/model/error.js';
 import type { ModelStats as InternalModelStats } from '../../src/ts/model/generate-options.js';
 import {
   createGenerateOptions,
   createWeightConfig,
+  expandBoundaries,
   type GenerateOptions as InternalGenerateOptions,
 } from '../../src/ts/model/generate-options.js';
 import {
@@ -64,6 +62,7 @@ function valueToString(v: string | number | boolean): string {
  */
 export function toInternalParams(params: PublicParameter[]): InternalParameter[] {
   const result: InternalParameter[] = [];
+  const boundaryConfigs: Record<string, BoundaryConfig> = Object.create(null);
 
   for (const pub of params) {
     // Shape guards mirroring the WASM binding: reject a non-string name or a
@@ -116,7 +115,7 @@ export function toInternalParams(params: PublicParameter[]): InternalParameter[]
       }
     }
 
-    let param = new InternalParameter(pub.name, values);
+    const param = new InternalParameter(pub.name, values);
     if (hasInvalid) {
       param.setInvalid(invalidFlags);
     }
@@ -127,36 +126,53 @@ export function toInternalParams(params: PublicParameter[]): InternalParameter[]
       param.setEquivalenceClasses(eqClasses);
     }
 
-    // Apply boundary value expansion up front, so the resulting Parameter is the
-    // single source of truth used for generation AND rendering. (Expansion
-    // regenerates the value set, so aliases/classes are intentionally dropped,
-    // matching expandBoundaryValues.)
     const bc = boundaryConfigFromParam(pub);
     if (bc) {
-      param = expandBoundaryValues(param, bc);
+      boundaryConfigs[param.name] = bc;
     }
     result.push(param);
   }
 
+  // Expansion runs before the parameter set is judged, so the rules apply to the
+  // value space the engine will use — a boundary parameter whose only
+  // spelled-out value is an invalid sentinel is well-formed, because expansion
+  // is about to supply the valid ones, and a generated value that collides with
+  // a retained alias is caught here rather than reaching the engine. Expansion
+  // carries per-value metadata across by value identity, so aliases and classes
+  // on the values it keeps survive.
+  const expansion = expandBoundaries(result, boundaryConfigs);
+  if (expansion.error.code !== ErrorCode.Ok) {
+    throw new CoverwiseError('INVALID_INPUT', expansion.error.message);
+  }
+
   // Semantic checks shared with the WASM/CLI surfaces (duplicate names/values,
   // empty values). Kept here so every pure-JS entry point inherits them.
-  const semanticError = validateInternalParameters(result);
+  const semanticError = validateInternalParameters(expansion.params);
   if (semanticError.length > 0) {
     throw new CoverwiseError('INVALID_INPUT', semanticError);
   }
 
-  return result;
+  return expansion.params;
 }
 
 /**
  * Convert a public TestCase (key-value map) to an internal TestCase (index array).
+ *
+ * @param tc - The row to convert.
+ * @param params - Parameters whose value lists resolve the row's values.
+ * @param allowUnknown - How a value outside the parameter's domain is treated.
+ *   Defaults to `true`, the rule for recorded rows (`tests`, `existing`): the
+ *   position is left unassigned and the coverage validator reports the row,
+ *   rather than one drifted row failing the whole call. Callers that assert the
+ *   row really is a test case for this model — `seeds` — pass `false`.
  */
 export function toInternalTestCase(
   tc: PublicTestCase,
   params: InternalParameter[],
-  allowUnknown = false,
+  allowUnknown = true,
 ): InternalTestCase {
   const values: number[] = new Array(params.length).fill(UNASSIGNED);
+  let unresolved: string[] | undefined;
   for (let i = 0; i < params.length; ++i) {
     const paramName = params[i].name;
     if (Object.hasOwn(tc, paramName)) {
@@ -164,6 +180,11 @@ export function toInternalTestCase(
       const idx = params[i].findValueIndex(valStr);
       if (idx === UNASSIGNED) {
         if (allowUnknown) {
+          // Filled on first drift only: a row that matches the model costs
+          // nothing, and a row that does not keeps the caller's own text so the
+          // diagnostic can name it instead of an internal index.
+          unresolved ??= new Array(params.length).fill('');
+          unresolved[i] = valStr;
           continue;
         }
         throw new CoverwiseError(
@@ -174,7 +195,7 @@ export function toInternalTestCase(
       values[i] = idx;
     }
   }
-  return { values };
+  return unresolved ? { values, unresolved } : { values };
 }
 
 /**
@@ -207,7 +228,9 @@ export function toInternalOptions(
     strength: sm.strength,
   }));
 
-  const seeds = (input.seeds ?? []).map((tc) => toInternalTestCase(tc, params));
+  // A seed is asserted to be a real test case for this model, so a value outside
+  // the domain is an error rather than an unassigned position.
+  const seeds = (input.seeds ?? []).map((tc) => toInternalTestCase(tc, params, false));
 
   // Boundary expansion is already applied in toInternalParams, so `params` is
   // the final value space. Aliases/equivalence classes are threaded onto the
@@ -234,21 +257,25 @@ export function toInternalOptions(
 
 /**
  * Derive a BoundaryConfig from a public parameter object, or null when the
- * parameter does not opt into boundary expansion.
+ * parameter carries no boundary fields at all.
  *
- * A parameter participates when it carries a `type` ('integer' | 'float') and a
- * 2-element numeric `range` ([min, max]); for 'float' an optional `step`
- * (default 1.0) sets the spacing. Mirrors the WASM ParseBoundaryConfigs and the
- * CLI's canonical shape so every surface expands the same value set.
+ * A parameter opts in by carrying any of `type` / `range` / `step`; having
+ * opted in it must supply a `type` of 'integer' or 'float' and a 2-element
+ * numeric `range` ([min, max]), with an optional numeric `step`. A malformed
+ * shape is an error rather than an opt-out — degrading to 'no expansion' would
+ * generate over a value space the caller never described. `step` is carried
+ * through for both types, including integer, where the acceptance rules reject
+ * anything other than 1. Mirrors the WASM ParseBoundaryConfigForParam and the
+ * CLI's ParseBoundaryConfigs so every surface expands the same value set.
  */
 function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
   // Public TypeScript callers can only construct the union in `types.ts`, but
   // JavaScript callers may still pass arbitrary objects at runtime.
   const raw = p as PublicParameter & { type?: unknown; range?: unknown; step?: unknown };
-  const type = raw.type;
-  if (type === undefined) {
+  if (raw.type === undefined && raw.range === undefined && raw.step === undefined) {
     return null;
   }
+  const type = raw.type;
   if (type !== 'integer' && type !== 'float') {
     throw new CoverwiseError('INVALID_INPUT', `Invalid boundary type for parameter '${p.name}'`);
   }
@@ -267,6 +294,13 @@ function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
       `Boundary range must be a finite ordered [min, max] pair for parameter '${p.name}'`,
     );
   }
+  const step = raw.step ?? 1.0;
+  if (typeof step !== 'number' || !Number.isFinite(step) || step <= 0) {
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      `Boundary step must be finite and positive for parameter '${p.name}'`,
+    );
+  }
   if (type === 'integer') {
     if (
       !Number.isSafeInteger(range[0]) ||
@@ -279,14 +313,7 @@ function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
         `Integer boundary endpoints must be safe integers allowing +/-1 for '${p.name}'`,
       );
     }
-    return { type: BoundaryType.Integer, minValue: range[0], maxValue: range[1], step: 1.0 };
-  }
-  const step = raw.step ?? 1.0;
-  if (typeof step !== 'number' || !Number.isFinite(step) || step <= 0) {
-    throw new CoverwiseError(
-      'INVALID_INPUT',
-      `Boundary step must be finite and positive for parameter '${p.name}'`,
-    );
+    return { type: BoundaryType.Integer, minValue: range[0], maxValue: range[1], step };
   }
   if (!Number.isFinite(range[0] - step) || !Number.isFinite(range[1] + step)) {
     throw new CoverwiseError(
@@ -331,13 +358,26 @@ function toPublicUncoveredTuple(ut: InternalUncoveredTuple): PublicUncoveredTupl
 
 /**
  * Convert an internal GenerateResult to a public GenerateResult.
+ *
+ * @param preservedRows Rows the caller handed to extend, or undefined. Extend
+ *   keeps them exactly as supplied, so they are echoed rather than rendered
+ *   from value indices — rendering would substitute the primary value for an
+ *   alias the caller wrote, and drop members the model no longer declares.
+ *   Doing it here, where a result becomes public, is what keeps the rule from
+ *   having to be re-applied by each entry point.
  */
 export function toPublicResult(
   result: InternalGenerateResult,
   params: InternalParameter[],
   strength: number,
+  preservedRows?: readonly PublicTestCase[],
 ): PublicGenerateResult {
-  const tests = result.tests.map((tc, i) => toPublicTestCase(tc, params, i));
+  const preservedCount = preservedRows?.length ?? 0;
+  const tests = result.tests.map((tc, i) =>
+    i < preservedCount
+      ? (preservedRows as readonly PublicTestCase[])[i]
+      : toPublicTestCase(tc, params, i),
+  );
   const negativeTests = result.negativeTests.map((tc, i) => toPublicTestCase(tc, params, i));
   const uncovered = result.uncovered.map(toPublicUncoveredTuple);
 

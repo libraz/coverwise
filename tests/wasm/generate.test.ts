@@ -159,6 +159,53 @@ describe('coverwise WASM', () => {
       }
     });
 
+    // negativeCoverage is documented as part of the shipped GenerateResult, so a
+    // regression that drops it or fills it inconsistently has to fail here.
+    it('reports negative coverage whose covered and omitted tuples sum to the total', () => {
+      const result = generate({
+        parameters: [
+          { name: 'A', values: ['a0', { value: 'bad', invalid: true }] },
+          { name: 'B', values: ['b0', 'b1', 'b2'] },
+          { name: 'C', values: ['c0', 'c1', 'c2'] },
+          { name: 'D', values: ['d0', 'd1', 'd2'] },
+        ],
+        strength: 4,
+        seed: 42,
+      });
+
+      const negative = result.negativeCoverage;
+      expect(negative).toBeDefined();
+      if (!negative) {
+        return;
+      }
+      expect(negative.coveredTuples + negative.omittedTuples).toBe(negative.totalTuples);
+      expect(negative.omittedTuples).toBe(0);
+      expect(negative.coverageRatio).toBe(1);
+    });
+
+    it('keeps negative coverage self-consistent when maxTests truncates the suite', () => {
+      const result = generate({
+        parameters: [
+          { name: 'A', values: ['a0', { value: 'bad', invalid: true }] },
+          { name: 'B', values: ['b0', 'b1'] },
+        ],
+        strength: 2,
+        maxTests: 3,
+        seed: 42,
+      });
+
+      const negative = result.negativeCoverage;
+      expect(negative).toBeDefined();
+      if (!negative) {
+        return;
+      }
+      // The cap stops negative generation part way, so the omitted count has to
+      // account for the difference rather than staying at its default of zero.
+      expect(negative.omittedTuples).toBeGreaterThan(0);
+      expect(negative.coveredTuples + negative.omittedTuples).toBe(negative.totalTuples);
+      expect(negative.coverageRatio).toBe(negative.coveredTuples / negative.totalTuples);
+    });
+
     it('supports 3-wise generation', () => {
       const result = generate({
         parameters: [

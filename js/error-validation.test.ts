@@ -1,4 +1,4 @@
-/// Error-shape (W-4) and input-validation (W-5) parity tests.
+/// Error-shape and input-validation parity tests.
 ///
 /// Every public surface — the WASM-backed default export and the pure
 /// TypeScript export — must throw a `CoverwiseError` (an `instanceof Error`
@@ -56,9 +56,9 @@ describe('error shape and input validation', () => {
     await init();
   });
 
-  // --- W-4: unified error shape ---
+  // --- Unified error shape ---
 
-  describe('W-4 unified error shape', () => {
+  describe('unified error shape', () => {
     for (const surface of surfaces) {
       describe(surface.name, () => {
         it('throws CoverwiseError (instanceof Error) with CONSTRAINT_ERROR for a bad constraint', () => {
@@ -108,11 +108,17 @@ describe('error shape and input validation', () => {
     });
   });
 
-  // --- W-5: hardened input validation ---
+  // --- Hardened input validation ---
 
-  describe('W-5 input validation', () => {
+  describe('input validation', () => {
     // Each case is a parameter array that must be rejected with INVALID_INPUT.
     const badParameterCases: Array<{ label: string; params: unknown }> = [
+      // A dropped row leaves a hole in the array itself, not just in `values`.
+      // Reading `.name` off it without a shape check would surface as a raw
+      // TypeError from inside the library instead of a structured rejection.
+      { label: 'a null parameter entry', params: [null] },
+      { label: 'an undefined parameter entry', params: [undefined] },
+      { label: 'an array where a parameter object belongs', params: [['os', 'win']] },
       { label: 'missing values', params: [{ name: 'os' }] },
       { label: 'string values', params: [{ name: 'os', values: 'win' }] },
       { label: 'empty values array', params: [{ name: 'os', values: [] }] },
@@ -236,5 +242,55 @@ describe('error shape and input validation', () => {
         expect((err as CoverwiseError).code).toBe('INVALID_INPUT');
       }
     });
+  });
+
+  // A `values` array with a hole (a dropped row from a YAML conversion or a
+  // `rows.map(r => r.value)` over sparse data) must be reported through the
+  // structured error channel, naming the parameter and the offending index —
+  // never as a raw TypeError from an unguarded property read.
+  describe('holes in a values array', () => {
+    const holes: Array<{ label: string; hole: unknown }> = [
+      { label: 'null', hole: null },
+      { label: 'undefined', hole: undefined },
+    ];
+
+    /** Assert `err` is the structured error naming `os[1]`. */
+    function expectStructured(err: unknown): void {
+      expect(err).toBeInstanceOf(CoverwiseError);
+      expect((err as CoverwiseError).code).toBe('INVALID_INPUT');
+      expect((err as CoverwiseError).message).toContain('os[1]');
+    }
+
+    for (const { label, hole } of holes) {
+      const parameters = [
+        { name: 'os', values: ['win', hole] as unknown as string[] },
+        okParams[1],
+      ];
+
+      for (const surface of surfaces) {
+        it(`${surface.name} generate reports a ${label} value as INVALID_INPUT`, () => {
+          expectStructured(capture(() => surface.generate({ parameters })));
+        });
+
+        it(`${surface.name} analyzeCoverage reports a ${label} value as INVALID_INPUT`, () => {
+          expectStructured(
+            capture(() => surface.analyzeCoverage(parameters, [{ os: 'win', browser: 'chrome' }])),
+          );
+        });
+
+        it(`${surface.name} extendTests reports a ${label} value as INVALID_INPUT`, () => {
+          expectStructured(
+            capture(() => surface.extendTests([{ os: 'win', browser: 'chrome' }], { parameters })),
+          );
+        });
+      }
+
+      it(`both surfaces report a ${label} value identically`, () => {
+        const wasmErr = capture(() => generate({ parameters })) as CoverwiseError;
+        const pureErr = capture(() => pureGenerate({ parameters })) as CoverwiseError;
+        expect(wasmErr.message).toBe(pureErr.message);
+        expect(wasmErr.code).toBe(pureErr.code);
+      });
+    }
   });
 });
