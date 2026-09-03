@@ -761,6 +761,14 @@ export class CoverageEngine {
   }
 }
 
+/// The ceiling the preflight tuple count saturates at.
+///
+/// The C++ preflight counts in uint64_t and reports whatever that saturates to,
+/// so a count past this point is quoted as this value rather than as a larger
+/// one. This port saturates in the same place so that a model too wide to have
+/// a representable count is described identically on both surfaces.
+const UINT64_MAX = 2n ** 64n - 1n;
+
 function preflightModel(
   params: Parameter[],
   subset: number[] | null,
@@ -782,23 +790,32 @@ function preflightModel(
   }
 
   const combo = Array.from({ length: strength }, (_, index) => index);
-  let total = 0;
+  // The walk runs in BigInt because the counts it reports are uint64 on the C++
+  // side and a double stops holding integers exactly at 2^53. A model wide
+  // enough to explode is exactly the one whose count a double would round, so
+  // reporting from a double would make the same model carry a different figure
+  // on this surface than through the core. The per-parameter radices are
+  // converted once rather than per combination.
+  const radix = params.map((parameter) => BigInt(parameter.size));
+  const maxTuples = BigInt(MAX_TUPLES);
+  let total = 0n;
   for (;;) {
-    // Compute the full product for this combination so the reported figure
-    // reflects the real (approximate) magnitude rather than a fixed sentinel just
-    // past the limit.
-    let product = 1;
+    // Compute the full product for this combination, saturating at UINT64_MAX so
+    // the reported figure reflects the real (approximate) magnitude rather than a
+    // fixed sentinel just past the limit.
+    let product = 1n;
     for (const local of combo) {
-      const pi = subset === null ? local : subset[local];
-      product *= params[pi].size;
+      const size = radix[subset === null ? local : subset[local]];
+      product = size !== 0n && product > UINT64_MAX / size ? UINT64_MAX : product * size;
     }
-    if (product > MAX_TUPLES) {
+    if (product > maxTuples) {
       return { total: 0, error: makeTupleExplosionError(product, MAX_TUPLES) };
     }
-    total += product;
-    if (total > MAX_TUPLES) {
-      return { total: 0, error: makeTupleExplosionError(total, MAX_TUPLES) };
+    if (total > maxTuples - product) {
+      const reported = total > UINT64_MAX - product ? UINT64_MAX : total + product;
+      return { total: 0, error: makeTupleExplosionError(reported, MAX_TUPLES) };
     }
+    total += product;
 
     let pos = strength - 1;
     while (pos >= 0 && combo[pos] === n - strength + pos) {
@@ -812,11 +829,17 @@ function preflightModel(
       combo[index] = combo[index - 1] + 1;
     }
   }
-  return { total, error: okError() };
+  // Every accepted total is at most MAX_TUPLES, well inside what a double holds
+  // exactly, so the rest of the engine keeps counting in numbers.
+  return { total: Number(total), error: okError() };
 }
 
 /// Build an error for when tuple count exceeds the safety limit.
-function makeTupleExplosionError(totalTuples: number, maxTuples: number): ErrorInfo {
+///
+/// The count is taken as a bigint where an exact one is available, because the
+/// figure the diagnostic quotes is the one the C++ core would quote and that one
+/// can be as large as UINT64_MAX.
+function makeTupleExplosionError(totalTuples: number | bigint, maxTuples: number): ErrorInfo {
   return {
     code: ErrorCode.TupleExplosion,
     message: 't-wise tuple count exceeds safety limit',

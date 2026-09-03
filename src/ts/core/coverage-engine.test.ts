@@ -101,6 +101,32 @@ describe('CoverageEngine', () => {
       expect(result.error.code).toBe(ErrorCode.TupleExplosion);
       expect(result.error.message).toBe('parameter combination metadata exceeds safety limit');
     });
+
+    // Both figures below are what the C++ core reports for the same model; the
+    // cross-surface test reads them off the compiled module rather than from
+    // here, and these pin them in the tier that runs without a WASM build.
+    it('reports a tuple count that has left the exact range of a double', () => {
+      // 3^34 is odd and above 2^53, so a double cannot hold it: rounding it
+      // would report ...568 for a model the core describes as ...569.
+      const params = Array.from({ length: 34 }, (_, i) => new Parameter(`p${i}`, ['a', 'b', 'c']));
+      const result = CoverageEngine.create(params, 34);
+      expect(result.error.code).toBe(ErrorCode.TupleExplosion);
+      expect(result.error.detail).toBe(
+        'Total tuples: 16677181699666569, limit: 16000000. Reduce strength or parameter count.',
+      );
+    });
+
+    it('saturates the reported tuple count where the count stops being uint64', () => {
+      // 64^11 = 2^66 is past what a uint64 holds, so the count the core reports
+      // is the ceiling it saturates at rather than the true product.
+      const values = Array.from({ length: 64 }, (_, j) => `v${j}`);
+      const params = Array.from({ length: 11 }, (_, i) => new Parameter(`p${i}`, values));
+      const result = CoverageEngine.create(params, 11);
+      expect(result.error.code).toBe(ErrorCode.TupleExplosion);
+      expect(result.error.detail).toBe(
+        'Total tuples: 18446744073709551615, limit: 16000000. Reduce strength or parameter count.',
+      );
+    });
   });
 
   describe('addTestCase()', () => {
