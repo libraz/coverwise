@@ -11,6 +11,7 @@ import pytest
 
 import coverwise
 import coverwise.api
+import coverwise.cli
 
 MODEL = {
     "parameters": [
@@ -18,6 +19,27 @@ MODEL = {
         {"name": "browser", "values": ["chrome", "firefox", "safari"]},
         {"name": "theme", "values": ["light", "dark"]},
     ]
+}
+
+# The two documented ways to write parameters describe the same model, and every
+# public entry point that takes them normalizes them the same way. Both axes are
+# driven together so a rule that reaches only one of them cannot pass.
+PARAMETER_FORMS = {
+    "mapping": lambda values: {"os": values, "browser": ["chrome", "safari"]},
+    "list": lambda values: [
+        {"name": "os", "values": values},
+        {"name": "browser", "values": ["chrome", "safari"]},
+    ],
+}
+
+ENTRY_POINTS = {
+    "generate": lambda parameters: coverwise.generate(parameters=parameters),
+    "estimate_model": lambda parameters: coverwise.estimate_model(parameters=parameters),
+    "extend_tests": lambda parameters: coverwise.extend_tests([], parameters=parameters),
+    "analyze_coverage": lambda parameters: coverwise.analyze_coverage(
+        parameters, [{"os": "win", "browser": "chrome"}]
+    ),
+    "parametrize": lambda parameters: coverwise.parametrize(parameters),
 }
 
 
@@ -141,6 +163,91 @@ def test_generate_reports_a_constraint_error() -> None:
     assert excinfo.value.stderr
 
 
+BROKEN_CONSTRAINT = "IF os = mac THEN browser = = chrome"
+
+
+def constraint_failure(constraint):
+    """Return the error a caller gets for a constraint that cannot be parsed."""
+
+    with pytest.raises(coverwise.CoverwiseError) as excinfo:
+        coverwise.generate(MODEL, constraints=[constraint])
+    return excinfo.value
+
+
+def test_a_constraint_written_across_lines_keeps_its_diagnostic() -> None:
+    """The parser reads a newline as whitespace, so a constraint spread over
+    several lines is ordinary input. The diagnostic quotes the expression before
+    giving the reason, so a message that stopped at the first line would hand
+    the caller a fragment of their own input and none of the explanation."""
+
+    single_line = constraint_failure(BROKEN_CONSTRAINT)
+    across_lines = constraint_failure(BROKEN_CONSTRAINT.replace(" THEN", "\nTHEN"))
+
+    reason = str(single_line).split('": ', 1)[1]
+    assert reason
+    assert reason in str(across_lines)
+
+    # Nothing the executable diagnosed is left behind on a line the message
+    # dropped: every line survives, and only the first one loses anything.
+    diagnostic_lines = across_lines.stderr.strip().splitlines()
+    message_lines = str(across_lines).splitlines()
+    assert len(diagnostic_lines) > 1
+    assert diagnostic_lines[0].endswith(message_lines[0])
+    assert diagnostic_lines[1:] == message_lines[1:]
+
+
+def framing_removed(failure) -> str:
+    """What the wrapper leaves out of the reason it reports.
+
+    The executable frames a diagnostic before writing it to standard error, and
+    that frame is not part of the failure. Recovering it from the two strings
+    the wrapper already exposes is how a test can check the frame without
+    naming it, which is what makes the checks below hold through a reword.
+    """
+
+    diagnostic = failure.stderr.strip()
+    reason = str(failure)
+    assert diagnostic.endswith(reason)
+    return diagnostic[: len(diagnostic) - len(reason)]
+
+
+def test_the_reported_reason_is_the_rendering_the_executable_produced() -> None:
+    """A failure the executable classified is rendered twice: framed on standard
+    error, and unframed in the report it had already written. What this package
+    reports has to be that rendering exactly.
+
+    The comparison is what keeps the frame checkable from outside the executable.
+    Reworded on the producing side, the two stop agreeing here rather than every
+    message this package raises quietly carrying a fragment of the frame.
+    """
+
+    failure = constraint_failure(BROKEN_CONSTRAINT)
+
+    assert str(failure) == failure.report["error"]["message"]
+    assert framing_removed(failure) != ""
+
+
+def test_every_diagnostic_the_executable_frames_is_framed_the_same_way() -> None:
+    """A failure diagnosed before anything could be measured writes no report, so
+    the only account of it is the framed one. It is held to the frame the
+    reported failure pins, which is what keeps the two paths from drifting apart
+    while only one of them has a second account to be checked against."""
+
+    classified = constraint_failure(BROKEN_CONSTRAINT)
+    with pytest.raises(coverwise.CoverwiseError) as excinfo:
+        coverwise.generate(
+            parameters=[
+                {"name": "os", "values": ["win", "win"]},
+                {"name": "browser", "values": ["chrome", "safari"]},
+            ]
+        )
+    rejected = excinfo.value
+
+    assert rejected.report is None
+    assert rejected.exit_code != classified.exit_code
+    assert framing_removed(rejected) == framing_removed(classified)
+
+
 def test_generate_reports_invalid_input() -> None:
     with pytest.raises(coverwise.CoverwiseError) as excinfo:
         coverwise.generate(parameters=[{"name": "os", "values": ["win", "win"]}])
@@ -161,7 +268,7 @@ def test_a_non_finite_value_is_rejected_before_the_subprocess_starts(monkeypatch
     def unreachable(*args, **kwargs):
         raise AssertionError("the native binary must not run for a non-finite value")
 
-    monkeypatch.setattr(coverwise.api.subprocess, "run", unreachable)
+    monkeypatch.setattr(coverwise.cli.subprocess, "run", unreachable)
 
     with pytest.raises(coverwise.CoverwiseError) as excinfo:
         coverwise.generate(parameters={"timeout": [1.0, value], "os": ["win", "mac"]})
@@ -193,13 +300,94 @@ def test_generate_accepts_a_single_element_value_list() -> None:
     assert {test["env"] for test in result["tests"]} == {"prod"}
 
 
-@pytest.mark.parametrize("unordered", [{"win", "mac"}, frozenset({"win", "mac"})])
-def test_generate_rejects_a_set_where_a_value_list_belongs(unordered) -> None:
+@pytest.mark.parametrize("entry_point", ENTRY_POINTS.values(), ids=list(ENTRY_POINTS))
+@pytest.mark.parametrize("form", PARAMETER_FORMS.values(), ids=list(PARAMETER_FORMS))
+@pytest.mark.parametrize(
+    "unordered", [{"win", "mac"}, frozenset({"win", "mac"})], ids=["set", "frozenset"]
+)
+def test_an_unordered_value_container_is_refused_wherever_it_is_written(
+    entry_point, form, unordered
+) -> None:
     """A set's iteration order depends on the hash seed, so it cannot back a
-    deterministic suite the way a list of the same values does."""
+    deterministic suite the way a list of the same values does.
 
-    with pytest.raises(TypeError, match="unordered set"):
-        coverwise.generate(parameters={"os": unordered, "browser": ["chrome", "safari"]})
+    The refusal has to be the caller's, naming the container and the way out; a
+    serializer complaining that a set is not JSON says neither."""
+
+    with pytest.raises(TypeError) as excinfo:
+        entry_point(form(unordered))
+
+    message = str(excinfo.value)
+    assert "values for parameter 'os'" in message
+    assert "unordered set" in message
+    assert type(unordered).__name__ in message
+    assert "sorted(values)" in message
+    assert "not JSON serializable" not in message
+
+
+def test_the_refusal_of_an_unordered_container_reads_the_same_everywhere() -> None:
+    """One model written two ways cannot meet two different verdicts, and the
+    entry point a caller happened to reach cannot change the wording either."""
+
+    messages = set()
+    for entry_point in ENTRY_POINTS.values():
+        for form in PARAMETER_FORMS.values():
+            with pytest.raises(TypeError) as excinfo:
+                entry_point(form({"win", "mac"}))
+            messages.add(str(excinfo.value))
+
+    assert len(messages) == 1
+
+
+@pytest.mark.parametrize("entry_point", ENTRY_POINTS.values(), ids=list(ENTRY_POINTS))
+@pytest.mark.parametrize("form", PARAMETER_FORMS.values(), ids=list(PARAMETER_FORMS))
+def test_a_dict_view_is_accepted_wherever_a_value_list_belongs(entry_point, form) -> None:
+    """What disqualifies a container is its order, not the protocol it satisfies.
+
+    A dict view is a Set, yet it iterates in insertion order, so it names a
+    reproducible model and the determinism argument does not apply to it."""
+
+    assert entry_point(form({"win": 0, "mac": 1}.keys())) is not None
+
+
+def test_a_dict_view_parametrizes_the_suite_its_keys_were_declared_in() -> None:
+    declared = {"win": 0, "mac": 1, "linux": 2}
+
+    from_view = coverwise.generate(
+        parameters={"os": declared.keys(), "browser": ["chrome", "safari"]}
+    )
+    from_list = coverwise.generate(
+        parameters={"os": list(declared), "browser": ["chrome", "safari"]}
+    )
+
+    assert from_view["tests"] == from_list["tests"]
+
+
+def test_an_items_view_reaches_the_model_in_its_declared_order() -> None:
+    """Whether a pair can be a value is the model's business; what matters here
+    is that a deterministic view is not turned away as unordered first."""
+
+    declared = {"win": 0, "mac": 1}
+
+    normalized = coverwise.api._normalize_parameters([{"name": "os", "values": declared.items()}])
+
+    assert normalized == [{"name": "os", "values": [("win", 0), ("mac", 1)]}]
+
+
+def test_an_unordered_container_outside_the_parameters_meets_the_same_verdict() -> None:
+    """Values are not the only place a container reaches the payload, and a
+    caller who writes one for constraints is owed the same answer."""
+
+    with pytest.raises(TypeError) as excinfo:
+        coverwise.generate(MODEL, constraints={"IF os = mac THEN browser != chrome"})
+
+    assert "unordered set" in str(excinfo.value)
+    assert "not JSON serializable" not in str(excinfo.value)
+
+    declared = {"IF os = mac THEN browser != chrome": 0}
+    accepted = coverwise.generate(MODEL, constraints=declared.keys())
+
+    assert accepted["coverage"] == 1.0
 
 
 def test_accepted_container_order_does_not_depend_on_the_hash_seed() -> None:

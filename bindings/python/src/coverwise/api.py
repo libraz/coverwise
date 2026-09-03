@@ -9,13 +9,12 @@ from __future__ import annotations
 import json
 import os
 import signal
-import subprocess
 import tempfile
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import ItemsView, Iterable, KeysView, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from typing import Any, NamedTuple
 
-from .cli import native_binary
+from .cli import run as run_native
 
 __all__ = [
     "CoverwiseError",
@@ -70,31 +69,66 @@ class CoverwiseError(RuntimeError):
         self.report = report
 
 
+def _is_unordered(values: Any) -> bool:
+    """Report whether iterating ``values`` twice can yield two different orders.
+
+    A ``set``/``frozenset`` iterates in an order that depends on
+    ``PYTHONHASHSEED`` and insertion history, so a model built from one would
+    parametrize a different suite on every run, breaking the determinism the
+    rest of the API guarantees. A ``dict`` view implements the same protocol but
+    iterates in insertion order, so it is a reproducible input and is accepted:
+    what disqualifies a container is its order, not the protocol it satisfies.
+    """
+
+    return isinstance(values, AbstractSet) and not isinstance(values, (KeysView, ItemsView))
+
+
+def _unordered_message(subject: str, values: Any) -> str:
+    """Word the refusal of an unordered container, naming the way to fix it.
+
+    One wording for every place a container can enter the model, so the verdict
+    a caller meets does not depend on which field they wrote it in.
+    """
+
+    return (
+        f"{subject} must be a list, not a {type(values).__name__}; an unordered "
+        "set does not produce a reproducible suite, pass sorted(values) or "
+        "list(values) instead"
+    )
+
+
 def _parameter_values(name: Any, values: Any) -> list[Any]:
-    """Take the value list a mapping entry declares, refusing to invent one.
+    """Take the value list a parameter declares, refusing to invent one.
 
     A bare string is iterable, so ``{"env": "prod"}`` would otherwise silently
     become the four-value parameter ``["p", "r", "o", "d"]`` and produce a suite
     that has nothing to do with the model the caller wrote.
-
-    A ``set``/``frozenset`` is rejected for a different reason: its iteration
-    order depends on ``PYTHONHASHSEED`` and insertion history, so the same
-    model would parametrize a different suite on every run, breaking the
-    determinism the rest of the API guarantees.
     """
 
-    if isinstance(values, AbstractSet):
-        raise TypeError(
-            f"values for parameter {name!r} must be a list, not a "
-            f"{type(values).__name__}; an unordered set does not produce a "
-            f"reproducible suite, pass sorted(values) or list(values) instead"
-        )
+    if _is_unordered(values):
+        raise TypeError(_unordered_message(f"values for parameter {name!r}", values))
     if isinstance(values, (str, bytes, Mapping)) or not isinstance(values, Iterable):
         raise TypeError(
             f"values for parameter {name!r} must be a list of values, not "
             f"{type(values).__name__}; write [{values!r}] for a single value"
         )
     return list(values)
+
+
+def _normalize_parameter(parameter: Any) -> Any:
+    """Apply the value rules to one entry of the parameter list form.
+
+    The list form and the mapping form describe the same model, so the entry
+    ``{"name": "os", "values": <container>}`` has to meet the same verdict, in
+    the same words, as the mapping entry ``{"os": <container>}``.
+    """
+
+    if not isinstance(parameter, Mapping):
+        return parameter
+    normalized = dict(parameter)
+    if "values" in normalized:
+        normalized["values"] = _parameter_values(normalized.get("name"), normalized["values"])
+    return normalized
 
 
 def _normalize_parameters(parameters: Any) -> list[dict[str, Any]]:
@@ -104,6 +138,11 @@ def _normalize_parameters(parameters: Any) -> list[dict[str, Any]]:
     ``[{"name": "os", "values": ["win", "mac"]}]``; the mapping form exists
     because it reads better in Python call sites. Mappings preserve insertion
     order, so parameter order stays under the caller's control either way.
+
+    Every entry point that takes parameters — ``generate``, ``extend_tests``,
+    ``estimate_model``, ``analyze_coverage`` and ``parametrize`` through
+    :func:`_build_model` — normalizes them here, so this is where a value
+    container is judged for all of them.
     """
 
     if isinstance(parameters, Mapping):
@@ -115,7 +154,7 @@ def _normalize_parameters(parameters: Any) -> list[dict[str, Any]]:
         raise TypeError(
             "parameters must be a list of parameter objects or a name-to-values mapping"
         )
-    return [dict(p) if isinstance(p, Mapping) else p for p in parameters]
+    return [_normalize_parameter(parameter) for parameter in parameters]
 
 
 def _build_model(model: Mapping[str, Any] | None, fields: Mapping[str, Any]) -> dict[str, Any]:
@@ -171,10 +210,14 @@ def _invoke(args: Sequence[str], stdin_text: str, path_labels: Mapping[str, str]
     process boundary regardless of the ambient locale. Both streams are carried
     out whole: this is the only function that sees the child's stdout, and it
     has no failure branch that can throw it away.
+
+    The child is started through :func:`coverwise.run`, the package's one
+    launcher, so an executable that cannot be located or started is reported
+    identically here and to a caller who runs the CLI directly.
     """
 
-    completed = subprocess.run(
-        [str(native_binary()), *args],
+    completed = run_native(
+        args,
         input=stdin_text,
         capture_output=True,
         text=True,
@@ -206,10 +249,17 @@ def _abnormal_exit(returncode: int) -> str:
 
 
 def _failure(outcome: _Outcome) -> Exception:
-    """Build the exception for a non-zero exit, keeping the report reachable."""
+    """Build the exception for a non-zero exit, keeping the report reachable.
+
+    The whole diagnostic becomes the message, with only the stream's ``error:``
+    prefix removed. A constraint expression may itself contain newlines — the
+    parser accepts them as whitespace — and the diagnostic quotes the expression
+    before giving the reason, so keeping the first line alone would leave the
+    caller with a fragment of their own input and none of the explanation.
+    """
 
     stderr = outcome.stderr.strip()
-    message = stderr.splitlines()[0].removeprefix("error: ") if stderr else "coverwise failed"
+    message = stderr.removeprefix("error: ") if stderr else "coverwise failed"
     code = _ERROR_CODES.get(outcome.returncode)
     if code is None:
         # A crashed or signal-killed executable never classified anything, so
@@ -244,19 +294,41 @@ def _run(
     raise _failure(outcome)
 
 
+def _jsonable(value: Any) -> Any:
+    """Convert or refuse a value ``json`` cannot represent on its own.
+
+    ``json`` calls this for every such value wherever it sits in the payload, so
+    a container written for constraints, seeds or test rows is judged by the
+    same rule as one written for parameter values, in the same words, instead of
+    reaching the caller as a bare serialization error naming no way forward.
+    """
+
+    if _is_unordered(value):
+        raise TypeError(_unordered_message("a model value", value))
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, memoryview)):
+        return list(value)
+    raise TypeError(
+        f"a model value of type {type(value).__name__} is not JSON: {value!r}; "
+        "models are made of strings, numbers, booleans, lists and mappings"
+    )
+
+
 def _dumps(payload: Any) -> str:
     """Serialize a payload for the CLI, rejecting non-JSON values up front.
 
     ``allow_nan=False`` turns a non-finite float (``inf``, ``-inf``, ``nan``)
     into a :class:`ValueError`, which is reported as a :class:`CoverwiseError`
     so callers can catch every model rejection — subprocess-side or not —
-    through the one documented exception type. A :class:`TypeError`, raised
-    for a value ``json`` cannot serialize at all, is left to propagate as-is:
-    it is a Python usage error, not a model the CLI ever gets to see.
+    through the one documented exception type. A value ``json`` cannot
+    serialize at all is a Python usage error rather than a model the CLI ever
+    gets to see, so it stays a :class:`TypeError` — but one raised by
+    :func:`_jsonable`, which says which value and what to write instead.
     """
 
     try:
-        return json.dumps(payload, ensure_ascii=False, allow_nan=False)
+        return json.dumps(payload, ensure_ascii=False, allow_nan=False, default=_jsonable)
     except ValueError as exc:
         raise CoverwiseError(
             _ERROR_CODES[_EXIT_INVALID_INPUT],
@@ -356,7 +428,10 @@ def analyze_coverage(
         "parameters": _normalize_parameters(parameters),
     }
     if constraints is not None:
-        params_payload["constraints"] = list(constraints)
+        # Handed over as written: what a caller's container means is decided in
+        # one place, when the payload is serialized, so an unordered one is
+        # refused here exactly as it is inside a parameter.
+        params_payload["constraints"] = constraints
     return _run_with_side_input(
         ["analyze", "--strength", str(strength), "--tests"],
         tests,
