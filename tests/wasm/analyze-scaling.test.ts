@@ -18,9 +18,22 @@ import { fastestEach } from '../util/timing.js';
 /// compare two measurements from the same run, so they are unaffected by it.
 const MEASUREMENT_TIMEOUT_MS = 120_000;
 
-const PARAM_COUNT = 100;
+/// Analyzing a suite charges the bytes of every row's key and value against one
+/// aggregate budget, so a fixture is bounded by what it spends as well as by
+/// what it measures. The two measurements below want different things from that
+/// budget — one wants its largest suite to be four times its base, the other
+/// wants as many cells as it can get in a single suite — and one pair of
+/// constants cannot serve both. They are therefore sized separately, against
+/// the same builders and the same assertions.
+const PARAM_COUNT = 50;
 const VALUES_PER_PARAM = 4;
-const BASE_ROWS = 2000;
+const BASE_ROWS = 1000;
+
+/// The cross-engine comparison resolves a per-cell cost against the fixed cost
+/// of a call, so cells are the whole of what it needs; it builds one suite and
+/// never multiplies it. Sized to the widest suite the budget admits.
+const CROSS_ENGINE_PARAMS = 200;
+const CROSS_ENGINE_ROWS = 900;
 
 function buildParams(paramCount: number = PARAM_COUNT): Parameter[] {
   return Array.from({ length: paramCount }, (_, i) => ({
@@ -131,7 +144,7 @@ describe('WASM coverage analysis on a large suite', () => {
     expect(wide / narrow).toBeLessThan(3.5);
   });
 
-  it('stays comparable to the pure TypeScript surface as the model grows', {
+  it('stays comparable to the pure TypeScript surface on a wide model', {
     timeout: MEASUREMENT_TIMEOUT_MS,
   }, () => {
     // The documented claim about these two surfaces is that they are comparable
@@ -139,17 +152,23 @@ describe('WASM coverage analysis on a large suite', () => {
     // per-cell conversion cost is one string handed across the JS/WASM boundary
     // per cell — a boundary cost, not an algorithmic one. So this guards the
     // property the default import actually owes its callers: that choosing it
-    // is not dramatically worse. A per-cell cost growing with the model is
-    // caught by the test above instead, which measures one engine against
-    // itself and so does not inherit the noise of comparing two.
+    // is not dramatically worse.
+    //
+    // One model size, and deliberately so. This is a comparison of two engines
+    // at the widest model the file builds, not a reading of how the comparison
+    // moves as the model grows: a trend needs two points on that axis, and the
+    // second point would have to be separated from host load, which a
+    // cross-engine ratio cannot do. Growth in the model is measured by the test
+    // above, which compares one engine against itself at two model sizes and so
+    // does not inherit the noise of comparing two.
     //
     // The bound is deliberately far from the measured ratio. Which surface
     // leads depends on the host: this comparison runs from 0.6 to 0.9 on a
     // quiet developer machine and has been seen above 1.1 on a shared
     // two-core CI runner, so a bound placed near either figure would be
     // reporting the runner's load rather than the code's behaviour.
-    const wideParams = buildParams(PARAM_COUNT * 2);
-    const wideRows = buildRows(BASE_ROWS, PARAM_COUNT * 2);
+    const wideParams = buildParams(CROSS_ENGINE_PARAMS);
+    const wideRows = buildRows(CROSS_ENGINE_ROWS, CROSS_ENGINE_PARAMS);
 
     wasmAnalyzeCoverage(wideParams, wideRows.slice(0, 100), 2);
     pureAnalyzeCoverage(wideParams, wideRows.slice(0, 100), 2);
