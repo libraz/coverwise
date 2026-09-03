@@ -13,6 +13,7 @@
  * not(allOf(when('os').eq('win'), when('browser').eq('safari')))
  */
 
+import { asciiToUpper } from '../src/ts/util/string_util.js';
 import { CoverwiseError } from './types.js';
 
 // --- Value formatting ---
@@ -32,10 +33,69 @@ function isBareIdentifierCharacter(character: string): boolean {
   );
 }
 
+function isAsciiDigit(character: string | undefined): boolean {
+  return character !== undefined && character >= '0' && character <= '9';
+}
+
+/**
+ * Whether the constraint tokenizer reads this text as a number rather than as a
+ * name.
+ *
+ * Mirrors the tokenizer's decimal scan: text the scan consumes end to end
+ * becomes a number token, and a number token is a literal — there is no
+ * parameter it can refer to. Text where the scan stops with name characters
+ * still to come (`3d`, `1.2.3`) is re-read as one identifier and is safe to
+ * emit bare. Signs and a leading dot are accepted here even though the
+ * tokenizer only accepts them after a comparison operator: quoting a name in a
+ * position where it would have been an identifier anyway costs nothing, and
+ * emitting one in a position where it would have been a number costs the
+ * caller their constraint.
+ */
+function scansAsNumber(value: string): boolean {
+  let i = 0;
+  if (value[i] === '+' || value[i] === '-') {
+    i += 1;
+  }
+  let digits = 0;
+  while (isAsciiDigit(value[i])) {
+    digits += 1;
+    i += 1;
+  }
+  if (value[i] === '.') {
+    i += 1;
+    while (isAsciiDigit(value[i])) {
+      digits += 1;
+      i += 1;
+    }
+  }
+  if (digits === 0) {
+    return false;
+  }
+  if (value[i] === 'e' || value[i] === 'E') {
+    const exponentStart = i;
+    i += 1;
+    if (value[i] === '+' || value[i] === '-') {
+      i += 1;
+    }
+    const exponentDigitsStart = i;
+    while (isAsciiDigit(value[i])) {
+      i += 1;
+    }
+    if (i === exponentDigitsStart) {
+      i = exponentStart;
+    }
+  }
+  return i === value.length;
+}
+
 function canEmitBare(value: string, allowGlob: boolean): boolean {
   return (
     value.length > 0 &&
-    !KEYWORDS.has(value.toUpperCase()) &&
+    // The tokenizer classifies keywords by the ASCII fold, so this asks the
+    // question with the same fold. A full-Unicode uppercase answers a different
+    // one — `ıf` and `ﬁ` uppercase into keywords the tokenizer never sees.
+    !KEYWORDS.has(asciiToUpper(value)) &&
+    !scansAsNumber(value) &&
     Array.from(value).every(
       (character) =>
         isBareIdentifierCharacter(character) ||
@@ -77,16 +137,38 @@ function formatValue(value: string | number | boolean): string {
 }
 
 /**
- * Format a relational operand. Numbers are emitted bare; strings are parameter
- * references (the parser resolves a relational RHS string to a parameter name),
- * quoted when they contain whitespace, operators, or other special characters
- * so a name like `end date` round-trips as a single token.
+ * Format a parameter name for a position that is read as a name. Quoted when
+ * the name contains whitespace, operators, or other characters that would not
+ * survive as one bare token, and when it is spelled the way the tokenizer reads
+ * a number. A quoted token is still resolved as a name here, which is what
+ * makes the quoting safe.
  */
-function formatNumericOrParam(value: number | string): string {
+function formatParameterName(name: string): string {
+  return canEmitBare(name, false) ? name : quote(name);
+}
+
+/**
+ * Format a relational operand. A number renders as a literal; a string is a
+ * parameter reference.
+ *
+ * A relational operand is resolved as a name only while it is a bare token — a
+ * quoted one is a value, by the same rule `=` and `!=` follow. A name that
+ * cannot be written bare therefore has no spelling here at all, and is refused
+ * rather than emitted as a comparison the caller did not write: a parameter
+ * named `1` would otherwise become the literal comparison `> 1`, which is
+ * satisfiable, silent, and covers a different suite.
+ */
+function formatRelationalOperand(value: number | string): string {
   if (typeof value === 'number') {
     return formatNumber(value);
   }
-  return canEmitBare(value, false) ? value : quote(value);
+  if (!canEmitBare(value, false)) {
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      `Parameter name '${value}' cannot be a relational operand: only a name written as one bare token is read as a parameter there. Pass a number to compare against a value.`,
+    );
+  }
+  return value;
 }
 
 function formatSetValue(value: string | number | boolean): string {
@@ -251,7 +333,7 @@ class ConditionStartImpl implements ConditionStart {
   constructor(param: string) {
     // Quote the parameter name when it contains whitespace, operators, or other
     // special characters so a name like `end date` round-trips as one token.
-    this.param = formatNumericOrParam(param);
+    this.param = formatParameterName(param);
   }
 
   eq(value: string | number | boolean): Condition {
@@ -268,28 +350,28 @@ class ConditionStartImpl implements ConditionStart {
   gt(value: number | string): Condition {
     return new ConditionImpl({
       kind: 'atom',
-      expression: `${this.param} > ${formatNumericOrParam(value)}`,
+      expression: `${this.param} > ${formatRelationalOperand(value)}`,
     });
   }
 
   gte(value: number | string): Condition {
     return new ConditionImpl({
       kind: 'atom',
-      expression: `${this.param} >= ${formatNumericOrParam(value)}`,
+      expression: `${this.param} >= ${formatRelationalOperand(value)}`,
     });
   }
 
   lt(value: number | string): Condition {
     return new ConditionImpl({
       kind: 'atom',
-      expression: `${this.param} < ${formatNumericOrParam(value)}`,
+      expression: `${this.param} < ${formatRelationalOperand(value)}`,
     });
   }
 
   lte(value: number | string): Condition {
     return new ConditionImpl({
       kind: 'atom',
-      expression: `${this.param} <= ${formatNumericOrParam(value)}`,
+      expression: `${this.param} <= ${formatRelationalOperand(value)}`,
     });
   }
 

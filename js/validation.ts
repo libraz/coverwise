@@ -11,6 +11,8 @@
  * both provide the canonical CoverwiseError factory.
  */
 
+import { boundaryShapeError } from '../src/ts/model/boundary-rules.js';
+import { aggregateBudgetExceeded } from '../src/ts/model/budget.js';
 import {
   MAX_AGGREGATE_STRING_BYTES,
   MAX_CONSTRAINTS,
@@ -19,13 +21,18 @@ import {
   MAX_TESTS,
   MAX_VALUES_PER_PARAMETER,
 } from '../src/ts/model/limits.js';
+import { utf8ByteLength } from '../src/ts/model/utf8.js';
+import { asciiToUpper } from '../src/ts/util/string_util.js';
 import type { GenerateInput } from './types.js';
 import { CoverwiseError } from './types.js';
 
 /**
- * Factory for the error thrown by the numeric scalar validators. The WASM
- * surface passes a plain-`Error` factory; the pure surface passes one that
- * builds a {@link CoverwiseError}. Preserves each surface's historical behavior.
+ * Factory for the error thrown by the numeric scalar validators.
+ *
+ * Both package entry points inject the same thing: a factory building a
+ * {@link CoverwiseError} with code `INVALID_INPUT`. The parameter is not a
+ * difference between the surfaces — it is what lets these helpers be exercised
+ * on their own, and lets an embedder reuse them with an error type of its own.
  */
 export type ScalarErrorFactory = (message: string) => Error;
 
@@ -99,30 +106,56 @@ function isParameterScalar(value: unknown): value is string | number | boolean {
   );
 }
 
-function utf8Bytes(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
+// The budgets are stated in UTF-8 bytes and the model layer measures them with
+// utf8ByteLength, so this module measures with the same function: two
+// measurements of one documented limit are two limits.
+const utf8Bytes = utf8ByteLength;
+
+/**
+ * A running total of the caller strings accepted so far in one call.
+ *
+ * The documented aggregate budget is a limit on the call, not on any one
+ * argument, so every entry point that reads more than one caller-supplied
+ * structure threads a single one of these through all of them.
+ */
+export interface StringBudget {
+  value: number;
 }
 
-function validateStringBudget(value: string, context: string, aggregate: { value: number }): void {
+/** Start a fresh aggregate budget for one public call. */
+export function createStringBudget(): StringBudget {
+  return { value: 0 };
+}
+
+/**
+ * Charge a string, already measured, against the aggregate budget.
+ *
+ * The refusal is quoted rather than written: the budget is one documented
+ * limit, and this reader and the model layer are two places that can be the one
+ * to cross it.
+ */
+function chargeAggregate(bytes: number, aggregate: StringBudget): void {
+  aggregate.value += bytes;
+  if (aggregate.value > MAX_AGGREGATE_STRING_BYTES) {
+    invalid(aggregateBudgetExceeded());
+  }
+}
+
+function validateStringBudget(value: string, context: string, aggregate?: StringBudget): void {
   const bytes = utf8Bytes(value);
   if (bytes > MAX_STRING_BYTES) {
     invalid(`${context} exceeds ${MAX_STRING_BYTES} UTF-8 bytes.`);
   }
-  aggregate.value += bytes;
-  if (aggregate.value > MAX_AGGREGATE_STRING_BYTES) {
-    invalid(`Input strings exceed ${MAX_AGGREGATE_STRING_BYTES} UTF-8 bytes.`);
+  if (aggregate) {
+    chargeAggregate(bytes, aggregate);
   }
 }
 
-function validateAggregateStringBudget(value: unknown): void {
+function validateAggregateStringBudget(value: unknown, aggregate: StringBudget): void {
   const seen = new Set<object>();
-  let bytes = 0;
   const visit = (current: unknown): void => {
     if (typeof current === 'string') {
-      bytes += utf8Bytes(current);
-      if (bytes > MAX_AGGREGATE_STRING_BYTES) {
-        invalid(`Input strings exceed ${MAX_AGGREGATE_STRING_BYTES} UTF-8 bytes.`);
-      }
+      chargeAggregate(utf8Bytes(current), aggregate);
       return;
     }
     if (typeof current !== 'object' || current === null || seen.has(current)) {
@@ -143,7 +176,8 @@ function validateAggregateStringBudget(value: unknown): void {
  * the engine can convert. Whether the range is ordered, whether the endpoints
  * are safe integers, whether the step is one an integer expansion can honor —
  * those are acceptance rules, and they live once in the model layer so the CLI,
- * the WASM binding and this module cannot disagree about them.
+ * the WASM binding and this module cannot disagree about them. The refusals are
+ * quoted from the shared rule module for the same reason.
  */
 function validateBoundary(parameter: Record<string, unknown>, name: string): void {
   const hasBoundary =
@@ -155,7 +189,7 @@ function validateBoundary(parameter: Record<string, unknown>, name: string): voi
   }
 
   if (parameter.type !== 'integer' && parameter.type !== 'float') {
-    invalid(`Invalid boundary type for parameter '${name}'.`);
+    invalid(boundaryShapeError.type(name));
   }
   const range = parameter.range;
   if (
@@ -164,15 +198,24 @@ function validateBoundary(parameter: Record<string, unknown>, name: string): voi
     typeof range[0] !== 'number' ||
     typeof range[1] !== 'number'
   ) {
-    invalid(`Invalid boundary range for parameter '${name}': expected finite [min, max].`);
+    invalid(boundaryShapeError.range(name));
   }
   if (parameter.step !== undefined && typeof parameter.step !== 'number') {
-    invalid(`Invalid boundary step for parameter '${name}': expected a positive finite number.`);
+    invalid(boundaryShapeError.step(name));
   }
 }
 
-/** Validate the complete runtime shape of a parameter array. */
-export function validateParameters(parameters: unknown): void {
+/**
+ * Validate the complete runtime shape of a parameter array.
+ *
+ * @param parameters - The candidate parameter array.
+ * @param aggregate - Budget to charge the model's strings against. An entry
+ *   point that also reads rows passes the one it charges those against, so the
+ *   documented limit applies to the call rather than to each argument. Omitted
+ *   where these strings have already been charged; the per-string checks below
+ *   do not depend on it.
+ */
+export function validateParameters(parameters: unknown, aggregate?: StringBudget): void {
   if (!Array.isArray(parameters)) {
     invalid('Invalid parameters: must be an array.');
   }
@@ -180,7 +223,6 @@ export function validateParameters(parameters: unknown): void {
     invalid(`Invalid parameters: maximum is ${MAX_PARAMETERS}.`);
   }
   const foldedNames = new Set<string>();
-  const aggregate = { value: 0 };
   for (let pi = 0; pi < parameters.length; ++pi) {
     const parameter = parameters[pi];
     if (!isRecord(parameter)) {
@@ -190,7 +232,9 @@ export function validateParameters(parameters: unknown): void {
       invalid('Parameter name must be a non-empty string');
     }
     validateStringBudget(parameter.name, `Parameter name '${parameter.name}'`, aggregate);
-    const foldedName = parameter.name.replace(/[A-Z]/g, (char) => char.toLowerCase());
+    // The same fold the engines apply, so this module and they agree on which
+    // two names are the same name.
+    const foldedName = asciiToUpper(parameter.name);
     if (foldedNames.has(foldedName)) {
       invalid(`Parameter names must not differ only by ASCII case: '${parameter.name}'`);
     }
@@ -246,8 +290,23 @@ export function validateParameters(parameters: unknown): void {
   }
 }
 
-/** Validate that a test-case array contains object rows with scalar values. */
-export function validateTestArray(tests: unknown, field: string): void {
+/**
+ * Validate that a test-case array contains object rows with scalar values.
+ *
+ * A suite is the largest thing a caller submits, so a row's values are charged
+ * against the aggregate budget like every other input string. Its keys are not:
+ * a key is a parameter name, already charged once as a model string, and
+ * charging it again per row would count the same text as many times as the
+ * suite is long — which caps the row count at the budget divided by the model
+ * width rather than at the documented row ceiling.
+ *
+ * @param tests - The candidate row array.
+ * @param field - The argument name to quote in a rejection.
+ * @param aggregate - Budget shared with the other arguments of the same call.
+ *   Omitted where these rows have already been charged: a second budget is a
+ *   second allowance, and one call has one.
+ */
+export function validateTestArray(tests: unknown, field: string, aggregate?: StringBudget): void {
   if (!Array.isArray(tests)) {
     invalid(`Invalid ${field}: must be an array.`);
   }
@@ -266,8 +325,16 @@ export function validateTestArray(tests: unknown, field: string): void {
       if (!isParameterScalar(value)) {
         invalid(`Invalid ${field}[${i}].${name}: expected string, number, or boolean.`);
       }
-      if (typeof value === 'string' && utf8Bytes(value) > MAX_STRING_BYTES) {
-        invalid(`Invalid ${field}[${i}].${name}: string exceeds ${MAX_STRING_BYTES} UTF-8 bytes.`);
+      if (typeof value === 'string') {
+        const bytes = utf8Bytes(value);
+        if (bytes > MAX_STRING_BYTES) {
+          invalid(
+            `Invalid ${field}[${i}].${name}: string exceeds ${MAX_STRING_BYTES} UTF-8 bytes.`,
+          );
+        }
+        if (aggregate) {
+          chargeAggregate(bytes, aggregate);
+        }
       }
     }
   }
@@ -295,6 +362,8 @@ function validateSeedRows(input: Record<string, unknown>): void {
   if (input.seeds === undefined || input.seeds === null) {
     return;
   }
+  // Seeds live inside `input`, so the walk over it has already charged their
+  // text against the call's budget; this call is for their shape.
   validateTestArray(input.seeds, 'seeds');
   const seeds = input.seeds as Array<Record<string, unknown>>;
   const parameters = input.parameters as Array<Record<string, unknown>>;
@@ -337,7 +406,19 @@ function validateSubModels(subModels: unknown): void {
   }
 }
 
-function validateWeights(weights: unknown): void {
+/**
+ * Validate the optional `weights` object.
+ *
+ * A weight is keyed by a parameter name and a value name, and those keys are
+ * the caller's own strings — the only place in the input where text arrives as
+ * a key rather than as a value. The walk that charges the rest of the input
+ * reads values, so it never sees them, and the model layer charges them: they
+ * are charged here so the same model costs the same on every surface.
+ *
+ * @param weights - The candidate weights object.
+ * @param aggregate - Budget for the call the weights belong to.
+ */
+function validateWeights(weights: unknown, aggregate: StringBudget): void {
   if (weights === undefined || weights === null) {
     return;
   }
@@ -345,10 +426,12 @@ function validateWeights(weights: unknown): void {
     invalid('Invalid weights: must be an object.');
   }
   for (const [parameter, valueWeights] of Object.entries(weights)) {
+    validateStringBudget(parameter, 'Weight parameter name', aggregate);
     if (!isRecord(valueWeights)) {
       invalid(`Invalid weights.${parameter}: must be an object.`);
     }
     for (const [value, weight] of Object.entries(valueWeights)) {
+      validateStringBudget(value, 'Weight value name', aggregate);
       if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0) {
         invalid(`Invalid weight for ${parameter}=${value}: must be finite and positive.`);
       }
@@ -361,12 +444,21 @@ function validateWeights(weights: unknown): void {
  *
  * @param input - The generate/extend input to validate.
  * @param makeError - Error factory for the numeric scalar checks.
+ * @param aggregate - Budget shared with arguments that are not part of `input`,
+ *   such as the rows handed to extend. The walk below reaches every string
+ *   inside `input` and charges it there, which is why the checks that follow
+ *   are handed no budget at all: charging the same text twice would halve the
+ *   documented limit for whoever wrote it in the field with two readers.
  */
-export function validateGenerateInput(input: GenerateInput, makeError: ScalarErrorFactory): void {
+export function validateGenerateInput(
+  input: GenerateInput,
+  makeError: ScalarErrorFactory,
+  aggregate: StringBudget = createStringBudget(),
+): void {
   if (!isRecord(input)) {
     invalid('Invalid input: must be an object.');
   }
-  validateAggregateStringBudget(input);
+  validateAggregateStringBudget(input, aggregate);
   validateParameters(input.parameters);
   validateStrength(input.strength, makeError);
   validateMaxTests(input.maxTests, makeError);
@@ -374,7 +466,7 @@ export function validateGenerateInput(input: GenerateInput, makeError: ScalarErr
   validateConstraints(input.constraints);
   validateSeedRows(input);
   validateSubModels(input.subModels);
-  validateWeights(input.weights);
+  validateWeights(input.weights, aggregate);
 }
 
 /** The extend modes currently supported by the engine. */

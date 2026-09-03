@@ -1,129 +1,18 @@
 /// Compile-time contract for the shapes a consumer is documented to be able to
 /// name and build.
 ///
-/// Every named interface that appears in a documented return shape must be
-/// importable by name from both entry points, and the constraint builder must
-/// not offer a chain the grammar cannot parse. `@ts-expect-error` marks the code
-/// that must NOT compile — an unused directive is itself a compile error, so
-/// this file fails in either direction.
+/// Which types each entry point publishes is settled by enumeration in the test
+/// tier, which compares the export sets themselves rather than a list of names
+/// written down somewhere. What is left for a compiler to decide is here: that
+/// the published shapes can be used the way the documentation shows, and that
+/// the constraint builder cannot offer a chain the grammar cannot parse.
+/// `@ts-expect-error` marks the code that must NOT compile — an unused
+/// directive is itself a compile error, so this file fails in either direction.
 
 import { when } from '../../js/constraint.js';
-import type {
-  BoundaryParameter as PureBoundaryParameter,
-  ClassCoverage as PureClassCoverage,
-  Condition as PureCondition,
-  ConditionStart as PureConditionStart,
-  Constraint as PureConstraint,
-  CoverageReport as PureCoverageReport,
-  CoverwiseErrorCode as PureCoverwiseErrorCode,
-  ExtendInput as PureExtendInput,
-  FloatBoundaryParameter as PureFloatBoundaryParameter,
-  GenerateInput as PureGenerateInput,
-  GenerateResult as PureGenerateResult,
-  GenerateStats as PureGenerateStats,
-  IfConstraint as PureIfConstraint,
-  IntegerBoundaryParameter as PureIntegerBoundaryParameter,
-  ModelStats as PureModelStats,
-  NegativeCoverage as PureNegativeCoverage,
-  Parameter as PureParameter,
-  ParameterValue as PureParameterValue,
-  ParamStats as PureParamStats,
-  PlainParameter as PurePlainParameter,
-  SubModel as PureSubModel,
-  Suggestion as PureSuggestion,
-  TestCase as PureTestCase,
-  UncoveredTuple as PureUncoveredTuple,
-  WeightConfig as PureWeightConfig,
-} from '../../js/pure/index.js';
 import { Coverwise as PureCoverwise } from '../../js/pure/index.js';
-import type {
-  BoundaryParameter,
-  ClassCoverage,
-  Condition,
-  ConditionStart,
-  Constraint,
-  CoverageReport,
-  CoverwiseErrorCode,
-  ExtendInput,
-  FloatBoundaryParameter,
-  GenerateInput,
-  GenerateResult,
-  GenerateStats,
-  IfConstraint,
-  IntegerBoundaryParameter,
-  ModelStats,
-  NegativeCoverage,
-  Parameter,
-  ParameterValue,
-  ParamStats,
-  PlainParameter,
-  SubModel,
-  Suggestion,
-  TestCase,
-  UncoveredTuple,
-  WeightConfig,
-} from '../../js/index.js';
+import type { Constraint, GenerateResult, IfConstraint, NegativeCoverage } from '../../js/index.js';
 import { Coverwise as WasmCoverwise } from '../../js/index.js';
-
-// --- Every documented public type is nameable from both entry points ---
-
-declare const wasmTypes: [
-  BoundaryParameter,
-  ClassCoverage,
-  Condition,
-  ConditionStart,
-  Constraint,
-  CoverageReport,
-  CoverwiseErrorCode,
-  ExtendInput,
-  FloatBoundaryParameter,
-  GenerateInput,
-  GenerateResult,
-  GenerateStats,
-  IfConstraint,
-  IntegerBoundaryParameter,
-  ModelStats,
-  NegativeCoverage,
-  Parameter,
-  ParameterValue,
-  ParamStats,
-  PlainParameter,
-  SubModel,
-  Suggestion,
-  TestCase,
-  UncoveredTuple,
-  WeightConfig,
-];
-
-declare const pureTypes: [
-  PureBoundaryParameter,
-  PureClassCoverage,
-  PureCondition,
-  PureConditionStart,
-  PureConstraint,
-  PureCoverageReport,
-  PureCoverwiseErrorCode,
-  PureExtendInput,
-  PureFloatBoundaryParameter,
-  PureGenerateInput,
-  PureGenerateResult,
-  PureGenerateStats,
-  PureIfConstraint,
-  PureIntegerBoundaryParameter,
-  PureModelStats,
-  PureNegativeCoverage,
-  PureParameter,
-  PureParameterValue,
-  PureParamStats,
-  PurePlainParameter,
-  PureSubModel,
-  PureSuggestion,
-  PureTestCase,
-  PureUncoveredTuple,
-  PureWeightConfig,
-];
-
-void [wasmTypes, pureTypes];
 
 // A typed helper over the negative-testing report is the use case that requires
 // NegativeCoverage to be exported rather than reconstructed by hand.

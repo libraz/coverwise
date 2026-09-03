@@ -439,6 +439,52 @@ describe('numeric edge cases', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Parameter names spelled like numbers
+//
+// A bare token the tokenizer reads end to end as a decimal is a numeric
+// literal, and a literal refers to no parameter. Only a `number` argument may
+// render as one: a string is a name, and a name that would be misread is
+// quoted so it arrives as a single identifier.
+// ---------------------------------------------------------------------------
+
+describe('names the tokenizer would read as numbers', () => {
+  it('quotes an all-digit name on the left of a comparison', () => {
+    expect(when('2024').eq('a').toString()).toBe('"2024" = "a"');
+  });
+
+  // A relational operand is read as a name only while it is bare, so there is
+  // no spelling of `1` that refers to the parameter. Emitting the quoted form
+  // would compare against the number instead — satisfiable, silent, and a
+  // different suite.
+  it('refuses an all-digit name as a relational operand', () => {
+    expect(() => when('v').gt('1')).toThrow(CoverwiseError);
+    expect(() => when('v').gt('1')).toThrow("Parameter name '1'");
+  });
+
+  it('leaves a number argument bare', () => {
+    expect(when('v').gt(1).toString()).toBe('v > 1');
+  });
+
+  it('quotes the spellings the decimal scan accepts whole', () => {
+    for (const name of ['0', '-1', '+1', '3.14', '.5', '1e5', '1E-5']) {
+      expect(when(name).eq('a').toString()).toBe(`"${name}" = "a"`);
+    }
+  });
+
+  it('leaves a name the scan stops inside bare', () => {
+    // The tokenizer re-reads these as one identifier, so a bare token already
+    // arrives as the name the caller wrote.
+    for (const name of ['3d', '1.2.3', '1e', '2024-Q1']) {
+      expect(when(name).eq('a').toString()).toBe(`${name} = "a"`);
+    }
+  });
+
+  it('quotes an all-digit member of an IN set', () => {
+    expect(when('year').in('2024', 'draft').toString()).toBe('year IN {"2024", draft}');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Complex composition
 // ---------------------------------------------------------------------------
 
@@ -671,17 +717,34 @@ describe('builder output parses on the TS parser', () => {
     expect(result.constraint?.evaluate([2])).toBe(ConstraintResult.False);
   });
 
-  it('relational comparison between parameter names containing a space round-trips', () => {
+  it('relational comparison between bare parameter names round-trips', () => {
     const params = [
-      new Parameter('start date', ['1', '5', '10']),
-      new Parameter('end date', ['1', '5', '10']),
+      new Parameter('start_date', ['1', '5', '10']),
+      new Parameter('end_date', ['1', '5', '10']),
     ];
-    const expr = when('start date').lt('end date').toString();
-    expect(expr).toBe('"start date" < "end date"');
+    const expr = when('start_date').lt('end_date').toString();
+    expect(expr).toBe('start_date < end_date');
     const result = parse(expr, params);
     expect(result.error.code).toBe(0);
     expect(result.constraint?.evaluate([0, 2])).toBe(ConstraintResult.True);
     expect(result.constraint?.evaluate([2, 0])).toBe(ConstraintResult.False);
+  });
+
+  // A name that needs quoting has no relational spelling: the parser reads a
+  // quoted operand as a value. The builder says so instead of emitting an
+  // expression that means something else.
+  it('refuses a relational operand whose name cannot be written bare', () => {
+    expect(() => when('start date').lt('end date')).toThrow(CoverwiseError);
+  });
+
+  it('a name spelled like a number round-trips as that parameter', () => {
+    const params = [new Parameter('2024', ['a', 'b']), new Parameter('mode', ['x', 'y'])];
+    const expr = when('2024').eq('a').toString();
+    expect(expr).toBe('"2024" = "a"');
+    const result = parse(expr, params);
+    expect(result.error.code).toBe(0);
+    expect(result.constraint?.evaluate([0, 0])).toBe(ConstraintResult.True);
+    expect(result.constraint?.evaluate([1, 0])).toBe(ConstraintResult.False);
   });
 
   it('IF/THEN/ELSE round-trips', () => {
@@ -844,6 +907,42 @@ describe('builder output through generate()', () => {
       for (const test of result.tests) {
         expect(test.os).toBe('win');
       }
+    });
+
+    // A model can name a parameter after an API version, a year, or an HTTP
+    // status. The chain the type system accepts has to constrain that
+    // parameter, not compare a number the caller never wrote.
+    it(`${surface.name} constrains a parameter whose name is spelled like a number`, () => {
+      const result = surface.generate({
+        parameters: [
+          { name: '2024', values: ['a', 'b'] },
+          { name: 'mode', values: ['x', 'y'] },
+        ],
+        constraints: [when('2024').eq('a').toString()],
+        seed: 1,
+      }) as { tests: Array<Record<string, unknown>> };
+      expect(result.tests.length).toBeGreaterThan(0);
+      for (const test of result.tests) {
+        expect(test['2024']).toBe('a');
+      }
+    });
+
+    it(`${surface.name} reports a numeric name that no parameter bears`, () => {
+      let thrown: unknown;
+      try {
+        surface.generate({
+          parameters: [
+            { name: 'mode', values: ['x', 'y'] },
+            { name: 'tier', values: ['free', 'paid'] },
+          ],
+          constraints: [when('2024').eq('a').toString()],
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(CoverwiseError);
+      expect((thrown as CoverwiseError).code).toBe('CONSTRAINT_ERROR');
+      expect((thrown as CoverwiseError).message).toContain('2024');
     });
   }
 });

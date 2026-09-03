@@ -5,6 +5,7 @@
 /// the same bad scalar inputs after de-duplication.
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { aggregateBudgetExceeded } from '../src/ts/model/budget.js';
 import { generate, init } from './index.js';
 import { generate as pureGenerate } from './pure/index.js';
 import type { GenerateInput } from './types.js';
@@ -103,7 +104,7 @@ describe('shared validation module', () => {
         ],
         constraints: Array.from({ length: 15 }, () => oversized),
       } as unknown as GenerateInput;
-      expect(() => validateGenerateInput(input, makeError)).toThrow(/Input strings exceed/);
+      expect(() => validateGenerateInput(input, makeError)).toThrow(aggregateBudgetExceeded());
     });
   });
 });
@@ -123,10 +124,22 @@ describe('surface validation parity', () => {
     { label: 'seed', input: { parameters: okParams, seed: -1 }, match: /Invalid seed/ },
   ];
 
+  // The scalar validators take their error type from a factory the entry point
+  // injects, which is the one place the two surfaces could report the same
+  // refusal as different things. Both inject the same one, so a caller sees a
+  // CoverwiseError carrying INVALID_INPUT either way, and the injection point
+  // is a seam for tests and embedders rather than a difference to branch on.
   for (const { label, input, match } of badScalarCases) {
-    it(`both surfaces reject invalid ${label}`, () => {
-      expect(() => generate(input)).toThrow(match);
-      expect(() => pureGenerate(input)).toThrow(match);
+    it(`both surfaces reject invalid ${label} as the same error`, () => {
+      const thrown = [capture(() => generate(input)), capture(() => pureGenerate(input))];
+      for (const [index, error] of thrown.entries()) {
+        const surface = index === 0 ? 'wasm' : 'pure';
+        expect(error, surface).toBeInstanceOf(CoverwiseError);
+        expect((error as CoverwiseError).code, surface).toBe('INVALID_INPUT');
+        expect((error as CoverwiseError).message, surface).toMatch(match);
+      }
+      expect((thrown[0] as CoverwiseError).message).toBe((thrown[1] as CoverwiseError).message);
+      expect((thrown[0] as CoverwiseError).detail).toBe((thrown[1] as CoverwiseError).detail);
     });
   }
 });

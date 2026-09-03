@@ -41,6 +41,8 @@ import {
 } from '../../src/ts/core/generator.js';
 import type { ConstraintNode } from '../../src/ts/model/constraint-ast.js';
 import { annotateConstraintError, parseConstraint } from '../../src/ts/model/constraint-parser.js';
+import { ErrorCode, type ErrorInfo } from '../../src/ts/model/error.js';
+import { validateGenerateOptions } from '../../src/ts/model/generate-options.js';
 import { validateCoverage as internalValidateCoverage } from '../../src/ts/validator/coverage-validator.js';
 import type {
   CoverageReport,
@@ -51,8 +53,10 @@ import type {
   Parameter,
   TestCase,
 } from '../types.js';
-import { CoverwiseError, errorCodeFromNumber } from '../types.js';
+import { CoverwiseError } from '../types.js';
 import {
+  createStringBudget,
+  type StringBudget,
   validateConstraints,
   validateExtendMode,
   validateGenerateInput,
@@ -62,10 +66,12 @@ import {
 } from '../validation.js';
 
 import {
+  toInternalModelOptions,
   toInternalOptions,
   toInternalParams,
   toInternalTestCase,
   toPublicCoverageReport,
+  toPublicError,
   toPublicModelStats,
   toPublicResult,
 } from './adapter.js';
@@ -77,20 +83,16 @@ import {
 // the shared validators.
 const pureScalarError = (message: string): Error => new CoverwiseError('INVALID_INPUT', message);
 
-function validateInput(input: GenerateInput): void {
-  validateGenerateInput(input, pureScalarError);
+function validateInput(input: GenerateInput, budget?: StringBudget): void {
+  validateGenerateInput(input, pureScalarError, budget);
 }
 
 /** Throw a CoverwiseError when the internal engine reports a structured error. */
-function throwOnResultError(error: { code: number; message: string; detail: string }): void {
-  if (error.code === 0) {
+function throwOnResultError(error: ErrorInfo): void {
+  if (error.code === ErrorCode.Ok) {
     return;
   }
-  throw new CoverwiseError(
-    errorCodeFromNumber(error.code),
-    error.message,
-    error.detail || undefined,
-  );
+  throw toPublicError(error);
 }
 
 // --- Core API ---
@@ -140,26 +142,35 @@ export function analyzeCoverage(
   strength?: number,
   constraints?: string[],
 ): CoverageReport {
-  validateParameters(parameters);
-  validateTestArray(tests, 'tests');
+  const budget = createStringBudget();
+  validateParameters(parameters, budget);
+  validateTestArray(tests, 'tests', budget);
   validateConstraints(constraints);
   const s = validateStrength(strength, pureScalarError);
   const params = toInternalParams(parameters);
   const internalTests = tests.map((tc) => toInternalTestCase(tc, params));
+
+  // The model reaching the validator has been through the same acceptance gate
+  // as the one reaching the generator — the documented budgets are limits on
+  // the input, not on which function received it. The requested strength is
+  // deliberately not submitted: see toInternalModelOptions.
+  throwOnResultError(validateGenerateOptions(toInternalModelOptions(params, constraints ?? [])));
 
   // Parse optional constraint expressions.
   const parsedConstraints: ConstraintNode[] = [];
   if (constraints && constraints.length > 0) {
     for (const expr of constraints) {
       const parseResult = parseConstraint(expr, params);
-      if (parseResult.error.code !== 0 || !parseResult.constraint) {
-        // Keep the structured detail separate so the public error shape matches
-        // the WASM surface and callers do not have to parse display text.
+      if (parseResult.error.code !== ErrorCode.Ok || !parseResult.constraint) {
         const annotated = annotateConstraintError(expr, parseResult.error);
-        throw new CoverwiseError(
-          annotated.code !== 0 ? errorCodeFromNumber(annotated.code) : 'CONSTRAINT_ERROR',
-          annotated.message,
-          annotated.detail || undefined,
+        // A parse that failed without classifying itself is still a constraint
+        // failure; that is the one code decided here, and only because the
+        // engine reported none. Everything else crosses through the single
+        // conversion, which keeps code, message and detail as they arrived.
+        throw toPublicError(
+          annotated.code === ErrorCode.Ok
+            ? { ...annotated, code: ErrorCode.ConstraintError }
+            : annotated,
         );
       }
       parsedConstraints.push(parseResult.constraint);
@@ -183,8 +194,9 @@ export function analyzeCoverage(
  * Only "strict" mode is supported (existing tests are kept as-is).
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
-  validateTestArray(existing, 'existing');
-  validateInput(input);
+  const budget = createStringBudget();
+  validateTestArray(existing, 'existing', budget);
+  validateInput(input, budget);
   validateExtendMode(input.mode);
   const params = toInternalParams(input.parameters);
   const opts = toInternalOptions(input, params);

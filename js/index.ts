@@ -48,6 +48,8 @@ import type {
 } from './types.js';
 import { CoverwiseError, errorCodeFromNumber } from './types.js';
 import {
+  createStringBudget,
+  type StringBudget,
   validateConstraints,
   validateExtendMode,
   validateGenerateInput,
@@ -125,8 +127,8 @@ function getModule(): WasmModule {
 
 const wasmScalarError = (message: string): Error => new CoverwiseError('INVALID_INPUT', message);
 
-function validateInput(input: GenerateInput): void {
-  validateGenerateInput(input, wasmScalarError);
+function validateInput(input: GenerateInput, budget?: StringBudget): void {
+  validateGenerateInput(input, wasmScalarError, budget);
 }
 
 // --- Result Checking ---
@@ -191,8 +193,9 @@ export function analyzeCoverage(
   strength?: number,
   constraints?: string[],
 ): CoverageReport {
-  validateParameters(parameters);
-  validateTestArray(tests, 'tests');
+  const budget = createStringBudget();
+  validateParameters(parameters, budget);
+  validateTestArray(tests, 'tests', budget);
   validateConstraints(constraints);
   const s = validateStrength(strength, wasmScalarError);
   const mod = getModule();
@@ -218,8 +221,9 @@ export function analyzeCoverage(
  * Only "strict" mode is supported (existing tests are kept as-is).
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
-  validateTestArray(existing, 'existing');
-  validateInput(input);
+  const budget = createStringBudget();
+  validateTestArray(existing, 'existing', budget);
+  validateInput(input, budget);
   validateExtendMode(input.mode);
   const mod = getModule();
   const result = checkResult<GenerateResult>(mod.extendTests(existing, input));

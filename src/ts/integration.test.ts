@@ -5,6 +5,10 @@
 /// The adapter functions below bridge these representations.
 
 import { describe, expect, it } from 'vitest';
+import {
+  COSTLY_REPRESENTATIVE_EXPRESSION,
+  representativeOrderParameters,
+} from '../../tests/util/class-tuple-fixture.js';
 import { estimateModel, extend, generate } from './core/generator.js';
 import { ErrorCode } from './model/error.js';
 import {
@@ -947,42 +951,11 @@ describe('mixed type parameter values', () => {
 // directly instead of going through tsGenerate.
 // ---------------------------------------------------------------------------
 
-/**
- * Expression whose only cheap witnesses are gate="open" and pick="cheap". With
- * both fixed the other way it stays undecided until "relief" is assigned, and
- * "none" — its only satisfying value — is invalid, so proving the branch
- * unsatisfiable costs more than the search budget allows. Every filler
- * parameter has more valid values than "relief", so a search ordering
- * parameters by ascending domain size settles the branch immediately while one
- * walking parameters in declaration order does not.
- */
-const COSTLY_REPRESENTATIVE_EXPRESSION = 'gate="open" OR pick="cheap" OR relief="none"';
-
-/**
- * Build a model whose "same" class holds one cheap and one costly
- * representative. `cheapFirst` places the cheap representative at value index 0
- * when true and at value index 1 when false; the class tuple is feasible either
- * way, so both orders must produce the same verdict.
- */
-function representativeOrderParameters(cheapFirst: boolean): GenerateOptions['parameters'] {
-  return [
-    {
-      name: 'gate',
-      values: ['open', 'shut'],
-      equivalenceClasses: ['open_class', 'shut_class'],
-    },
-    {
-      name: 'pick',
-      values: cheapFirst ? ['cheap', 'costly'] : ['costly', 'cheap'],
-      equivalenceClasses: ['same', 'same'],
-    },
-    ...Array.from({ length: 14 }, (_, index) => ({
-      name: `f${index}`,
-      values: ['a', 'b', 'c'],
-    })),
-    { name: 'relief', values: ['r0', 'r1', 'none'], invalid: [false, false, true] },
-  ];
-}
+// The model that discriminates the representative-order hazard is shared with
+// the validator-layer test rather than copied: what makes it discriminating is
+// a balance between the constraint expression, the value counts and the filler
+// domain sizes, and a copy can be tuned on one side while the other keeps
+// testing a model that no longer separates anything.
 
 describe('class tuple representatives', () => {
   it('completes generation when a costly representative comes first', () => {
@@ -1003,5 +976,69 @@ describe('class tuple representatives', () => {
 
     expect(totals[0]).toBe(totals[1]);
     expect(totals[0]).toBe(2);
+  });
+});
+
+/** A model of uniform parameters, optionally labelled with equivalence classes. */
+function classCostModel(
+  parameterCount: number,
+  valueCount: number,
+  classCount: number,
+  withClasses: boolean,
+): GenerateOptions['parameters'] {
+  return Array.from({ length: parameterCount }, (_unused, index) => {
+    const values = Array.from({ length: valueCount }, (_v, value) => `v${value}`);
+    const equivalenceClasses = values.map((_v, value) => `c${value % classCount}`);
+    return withClasses
+      ? { name: `p${index}`, values, equivalenceClasses }
+      : { name: `p${index}`, values };
+  });
+}
+
+describe('declaring equivalence classes', () => {
+  it('covers every class tuple without changing the suite', () => {
+    const parameterCount = 24;
+    const valueCount = 12;
+    const classCount = 4;
+    const shared = { strength: 2, seed: 42 };
+
+    const classified = generate(
+      createGenerateOptions({
+        parameters: classCostModel(parameterCount, valueCount, classCount, true),
+        ...shared,
+      }),
+    );
+    expect(classified.error.code).toBe(ErrorCode.Ok);
+    expect(classified.classCoverage).toBeDefined();
+
+    // C(24, 2) parameter pairs, each contributing classCount^2 class tuples, and
+    // a pairwise suite over 12 values per parameter covers every one of them.
+    const expectedClassTuples =
+      ((parameterCount * (parameterCount - 1)) / 2) * classCount * classCount;
+    expect(classified.classCoverage?.totalClassTuples).toBe(expectedClassTuples);
+    expect(classified.classCoverage?.coveredClassTuples).toBe(expectedClassTuples);
+    expect(classified.classCoverage?.classCoverageRatio).toBe(1.0);
+
+    // Classes must not change the suite itself. Nothing on the generation or
+    // scoring path reads them — they are supplied only to the after-the-fact
+    // annotation — so the same parameters, strength and seed have to produce the
+    // same rows in the same order, not merely as many of them. Comparing counts
+    // alone would keep passing if generation started to branch on a declared
+    // class and returned a different suite of the same size.
+    const plain = generate(
+      createGenerateOptions({
+        parameters: classCostModel(parameterCount, valueCount, classCount, false),
+        ...shared,
+      }),
+    );
+    expect(plain.error.code).toBe(ErrorCode.Ok);
+    expect(plain.classCoverage).toBeUndefined();
+    expect(classified.tests).toHaveLength(plain.tests.length);
+    plain.tests.forEach((row, index) => {
+      expect({ row: index, values: classified.tests[index].values }).toEqual({
+        row: index,
+        values: row.values,
+      });
+    });
   });
 });

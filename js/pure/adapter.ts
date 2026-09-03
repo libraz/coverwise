@@ -1,7 +1,8 @@
 /// Adapter between public API types and internal TS engine types.
 
 import { type BoundaryConfig, BoundaryType } from '../../src/ts/model/boundary.js';
-import { ErrorCode } from '../../src/ts/model/error.js';
+import { boundaryShapeError, DEFAULT_BOUNDARY_STEP } from '../../src/ts/model/boundary-rules.js';
+import { ErrorCode, type ErrorInfo } from '../../src/ts/model/error.js';
 import type { ModelStats as InternalModelStats } from '../../src/ts/model/generate-options.js';
 import {
   createGenerateOptions,
@@ -31,7 +32,7 @@ import type {
   TestCase as PublicTestCase,
   UncoveredTuple as PublicUncoveredTuple,
 } from '../types.js';
-import { CoverwiseError } from '../types.js';
+import { CoverwiseError, errorCodeFromNumber } from '../types.js';
 
 /**
  * Convert a JS value (string, number, or boolean) to a string representation.
@@ -52,6 +53,25 @@ function valueToString(v: string | number | boolean): string {
   }
   // number — Number.prototype.toString() is the canonical formatting.
   return v.toString();
+}
+
+/**
+ * Convert an internal ErrorInfo into the public error type.
+ *
+ * The one place a pure-surface failure becomes public, and it carries all three
+ * of what the engine reported: the code as the engine classified it, and the
+ * message and detail as two fields rather than one string. Naming a code here
+ * instead of mapping the one that arrived would relabel a failure the caller is
+ * meant to branch on, and joining the halves would decide how the failure reads
+ * — that belongs to whoever renders it, which is why the WASM surface hands the
+ * same three across unchanged.
+ */
+export function toPublicError(error: ErrorInfo): CoverwiseError {
+  return new CoverwiseError(
+    errorCodeFromNumber(error.code),
+    error.message,
+    error.detail || undefined,
+  );
 }
 
 /**
@@ -142,7 +162,7 @@ export function toInternalParams(params: PublicParameter[]): InternalParameter[]
   // on the values it keeps survive.
   const expansion = expandBoundaries(result, boundaryConfigs);
   if (expansion.error.code !== ErrorCode.Ok) {
-    throw new CoverwiseError('INVALID_INPUT', expansion.error.message);
+    throw toPublicError(expansion.error);
   }
 
   // Semantic checks shared with the WASM/CLI surfaces (duplicate names/values,
@@ -199,6 +219,43 @@ export function toInternalTestCase(
 }
 
 /**
+ * Convert expanded internal parameters into GenerateOptions entries.
+ *
+ * Aliases and equivalence classes are threaded onto the entries so the engine
+ * (which rebuilds Parameter objects from opts.parameters) honors them in
+ * constraint resolution and class coverage.
+ */
+function toOptionParameters(params: InternalParameter[]): InternalGenerateOptions['parameters'] {
+  return params.map((p) => ({
+    name: p.name,
+    values: p.values,
+    ...(p.hasInvalidValues ? { invalid: p.invalid } : {}),
+    ...(p.hasAliases ? { aliases: p.allAliases } : {}),
+    ...(p.hasEquivalenceClasses ? { equivalenceClasses: p.equivalenceClasses } : {}),
+  }));
+}
+
+/**
+ * Build the options that submit a model — parameters and constraints, no suite
+ * — to the acceptance gate.
+ *
+ * The analysis strength is not a property of the model: a suite may be analyzed
+ * at a strength above the parameter count, where the tuple universe is simply
+ * empty. Strength 1 therefore stands in here so the gate judges the model
+ * alone, and the caller's strength goes to the validator instead.
+ */
+export function toInternalModelOptions(
+  params: InternalParameter[],
+  constraints: string[],
+): InternalGenerateOptions {
+  return createGenerateOptions({
+    parameters: toOptionParameters(params),
+    constraintExpressions: constraints,
+    strength: 1,
+  });
+}
+
+/**
  * Convert a full GenerateInput to internal GenerateOptions.
  */
 export function toInternalOptions(
@@ -233,18 +290,10 @@ export function toInternalOptions(
   const seeds = (input.seeds ?? []).map((tc) => toInternalTestCase(tc, params, false));
 
   // Boundary expansion is already applied in toInternalParams, so `params` is
-  // the final value space. Aliases/equivalence classes are threaded onto the
-  // options' parameter entries so the engine (which rebuilds Parameter objects
-  // from opts.parameters) honors them in constraint resolution and class
-  // coverage. boundaryConfigs is intentionally left empty (no double-expansion).
+  // the final value space. boundaryConfigs is intentionally left empty (no
+  // double-expansion).
   return createGenerateOptions({
-    parameters: params.map((p) => ({
-      name: p.name,
-      values: p.values,
-      ...(p.hasInvalidValues ? { invalid: p.invalid } : {}),
-      ...(p.hasAliases ? { aliases: p.allAliases } : {}),
-      ...(p.hasEquivalenceClasses ? { equivalenceClasses: p.equivalenceClasses } : {}),
-    })),
+    parameters: toOptionParameters(params),
     constraintExpressions: input.constraints ?? [],
     strength: input.strength ?? 2,
     seed: input.seed ?? 0,
@@ -259,14 +308,21 @@ export function toInternalOptions(
  * Derive a BoundaryConfig from a public parameter object, or null when the
  * parameter carries no boundary fields at all.
  *
- * A parameter opts in by carrying any of `type` / `range` / `step`; having
- * opted in it must supply a `type` of 'integer' or 'float' and a 2-element
- * numeric `range` ([min, max]), with an optional numeric `step`. A malformed
- * shape is an error rather than an opt-out — degrading to 'no expansion' would
- * generate over a value space the caller never described. `step` is carried
- * through for both types, including integer, where the acceptance rules reject
- * anything other than 1. Mirrors the WASM ParseBoundaryConfigForParam and the
- * CLI's ParseBoundaryConfigs so every surface expands the same value set.
+ * Shape only, on every exit: whether the JS value can be converted into a
+ * BoundaryConfig at all. A parameter opts in by carrying any of `type` /
+ * `range` / `step`; having opted in it must supply a `type` of 'integer' or
+ * 'float' and a 2-element numeric `range` ([min, max]), with an optional
+ * numeric `step`. A malformed shape is an error rather than an opt-out —
+ * degrading to 'no expansion' would generate over a value space the caller
+ * never described.
+ *
+ * Whether the range is ordered and finite, whether the step is positive or one
+ * an integer expansion can honor, whether the endpoints are safe integers, and
+ * whether the six generated values are finite are not decided here: those are
+ * acceptance rules and validateBoundaryConfigs in the model layer is the only
+ * thing that applies them. Repeating one of them here would let this surface
+ * accept or reject models the WASM binding and the CLI do not. `step` is
+ * therefore carried through unjudged for both types, including integer.
  */
 function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
   // Public TypeScript callers can only construct the union in `types.ts`, but
@@ -275,53 +331,28 @@ function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
   if (raw.type === undefined && raw.range === undefined && raw.step === undefined) {
     return null;
   }
-  const type = raw.type;
-  if (type !== 'integer' && type !== 'float') {
-    throw new CoverwiseError('INVALID_INPUT', `Invalid boundary type for parameter '${p.name}'`);
+  if (raw.type !== 'integer' && raw.type !== 'float') {
+    throw new CoverwiseError('INVALID_INPUT', boundaryShapeError.type(p.name));
   }
   const range = raw.range;
   if (
     !Array.isArray(range) ||
     range.length !== 2 ||
     typeof range[0] !== 'number' ||
-    typeof range[1] !== 'number' ||
-    !Number.isFinite(range[0]) ||
-    !Number.isFinite(range[1]) ||
-    range[0] > range[1]
+    typeof range[1] !== 'number'
   ) {
-    throw new CoverwiseError(
-      'INVALID_INPUT',
-      `Boundary range must be a finite ordered [min, max] pair for parameter '${p.name}'`,
-    );
+    throw new CoverwiseError('INVALID_INPUT', boundaryShapeError.range(p.name));
   }
-  const step = raw.step ?? 1.0;
-  if (typeof step !== 'number' || !Number.isFinite(step) || step <= 0) {
-    throw new CoverwiseError(
-      'INVALID_INPUT',
-      `Boundary step must be finite and positive for parameter '${p.name}'`,
-    );
+  const step = raw.step ?? DEFAULT_BOUNDARY_STEP;
+  if (typeof step !== 'number') {
+    throw new CoverwiseError('INVALID_INPUT', boundaryShapeError.step(p.name));
   }
-  if (type === 'integer') {
-    if (
-      !Number.isSafeInteger(range[0]) ||
-      !Number.isSafeInteger(range[1]) ||
-      range[0] <= Number.MIN_SAFE_INTEGER ||
-      range[1] >= Number.MAX_SAFE_INTEGER
-    ) {
-      throw new CoverwiseError(
-        'INVALID_INPUT',
-        `Integer boundary endpoints must be safe integers allowing +/-1 for '${p.name}'`,
-      );
-    }
-    return { type: BoundaryType.Integer, minValue: range[0], maxValue: range[1], step };
-  }
-  if (!Number.isFinite(range[0] - step) || !Number.isFinite(range[1] + step)) {
-    throw new CoverwiseError(
-      'INVALID_INPUT',
-      `Boundary expansion must produce finite values for parameter '${p.name}'`,
-    );
-  }
-  return { type: BoundaryType.Float, minValue: range[0], maxValue: range[1], step };
+  return {
+    type: raw.type === 'integer' ? BoundaryType.Integer : BoundaryType.Float,
+    minValue: range[0],
+    maxValue: range[1],
+    step,
+  };
 }
 
 /**

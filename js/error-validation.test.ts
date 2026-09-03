@@ -6,6 +6,7 @@
 /// malformed parameter abort the WASM module.
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { ERROR_CODES } from '../tests/type/public-vocabulary.js';
 import { analyzeCoverage, CoverwiseError, extendTests, generate, init } from './index.js';
 import {
   analyzeCoverage as pureAnalyzeCoverage,
@@ -106,6 +107,95 @@ describe('error shape and input validation', () => {
       expect(wasmErr.code).toBe(pureErr.code);
       expect(wasmErr.code).toBe('INVALID_INPUT');
     });
+  });
+
+  // --- The published code vocabulary, covered member by member ---
+
+  /// A documented code is either something a caller can actually observe, in
+  /// which case an input has to demonstrate it on both surfaces, or something
+  /// no shipped surface produces, in which case the reason is stated. What is
+  /// not allowed is a code nobody has decided about: the vocabulary is read
+  /// from the published union, so a code added to it lands here as a failure.
+  type CodeDriver = { input: GenerateInput } | { notThrown: string };
+
+  const codeDrivers: Record<string, CodeDriver> = {
+    CONSTRAINT_ERROR: {
+      input: { parameters: okParams, constraints: ['IF nope = mac THEN browser != ie'] },
+    },
+    INVALID_INPUT: {
+      input: { parameters: [{ name: 'os', values: ['win', 'win'] }] },
+    },
+    TUPLE_EXPLOSION: {
+      // The tuple universe is counted before it is built, so a model this size
+      // is refused rather than enumerated.
+      input: {
+        parameters: Array.from({ length: 10 }, (_, p) => ({
+          name: `p${p}`,
+          values: Array.from({ length: 100 }, (_, v) => `v${v}`),
+        })),
+        strength: 5,
+        seed: 1,
+      },
+    },
+    INSUFFICIENT_COVERAGE: {
+      notThrown:
+        'a coverage shortfall is reported in the result, as a coverage ratio below 1 with the ' +
+        'uncovered tuples that explain it; the code exists for the command-line exit status',
+    },
+  };
+
+  /// A failure carries its message and its detail as two fields, and the WASM
+  /// boundary has to hand both across as fields. Rendering them into one string
+  /// on the way out would read as harmless — the text a caller prints is the
+  /// same — while leaving `detail` empty on one surface and populated on the
+  /// other, and folding the detail into `message` makes the two messages differ
+  /// too. Asserted against a rule that really does carry a detail, since a
+  /// producer with an empty one cannot tell the two behaviours apart.
+  it('hands both halves of a detailed failure across as separate fields', () => {
+    // Two parameters and a strength above that count: accepted as a number by
+    // the shared shape check, refused by the rule that reads both together.
+    const input = { parameters: okParams, strength: 5 } as GenerateInput;
+
+    const wasmErr = capture(() => generate(input)) as CoverwiseError;
+    const pureErr = capture(() => pureGenerate(input)) as CoverwiseError;
+
+    expect(wasmErr.detail, 'the chosen rule must carry a detail').toBeTruthy();
+    expect(wasmErr.message).not.toContain(wasmErr.detail as string);
+    expect({
+      code: pureErr.code,
+      message: pureErr.message,
+      detail: pureErr.detail,
+    }).toEqual({ code: wasmErr.code, message: wasmErr.message, detail: wasmErr.detail });
+  });
+
+  describe('published error codes', () => {
+    it('decides about every code a caller can branch on', () => {
+      expect(Object.keys(codeDrivers).sort()).toEqual(Object.keys(ERROR_CODES).sort());
+    });
+
+    for (const [code, driver] of Object.entries(codeDrivers)) {
+      if (!('input' in driver)) {
+        it.skip(`${code} is not thrown by either surface: ${driver.notThrown}`, () => {});
+        continue;
+      }
+
+      it(`both surfaces report ${code} for the same input`, () => {
+        const wasmErr = capture(() => generate(driver.input));
+        const pureErr = capture(() => pureGenerate(driver.input));
+
+        expect(wasmErr).toBeInstanceOf(CoverwiseError);
+        expect(pureErr).toBeInstanceOf(CoverwiseError);
+        expect((wasmErr as CoverwiseError).code).toBe(code);
+        // Compared as whole objects: a caller reading `message` or `detail`
+        // after branching on `code` must not find them surface-dependent.
+        const shapeOf = (error: unknown) => ({
+          code: (error as CoverwiseError).code,
+          message: (error as CoverwiseError).message,
+          detail: (error as CoverwiseError).detail,
+        });
+        expect(shapeOf(pureErr)).toEqual(shapeOf(wasmErr));
+      });
+    }
   });
 
   // --- Hardened input validation ---

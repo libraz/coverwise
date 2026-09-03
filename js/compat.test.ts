@@ -41,6 +41,14 @@ import {
   toPublicTestCase,
 } from './pure/adapter.js';
 
+// --- Published vocabulary, enumerated by the compiler ---
+
+import {
+  GENERATE_INPUT_FIELDS,
+  PARAMETER_FIELDS,
+  PARAMETER_VALUE_FIELDS,
+} from '../tests/type/public-vocabulary.js';
+
 // ---------------------------------------------------------------------------
 // Thin wrappers around adapter functions for compat-test convenience
 // ---------------------------------------------------------------------------
@@ -50,9 +58,18 @@ function namedTestToInternal(namedTest: TestCase, params: InternalParameter[]): 
   return toInternalTestCase(namedTest, params);
 }
 
-/** Convert internal TestCase to public, using adapter with rotation=0. */
-function internalTestToNamed(tc: InternalTestCase, params: InternalParameter[]): TestCase {
-  return toPublicTestCase(tc, params, 0);
+/// Convert an internal TestCase to its public form the way a shipped surface
+/// does: a row's position in the suite is its alias rotation, so a value with
+/// aliases is displayed under a different one from row to row. Rendering every
+/// row at rotation 0 would compare the raw engine's output against a rule the
+/// shipped surfaces do not use, and no model without aliases can tell the
+/// difference.
+function internalTestToNamed(
+  tc: InternalTestCase,
+  params: InternalParameter[],
+  rotation = 0,
+): TestCase {
+  return toPublicTestCase(tc, params, rotation);
 }
 
 /** Build GenerateOptions from GenerateInput, delegating to adapter. */
@@ -70,10 +87,10 @@ function tsGenerate(input: GenerateInput): GenerateResult {
   const result = tsGenerateRaw(opts);
 
   return {
-    tests: result.tests.map((tc) => internalTestToNamed(tc, params)),
+    tests: result.tests.map((tc, i) => internalTestToNamed(tc, params, i)),
     negativeTests:
       result.negativeTests.length > 0
-        ? result.negativeTests.map((tc) => internalTestToNamed(tc, params))
+        ? result.negativeTests.map((tc, i) => internalTestToNamed(tc, params, i))
         : undefined,
     coverage: result.coverage,
     uncovered: result.uncovered,
@@ -113,10 +130,10 @@ function tsExtendTests(existing: TestCase[], input: GenerateInput): GenerateResu
   const result = tsExtendRaw(existingInternal, opts);
 
   return {
-    tests: result.tests.map((tc) => internalTestToNamed(tc, params)),
+    tests: result.tests.map((tc, i) => internalTestToNamed(tc, params, i)),
     negativeTests:
       result.negativeTests.length > 0
-        ? result.negativeTests.map((tc) => internalTestToNamed(tc, params))
+        ? result.negativeTests.map((tc, i) => internalTestToNamed(tc, params, i))
         : undefined,
     coverage: result.coverage,
     uncovered: result.uncovered,
@@ -307,10 +324,107 @@ const scenarios: Array<{ name: string; input: GenerateInput }> = [
       seed: 42,
     },
   },
+  // The three below carry the parameter-level features. Each is paired with a
+  // feature that fills the parts of the result a projection would skip —
+  // warnings, suggestions, uncovered and stats — so the whole-object gates
+  // below compare them rather than passing over an empty field.
+  {
+    name: 'equivalence classes under a constraint',
+    input: {
+      parameters: [
+        {
+          name: 'browser',
+          values: [
+            { value: 'chrome', class: 'blink' },
+            { value: 'edge', class: 'blink' },
+            { value: 'firefox', class: 'gecko' },
+          ],
+        },
+        {
+          name: 'os',
+          values: [
+            { value: 'win', class: 'desktop' },
+            { value: 'mac', class: 'desktop' },
+            { value: 'android', class: 'mobile' },
+          ],
+        },
+      ],
+      constraints: ['IF os = android THEN browser != edge'],
+      seed: 42,
+    },
+  },
+  {
+    name: 'aliased values with weights',
+    input: {
+      parameters: [
+        {
+          name: 'browser',
+          values: [
+            { value: 'chromium', aliases: ['chrome', 'edge'] },
+            { value: 'firefox', aliases: ['gecko'] },
+          ],
+        },
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+      ],
+      weights: { os: { win: 5, mac: 1, linux: 1 } },
+      seed: 42,
+    },
+  },
+  {
+    name: 'boundary expansion capped by maxTests',
+    input: {
+      parameters: [
+        { name: 'port', values: [], type: 'integer', range: [1, 16], step: 1 },
+        { name: 'ratio', values: [], type: 'float', range: [0, 1], step: 0.25 },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+      maxTests: 6,
+      seed: 42,
+    },
+  },
 ];
 
 describe('WASM / TS compatibility', () => {
   describe('shipped public facade parity', () => {
+    // The gates below are only as good as the table they run over: a documented
+    // field no scenario uses is a field whose parity nothing compares. The
+    // vocabulary is read from the published shapes rather than restated here,
+    // so a field added to the surface lands as a failure with its own name in
+    // it instead of as a silent gap.
+    it('exercises every documented input field', () => {
+      const inputFields = new Set<string>();
+      const parameterFields = new Set<string>();
+      const valueFields = new Set<string>();
+
+      for (const { input } of scenarios) {
+        for (const field of Object.keys(input)) {
+          inputFields.add(field);
+        }
+        for (const parameter of input.parameters) {
+          for (const field of Object.keys(parameter)) {
+            parameterFields.add(field);
+          }
+          for (const value of parameter.values) {
+            if (typeof value !== 'object') {
+              continue;
+            }
+            for (const field of Object.keys(value)) {
+              valueFields.add(field);
+            }
+          }
+        }
+      }
+
+      const unexercised = (declared: Record<string, true>, used: Set<string>): string[] =>
+        Object.keys(declared)
+          .filter((field) => !used.has(field))
+          .sort();
+
+      expect(unexercised(GENERATE_INPUT_FIELDS, inputFields)).toEqual([]);
+      expect(unexercised(PARAMETER_FIELDS, parameterFields)).toEqual([]);
+      expect(unexercised(PARAMETER_VALUE_FIELDS, valueFields)).toEqual([]);
+    });
+
     for (const { name, input } of scenarios) {
       it(`${name}: generate returns an identical whole public result`, () => {
         expect(pureGenerate(input)).toEqual(generate(input));
