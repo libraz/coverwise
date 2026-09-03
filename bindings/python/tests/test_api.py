@@ -3,6 +3,8 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import subprocess
+import sys
 import tempfile
 
 import pytest
@@ -147,6 +149,28 @@ def test_generate_reports_invalid_input() -> None:
     assert excinfo.value.exit_code == 3
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_a_non_finite_value_is_rejected_before_the_subprocess_starts(monkeypatch, value) -> None:
+    """A non-finite value fails while the payload is built, never inside the CLI.
+
+    ``coverwise.CoverwiseError`` is the one documented exception the API
+    raises, so a value that never reaches the subprocess boundary must still
+    surface through it rather than as a bare ``ValueError``.
+    """
+
+    def unreachable(*args, **kwargs):
+        raise AssertionError("the native binary must not run for a non-finite value")
+
+    monkeypatch.setattr(coverwise.api.subprocess, "run", unreachable)
+
+    with pytest.raises(coverwise.CoverwiseError) as excinfo:
+        coverwise.generate(parameters={"timeout": [1.0, value], "os": ["win", "mac"]})
+
+    assert excinfo.value.code == "INVALID_INPUT"
+    assert excinfo.value.exit_code == 3
+    assert "not finite" in str(excinfo.value)
+
+
 def test_generate_requires_parameters() -> None:
     with pytest.raises(TypeError):
         coverwise.generate(strength=2)
@@ -167,6 +191,40 @@ def test_generate_accepts_a_single_element_value_list() -> None:
 
     assert result["coverage"] == 1.0
     assert {test["env"] for test in result["tests"]} == {"prod"}
+
+
+@pytest.mark.parametrize("unordered", [{"win", "mac"}, frozenset({"win", "mac"})])
+def test_generate_rejects_a_set_where_a_value_list_belongs(unordered) -> None:
+    """A set's iteration order depends on the hash seed, so it cannot back a
+    deterministic suite the way a list of the same values does."""
+
+    with pytest.raises(TypeError, match="unordered set"):
+        coverwise.generate(parameters={"os": unordered, "browser": ["chrome", "safari"]})
+
+
+def test_accepted_container_order_does_not_depend_on_the_hash_seed() -> None:
+    """The values a list accepts must parametrize the same suite under every
+    ``PYTHONHASHSEED``, since that seed can only be fixed before interpreter
+    start; each seed here runs in its own subprocess to prove it."""
+
+    script = (
+        "import json, coverwise\n"
+        "result = coverwise.generate(\n"
+        "    parameters={'os': ['win', 'mac', 'linux'], 'browser': ['chrome', 'firefox']}\n"
+        ")\n"
+        "print(json.dumps(result['tests']))\n"
+    )
+    outputs = set()
+    for seed in ("0", "1", "2"):
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        outputs.add(completed.stdout)
+    assert len(outputs) == 1
 
 
 def test_a_signal_killed_executable_is_not_reported_as_a_model_error(tmp_path, monkeypatch) -> None:

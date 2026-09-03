@@ -8,10 +8,25 @@ import pytest
 import coverwise
 
 
-def test_bundled_cli_reports_help() -> None:
-    result = coverwise.run(["--help"], text=True, capture_output=True, check=True)
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_bundled_cli_reports_help_on_standard_output(flag) -> None:
+    """Usage the caller asked for is output the command produced, so it goes to
+    standard output; only usage printed because an invocation was wrong stays
+    on standard error."""
 
-    assert "coverwise generate" in result.stderr
+    result = coverwise.run([flag], text=True, capture_output=True, check=True)
+
+    assert "coverwise generate" in result.stdout
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize("args", [[], ["nosuchcommand"]])
+def test_a_usage_error_is_diagnosed_on_standard_error(args) -> None:
+    result = coverwise.run(args, text=True, capture_output=True, check=False)
+
+    assert result.returncode == 3
+    assert result.stdout == ""
+    assert result.stderr != ""
 
 
 def test_bundled_cli_generates_a_complete_pairwise_suite(tmp_path) -> None:

@@ -12,6 +12,7 @@ import signal
 import subprocess
 import tempfile
 from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from typing import Any, NamedTuple
 
 from .cli import native_binary
@@ -75,8 +76,19 @@ def _parameter_values(name: Any, values: Any) -> list[Any]:
     A bare string is iterable, so ``{"env": "prod"}`` would otherwise silently
     become the four-value parameter ``["p", "r", "o", "d"]`` and produce a suite
     that has nothing to do with the model the caller wrote.
+
+    A ``set``/``frozenset`` is rejected for a different reason: its iteration
+    order depends on ``PYTHONHASHSEED`` and insertion history, so the same
+    model would parametrize a different suite on every run, breaking the
+    determinism the rest of the API guarantees.
     """
 
+    if isinstance(values, AbstractSet):
+        raise TypeError(
+            f"values for parameter {name!r} must be a list, not a "
+            f"{type(values).__name__}; an unordered set does not produce a "
+            f"reproducible suite, pass sorted(values) or list(values) instead"
+        )
     if isinstance(values, (str, bytes, Mapping)) or not isinstance(values, Iterable):
         raise TypeError(
             f"values for parameter {name!r} must be a list of values, not "
@@ -233,9 +245,26 @@ def _run(
 
 
 def _dumps(payload: Any) -> str:
-    """Serialize a payload for the CLI, rejecting non-JSON values up front."""
+    """Serialize a payload for the CLI, rejecting non-JSON values up front.
 
-    return json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    ``allow_nan=False`` turns a non-finite float (``inf``, ``-inf``, ``nan``)
+    into a :class:`ValueError`, which is reported as a :class:`CoverwiseError`
+    so callers can catch every model rejection — subprocess-side or not —
+    through the one documented exception type. A :class:`TypeError`, raised
+    for a value ``json`` cannot serialize at all, is left to propagate as-is:
+    it is a Python usage error, not a model the CLI ever gets to see.
+    """
+
+    try:
+        return json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    except ValueError as exc:
+        raise CoverwiseError(
+            _ERROR_CODES[_EXIT_INVALID_INPUT],
+            f"model contains a value that is not finite: {exc}",
+            _EXIT_INVALID_INPUT,
+            "",
+            None,
+        ) from exc
 
 
 def _run_with_side_input(
