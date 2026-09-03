@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   bitsToHex,
   doubleToBits,
@@ -216,4 +219,113 @@ describe('asciiCaseInsensitiveEqual', () => {
   it('returns false for different lengths', () => {
     expect(asciiCaseInsensitiveEqual('ab', 'abc')).toBe(false);
   });
+});
+
+/**
+ * A primitive that decides something the whole engine has to agree about, and
+ * the module that is allowed to define it.
+ *
+ * Nothing in either language makes a second definition impossible to write, and
+ * a second one is how these primitives regrow: two copies answer the same
+ * question and drift apart, and the surfaces built on them disagree without
+ * anything failing. This is the mechanism that keeps each one single.
+ */
+interface SharedPrimitive {
+  /** What the primitive decides, phrased as the test name reads. */
+  readonly what: string;
+  /** The module allowed to define it, per language that has one. */
+  readonly definedIn: readonly string[];
+  /**
+   * Ways of writing the primitive's own work -- the step that only its
+   * definition has reason to perform, not the ordinary operations built on it.
+   */
+  readonly motifs: readonly RegExp[];
+  /**
+   * Files carrying a definition of their own, asserted exactly rather than
+   * merely permitted: a new one fails, and so does an entry that has stopped
+   * being true, which is what stops the list from outliving its contents.
+   */
+  readonly knownDuplicates: readonly string[];
+}
+
+const SHARED_PRIMITIVES: readonly SharedPrimitive[] = [
+  {
+    what: 'the ASCII case fold',
+    definedIn: ['src/util/string_util.cpp', 'src/ts/util/string_util.ts'],
+    // Keyed on the mapping, not on the letter ranges: testing whether a byte is
+    // a letter is an ordinary thing for a tokenizer to do, and only the shift
+    // that turns one case into the other is a fold.
+    motifs: [/'a' - 'A'/, /'A' - 'a'/, /toLowerCase/, /toUpperCase/, /0x20/],
+    knownDuplicates: [],
+  },
+  {
+    what: 'the UTF-8 byte count',
+    // C++ has no counterpart: a std::string already knows its byte length, so
+    // only the TypeScript surfaces need one.
+    definedIn: ['src/ts/model/utf8.ts'],
+    // Keyed on accumulating a byte total, which is the counting itself.
+    // Decoding a string into codepoints is a different operation and several
+    // modules legitimately do it.
+    motifs: [/bytes \+=/, /\.byteLength/],
+    knownDuplicates: [],
+  },
+];
+
+/**
+ * The walk covers the wrapper in `js/` as well as the engine, because these
+ * defects cross that boundary: a wrapper that folds or counts on its own can
+ * reject a model the engine accepts. It lives in this tier rather than the C++
+ * one because it is a check on source trees, not on compiled symbols.
+ */
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+
+const SCANNED_TREES = ['src', 'js'];
+
+function scannableSources(directory: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const full = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...scannableSources(full));
+    } else if (/\.(cpp|h|ts)$/.test(entry.name) && !entry.name.endsWith('.test.ts')) {
+      found.push(full);
+    }
+  }
+  return found;
+}
+
+describe('shared primitives have one definition each', () => {
+  const sources = SCANNED_TREES.flatMap((tree) => scannableSources(path.join(REPO_ROOT, tree))).map(
+    (file) => path.relative(REPO_ROOT, file),
+  );
+
+  it('finds the sources to scan', () => {
+    expect(sources.length).toBeGreaterThan(10);
+    for (const tree of SCANNED_TREES) {
+      expect(sources.some((file) => file.startsWith(`${tree}${path.sep}`))).toBe(true);
+    }
+  });
+
+  for (const primitive of SHARED_PRIMITIVES) {
+    const carriers = sources
+      .filter((file) => !primitive.definedIn.includes(file))
+      .filter((file) => {
+        const source = readFileSync(path.join(REPO_ROOT, file), 'utf8');
+        return primitive.motifs.some((motif) => motif.test(source));
+      })
+      .sort();
+
+    it(`defines ${primitive.what} in exactly the files that should`, () => {
+      expect(carriers).toEqual(primitive.knownDuplicates.map((f) => path.normalize(f)));
+    });
+
+    it(`finds ${primitive.what} inside the module that owns it`, () => {
+      for (const owner of primitive.definedIn) {
+        const source = readFileSync(path.join(REPO_ROOT, owner), 'utf8');
+        expect({ [owner]: primitive.motifs.some((motif) => motif.test(source)) }).toEqual({
+          [owner]: true,
+        });
+      }
+    });
+  }
 });

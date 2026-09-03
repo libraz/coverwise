@@ -1,4 +1,28 @@
-#include "util/string_util.h"
+// A second copy of the implementation, compiled with the decimal backend pinned
+// to the num_get branch, so the corpus below runs against both branches from one
+// build. Which branch a platform gets is decided at build time and the caller
+// cannot influence it, so whichever one a given build does not compile is a
+// branch that ships elsewhere unverified -- and the two disagree about which
+// decimals are "out of range", which is where a shared corpus earns its keep.
+//
+// The pin is to num_get rather than to whichever branch this platform did not
+// select, because num_get compiles everywhere while std::from_chars for floating
+// point is unavailable on some supported deployment targets -- forcing that one
+// would fail to build on exactly the platforms the fallback exists for.
+//
+// It is compiled into a namespace of its own so both branches coexist in one
+// executable without duplicate symbols. The header guard is cleared afterwards
+// so the real declarations can still be included below.
+#define COVERWISE_HAS_FLOAT_FROM_CHARS 0
+#define coverwise coverwise_forced_fallback
+#include "util/string_util.cpp"
+// The forced value has to have survived the implementation's own detection, or
+// this is a second copy of the same branch and the corpus below proves nothing.
+static_assert(COVERWISE_HAS_FLOAT_FROM_CHARS == 0,
+              "the decimal backend override did not reach the implementation");
+#undef coverwise
+#undef COVERWISE_HAS_FLOAT_FROM_CHARS
+#undef COVERWISE_UTIL_STRING_UTIL_H_
 
 #include <gtest/gtest.h>
 
@@ -10,7 +34,10 @@
 #include <utility>
 #include <vector>
 
+#include "util/string_util.h"
+
 using coverwise::util::CaseInsensitiveEqual;
+using coverwise::util::FoldAsciiString;
 using coverwise::util::IsNumeric;
 using coverwise::util::JsNumberToString;
 using coverwise::util::ToDouble;
@@ -131,6 +158,30 @@ TEST(StringUtilTest, TryParseFiniteDoubleClassifiesEveryCorpusDecimal) {
   }
 }
 
+// The corpus above pins the backend this platform compiles. This runs the same
+// corpus through the other one, so a decimal parses to the same bits whichever
+// branch a build selects -- the branches disagree about which decimals are "out
+// of range", and only one of them is exercised by any given build.
+TEST(StringUtilTest, BothDecimalBackendsParseEveryCorpusDecimalIdentically) {
+  namespace fallback = coverwise_forced_fallback::util;
+  for (const auto& numeric_case : kNumericParseCases) {
+    EXPECT_EQ(fallback::IsNumeric(numeric_case.text), IsNumeric(numeric_case.text))
+        << "input: " << numeric_case.text;
+    EXPECT_EQ(DoubleToBits(fallback::ToDouble(numeric_case.text)), numeric_case.bits)
+        << "input: " << numeric_case.text;
+
+    constexpr double kUntouched = 12345.0;
+    double fallback_parsed = kUntouched;
+    double primary_parsed = kUntouched;
+    const bool fallback_ok = fallback::TryParseFiniteDouble(numeric_case.text, &fallback_parsed);
+    const bool primary_ok = TryParseFiniteDouble(numeric_case.text, &primary_parsed);
+    EXPECT_EQ(fallback_ok, numeric_case.accepts_literal) << "input: " << numeric_case.text;
+    EXPECT_EQ(fallback_ok, primary_ok) << "input: " << numeric_case.text;
+    EXPECT_EQ(DoubleToBits(fallback_parsed), DoubleToBits(primary_parsed))
+        << "input: " << numeric_case.text;
+  }
+}
+
 TEST(StringUtilTest, IsNumericAcceptsDecimalForms) {
   EXPECT_TRUE(IsNumeric("0"));
   EXPECT_TRUE(IsNumeric("3.14"));
@@ -168,6 +219,34 @@ TEST(StringUtilTest, CaseInsensitiveEqualAsciiOnly) {
   EXPECT_TRUE(CaseInsensitiveEqual("caF\xC3\xA9", "CAF\xC3\xA9"));
 
   EXPECT_FALSE(CaseInsensitiveEqual("ab", "abc"));
+}
+
+TEST(StringUtilTest, FoldAsciiStringTouchesOnlyAsciiLetters) {
+  EXPECT_EQ(FoldAsciiString("abc"), "ABC");
+  EXPECT_EQ(FoldAsciiString("aBcZ_9"), "ABCZ_9");
+  EXPECT_EQ(FoldAsciiString(""), "");
+
+  // Every byte of a multi-byte UTF-8 sequence is a continuation or lead byte
+  // outside the ASCII letter range, so folding byte-wise leaves it whole.
+  EXPECT_EQ(FoldAsciiString("caf\xC3\xA9"), "CAF\xC3\xA9");
+  EXPECT_EQ(FoldAsciiString("\xC3\x84"), "\xC3\x84");
+
+  // The bytes adjacent to the letter ranges are not letters.
+  EXPECT_EQ(FoldAsciiString("@[`{"), "@[`{");
+}
+
+TEST(StringUtilTest, FoldAsciiStringDecidesWhatCaseInsensitiveEqualDecides) {
+  // The two entry points share a byte range rather than each carrying one, so
+  // no input can be equal to one of them and unequal to the other.
+  const char* const inputs[] = {
+      "Os",       "os", "CHROME", "chrome", "caF\xC3\xA9", "CAF\xC3\xA9", "\xC3\xA9",
+      "\xC3\x89", "ab", "abc",    "",       "_-.",         "I",           "i"};
+  for (const char* left : inputs) {
+    for (const char* right : inputs) {
+      EXPECT_EQ(CaseInsensitiveEqual(left, right), FoldAsciiString(left) == FoldAsciiString(right))
+          << left << " vs " << right;
+    }
+  }
 }
 
 TEST(StringUtilTest, NumericParsingAndAsciiFoldingIgnoreProcessLocale) {

@@ -9,7 +9,31 @@
 namespace coverwise {
 namespace util {
 
+/// @brief Case-fold a string, ASCII letters only.
+///
+/// This is the one place the fold is defined. Every case-insensitive decision
+/// on every surface -- parameter-name resolution, value resolution, LIKE
+/// matching, parameter-to-parameter comparison -- folds through this function
+/// or through CaseInsensitiveEqual, which shares its byte range, so a change to
+/// the fold semantics is a change to one function.
+///
+/// Only the ASCII letters are affected; every other byte, including every byte
+/// of a multi-byte UTF-8 sequence, is copied verbatim. Byte-wise folding is
+/// safe on UTF-8 precisely because no byte of such a sequence falls in the
+/// ASCII letter range.
+///
+/// The direction is upper, matching the TypeScript port's `asciiToUpper`. It is
+/// not observable: folded strings are only ever compared or interned against
+/// other folded strings, never returned to a caller or rendered.
+///
+/// @param value The string to fold.
+/// @return The folded string.
+std::string FoldAsciiString(const std::string& value);
+
 /// @brief Compare two strings case-insensitively.
+///
+/// Equivalent to comparing FoldAsciiString of both, without building either.
+///
 /// @param a First string.
 /// @param b Second string.
 /// @return true if the strings are equal ignoring case.

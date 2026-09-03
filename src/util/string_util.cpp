@@ -14,12 +14,18 @@
 // currently supported macOS release. std::to_chars has been available since
 // macOS 13.3 and has no equivalent fallback that is guaranteed to reproduce its
 // shortest round-trip digits, so that one is a hard requirement instead.
+// Left overridable so a build can compile the branch its own platform would not
+// select. Both branches ship -- which one a given platform gets is decided here,
+// not by the caller -- so both have to be verifiable against the shared corpus
+// from a single build.
+#ifndef COVERWISE_HAS_FLOAT_FROM_CHARS
 #if defined(__cpp_lib_to_chars) &&                                   \
     (!defined(_LIBCPP_AVAILABILITY_HAS_FROM_CHARS_FLOATING_POINT) || \
      _LIBCPP_AVAILABILITY_HAS_FROM_CHARS_FLOATING_POINT)
 #define COVERWISE_HAS_FLOAT_FROM_CHARS 1
 #else
 #define COVERWISE_HAS_FLOAT_FROM_CHARS 0
+#endif
 #endif
 
 #if defined(_LIBCPP_AVAILABILITY_HAS_TO_CHARS_FLOATING_POINT) && \
@@ -31,9 +37,11 @@ namespace coverwise {
 namespace util {
 namespace {
 
-unsigned char FoldAscii(unsigned char value) {
-  if (value >= static_cast<unsigned char>('A') && value <= static_cast<unsigned char>('Z')) {
-    return static_cast<unsigned char>(value + ('a' - 'A'));
+/// @brief The ASCII case fold, on one byte. The only place in the C++ engine
+///   that decides what "same letter, different case" means.
+unsigned char FoldAsciiChar(unsigned char value) {
+  if (value >= static_cast<unsigned char>('a') && value <= static_cast<unsigned char>('z')) {
+    return static_cast<unsigned char>(value - ('a' - 'A'));
   }
   return value;
 }
@@ -130,11 +138,19 @@ DecimalParse ParseDecimal(const char* begin, const char* end) {
 
 }  // namespace
 
+std::string FoldAsciiString(const std::string& value) {
+  std::string folded = value;
+  for (char& c : folded) {
+    c = static_cast<char>(FoldAsciiChar(static_cast<unsigned char>(c)));
+  }
+  return folded;
+}
+
 bool CaseInsensitiveEqual(const std::string& a, const std::string& b) {
   if (a.size() != b.size()) return false;
   for (size_t i = 0; i < a.size(); ++i) {
-    if (FoldAscii(static_cast<unsigned char>(a[i])) !=
-        FoldAscii(static_cast<unsigned char>(b[i]))) {
+    if (FoldAsciiChar(static_cast<unsigned char>(a[i])) !=
+        FoldAsciiChar(static_cast<unsigned char>(b[i]))) {
       return false;
     }
   }
