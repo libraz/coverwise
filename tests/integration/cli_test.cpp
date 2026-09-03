@@ -2,15 +2,19 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "model/limits.h"
+#include "model/options_validation.h"
+#include "model/parameter.h"
 #include "model/surface_error.h"
 
 // Path to the built coverwise CLI binary, injected by CMake.
@@ -154,6 +158,36 @@ TEST(CliJsonTest, RejectsMalformedRawUtf8AndAcceptsValidMultibyteText) {
   const auto valid = RunCli("generate " + valid_path);
   EXPECT_EQ(valid.exit_code, 0) << valid.stdout_text;
   EXPECT_NE(valid.stdout_text.find("日本語"), std::string::npos);
+}
+
+// The depth the reader enforces and the depth its diagnostic names are one
+// number. A document nested as deeply as the message says is allowed is read
+// without a nesting complaint; only a deeper one is refused for nesting.
+TEST(CliJsonTest, TheReportedNestingLimitIsTheOneEnforced) {
+  const std::string marker = "JSON nesting depth exceeds ";
+  const std::string deep_path = TempPath("deep_nesting.json");
+  WriteFile(deep_path, std::string(4096, '[') + std::string(4096, ']'));
+
+  const auto refused = RunCliCaptureStderr("generate " + deep_path);
+  EXPECT_EQ(refused.exit_code, 3) << refused.stdout_text;
+  const size_t at = refused.stdout_text.find(marker);
+  ASSERT_NE(at, std::string::npos) << refused.stdout_text;
+  const size_t reported = std::stoul(refused.stdout_text.substr(at + marker.size()));
+  ASSERT_GT(reported, 0u);
+
+  // At the reported depth the document is read through: it is refused for what
+  // it is — an array where a model object belongs — not for how deeply it nests.
+  const std::string at_limit_path = TempPath("nesting_at_limit.json");
+  WriteFile(at_limit_path, std::string(reported, '[') + std::string(reported, ']'));
+  const auto read = RunCliCaptureStderr("generate " + at_limit_path);
+  EXPECT_EQ(read.stdout_text.find(marker), std::string::npos) << read.stdout_text;
+
+  // And past it the nesting is what the document is refused for, so a message
+  // naming a bound looser than the one applied is caught from either side.
+  const std::string past_limit_path = TempPath("nesting_past_limit.json");
+  WriteFile(past_limit_path, std::string(reported + 2, '[') + std::string(reported + 2, ']'));
+  const auto past = RunCliCaptureStderr("generate " + past_limit_path);
+  EXPECT_NE(past.stdout_text.find(marker), std::string::npos) << past.stdout_text;
 }
 
 TEST(CliJsonTest, WriterEscapesEveryC0ControlCharacter) {
@@ -892,8 +926,378 @@ TEST(CliInputBudgetTest, AggregateStringBudgetIsWhatBoundsAWholeDocument) {
 
   const auto result = RunCliCaptureStderr("generate " + path);
   EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
-  EXPECT_NE(result.stdout_text.find("Input strings exceed"), std::string::npos)
+  EXPECT_NE(result.stdout_text.find(coverwise::model::AggregateBudgetExceededMessage()),
+            std::string::npos)
       << result.stdout_text;
+}
+
+namespace {
+
+/// @brief A suite of @p rows rows, each carrying two members of @p field_bytes.
+std::string WideRowSuite(size_t rows, size_t field_bytes) {
+  const std::string cell(field_bytes, 'x');
+  std::string suite = "[";
+  for (size_t row = 0; row < rows; ++row) {
+    if (row > 0) suite += ',';
+    suite += R"({"a":")" + cell + R"(","b":")" + cell + R"("})";
+  }
+  suite += ']';
+  return suite;
+}
+
+/// @brief A model of @p count distinct values of @p bytes each, plus a narrow
+///        second parameter so a suite over it is well formed.
+coverwise::model::GenerateOptions WideModel(size_t count, size_t bytes) {
+  std::vector<std::string> values;
+  values.reserve(count);
+  for (size_t index = 0; index < count; ++index) {
+    values.push_back(std::string(bytes - 8, 'x') + std::to_string(1000000 + index));
+  }
+  coverwise::model::GenerateOptions options;
+  options.parameters.emplace_back("a", std::move(values));
+  options.parameters.emplace_back("b", std::vector<std::string>{"1", "2"});
+  options.strength = 2;
+  return options;
+}
+
+/// @brief What every surface says when an input exceeds the aggregate string
+///        budget, taken from the model layer rather than written down again.
+///
+/// A test that spells the sentence out is another copy of it, and two copies
+/// disagreeing is the drift these assertions exist to catch. The TypeScript
+/// surfaces compare against the same wording, so a change to it fails on both
+/// sides at once instead of separating them.
+std::string AggregateBudgetRefusal() { return coverwise::model::AggregateBudgetExceededMessage(); }
+
+}  // namespace
+
+// Row values are caller-supplied strings, so they are charged against the same
+// documented aggregate budget the model's own strings are. A suite carrying
+// more text than the budget allows is refused before the engine sees any of it,
+// whichever command reads the rows.
+TEST(CliInputBudgetTest, RowTextIsChargedAgainstTheAggregateStringBudget) {
+  const std::string params_path = TempPath("row_budget_params.json");
+  WriteFile(params_path, R"({"parameters":[{"name":"a","values":["x","y"]},)"
+                         R"({"name":"b","values":["1","2"]}]})");
+
+  const size_t field_bytes = 60 * 1024;
+  const size_t rows = coverwise::model::kMaxAggregateStringBytes / (2 * field_bytes) + 2;
+  ASSERT_GT(rows * 2 * field_bytes, coverwise::model::kMaxAggregateStringBytes);
+  ASSERT_LT(field_bytes, coverwise::model::kMaxStringBytes);
+  const std::string rows_path = TempPath("row_budget_rows.json");
+  WriteFile(rows_path, WideRowSuite(rows, field_bytes));
+
+  const std::string expected = AggregateBudgetRefusal();
+  const auto analyzed =
+      RunCliCaptureStderr("analyze --params " + params_path + " --tests " + rows_path);
+  EXPECT_EQ(analyzed.exit_code, 3) << analyzed.stdout_text.substr(0, 200);
+  EXPECT_NE(analyzed.stdout_text.find(expected), std::string::npos)
+      << analyzed.stdout_text.substr(0, 200);
+
+  const auto extended = RunCliCaptureStderr("extend --existing " + rows_path + " " + params_path);
+  EXPECT_EQ(extended.exit_code, 3) << extended.stdout_text.substr(0, 200);
+  EXPECT_NE(extended.stdout_text.find(expected), std::string::npos)
+      << extended.stdout_text.substr(0, 200);
+}
+
+// The budget bounds one invocation rather than one argument. Extend reads
+// `seeds` from the model document and `existing` from a file of its own, and
+// two half-sized suites are the same input dimension as one full-sized one.
+TEST(CliInputBudgetTest, ExtendChargesSeedsAndExistingAgainstOneBudget) {
+  const size_t field_bytes = 60 * 1024;
+  const std::string first(field_bytes, 'a');
+  const std::string second(field_bytes, 'b');
+  const size_t rows = coverwise::model::kMaxAggregateStringBytes / (4 * field_bytes) + 1;
+  ASSERT_LT(rows * 2 * field_bytes, coverwise::model::kMaxAggregateStringBytes);
+  ASSERT_GT(2 * rows * 2 * field_bytes, coverwise::model::kMaxAggregateStringBytes);
+
+  const std::string declared = R"({"name":"a","values":[")" + first + R"(",")" + second +
+                               R"("]},{"name":"b","values":[")" + first + R"(",")" + second +
+                               R"("]})";
+  std::string suite = "[";
+  for (size_t row = 0; row < rows; ++row) {
+    if (row > 0) suite += ',';
+    suite += R"({"a":")" + first + R"(","b":")" + second + R"("})";
+  }
+  suite += ']';
+
+  const std::string existing_path = TempPath("one_budget_existing.json");
+  WriteFile(existing_path, suite);
+  const std::string without_seeds_path = TempPath("one_budget_model.json");
+  WriteFile(without_seeds_path, "{\"parameters\":[" + declared + "]}");
+  const std::string with_seeds_path = TempPath("one_budget_model_seeded.json");
+  WriteFile(with_seeds_path, "{\"parameters\":[" + declared + "],\"seeds\":" + suite + "}");
+  const std::string no_rows_path = TempPath("one_budget_no_rows.json");
+  WriteFile(no_rows_path, "[]");
+
+  // Either suite on its own fits.
+  const auto existing_only =
+      RunCliCaptureStderr("extend --existing " + existing_path + " " + without_seeds_path);
+  EXPECT_EQ(existing_only.exit_code, 0) << existing_only.stdout_text.substr(0, 200);
+  const auto seeds_only =
+      RunCliCaptureStderr("extend --existing " + no_rows_path + " " + with_seeds_path);
+  EXPECT_EQ(seeds_only.exit_code, 0) << seeds_only.stdout_text.substr(0, 200);
+
+  // Together they do not, because they are one call's worth of row text.
+  const auto both =
+      RunCliCaptureStderr("extend --existing " + existing_path + " " + with_seeds_path);
+  EXPECT_EQ(both.exit_code, 3) << both.stdout_text.substr(0, 200);
+  EXPECT_NE(both.stdout_text.find(AggregateBudgetRefusal()), std::string::npos)
+      << both.stdout_text.substr(0, 200);
+}
+
+// The budget covers an input, not one kind of string in it, and every surface
+// says so in the same words. A model whose own strings are half the budget and
+// a suite whose row text is the other half are each accepted alone and refused
+// together — asked of the acceptance gate directly, which is the surface an
+// embedding program uses, and of the command line, which is a process away.
+// Neither the limit nor the sentence is written down here: the limit comes from
+// the documented constant and the sentence from the model layer's own wording,
+// which this also holds the gate's refusal to.
+TEST(CliInputBudgetTest, ModelStringsAndRowTextShareOneBudgetOnEverySurface) {
+  const size_t cell_bytes = 60 * 1024;
+  const size_t cells = coverwise::model::kMaxAggregateStringBytes / (2 * cell_bytes) + 1;
+  const size_t row_bytes = cells * cell_bytes;
+
+  // The embedding surface: the gate itself, told how much row text the caller
+  // read. A tiny model stands in for "no model text worth counting".
+  EXPECT_TRUE(coverwise::model::AcceptOptions(WideModel(cells, cell_bytes)).ok());
+  EXPECT_TRUE(coverwise::model::AcceptOptions(WideModel(2, 8), row_bytes).ok());
+  auto refused = coverwise::model::AcceptOptions(WideModel(cells, cell_bytes), row_bytes);
+  ASSERT_FALSE(refused.ok());
+  const std::string sentence = coverwise::model::SurfaceError(refused.error()).text();
+  EXPECT_EQ(sentence, AggregateBudgetRefusal());
+}
+
+TEST(CliInputBudgetTest, ModelStringsAndRowTextShareOneBudget) {
+  const size_t field_bytes = 60 * 1024;
+  const size_t half_count = coverwise::model::kMaxAggregateStringBytes / (2 * field_bytes) + 1;
+  ASSERT_LT(half_count * field_bytes, coverwise::model::kMaxAggregateStringBytes);
+  ASSERT_GT(2 * half_count * field_bytes, coverwise::model::kMaxAggregateStringBytes);
+
+  std::string wide_values;
+  std::string wide_rows = "[";
+  for (size_t index = 0; index < half_count; ++index) {
+    // Distinct values, so the model is well formed rather than duplicated.
+    const std::string value = std::string(field_bytes - 8, 'x') + std::to_string(1000000 + index);
+    if (index > 0) {
+      wide_values += ',';
+      wide_rows += ',';
+    }
+    wide_values += '"' + value + '"';
+    wide_rows += R"({"a":")" + value + R"("})";
+  }
+  wide_rows += ']';
+
+  const std::string wide_params_path = TempPath("shared_budget_wide_params.json");
+  WriteFile(wide_params_path, R"({"parameters":[{"name":"a","values":[)" + wide_values +
+                                  R"(]},{"name":"b","values":["1","2"]}]})");
+  const std::string narrow_params_path = TempPath("shared_budget_narrow_params.json");
+  WriteFile(narrow_params_path, R"({"parameters":[{"name":"a","values":["x","y"]},)"
+                                R"({"name":"b","values":["1","2"]}]})");
+  const std::string wide_rows_path = TempPath("shared_budget_wide_rows.json");
+  WriteFile(wide_rows_path, wide_rows);
+  const std::string narrow_rows_path = TempPath("shared_budget_narrow_rows.json");
+  WriteFile(narrow_rows_path, R"([{"a":"x","b":"1"}])");
+
+  const std::string budget_message = AggregateBudgetRefusal();
+
+  const auto model_half =
+      RunCliCaptureStderr("analyze --params " + wide_params_path + " --tests " + narrow_rows_path);
+  EXPECT_EQ(model_half.stdout_text.find(budget_message), std::string::npos)
+      << model_half.stdout_text.substr(0, 200);
+
+  const auto row_half =
+      RunCliCaptureStderr("analyze --params " + narrow_params_path + " --tests " + wide_rows_path);
+  EXPECT_EQ(row_half.stdout_text.find(budget_message), std::string::npos)
+      << row_half.stdout_text.substr(0, 200);
+
+  // Byte for byte what the gate said, in the CLI's own envelope: a surface may
+  // wrap the sentence but must not compose one of its own.
+  const auto both =
+      RunCliStderrOnly("analyze --params " + wide_params_path + " --tests " + wide_rows_path);
+  EXPECT_EQ(both.exit_code, 3) << both.stdout_text.substr(0, 200);
+  EXPECT_EQ(both.stdout_text, "error: " + budget_message + "\n");
+}
+
+// ---------------------------------------------------------------------------
+// Which kinds of string the budget charges
+//
+// Every surface charges the same set, and today they agree because each was
+// written against the same description rather than because anything compares
+// them. These fix the set by behaviour: a model sized to sit just under the
+// budget, plus one instance of a single kind large enough to cross it if that
+// kind were charged. Whichever way the verdict comes out names the kind, so a
+// surface that starts charging row keys again fails here rather than moving a
+// ceiling by an unexplained amount.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Distinct values whose UTF-8 bytes total exactly @p total_bytes.
+std::vector<std::string> ValuesTotalling(size_t total_bytes) {
+  constexpr size_t kChunkBytes = 32 * 1024;
+  std::vector<std::string> values;
+  size_t remaining = total_bytes;
+  while (remaining > 0) {
+    const size_t take = std::min(remaining, kChunkBytes);
+    // A numeric prefix keeps the values distinct; the filler makes the length.
+    std::string value = std::to_string(100000000 + values.size());
+    value.append(take - value.size(), 'x');
+    values.push_back(std::move(value));
+    remaining -= take;
+  }
+  return values;
+}
+
+/// @brief Bytes the model below spends besides the bulk parameter's values:
+///        the two parameter names and the narrow parameter's two values.
+constexpr size_t kBudgetedModelOverhead = 4;
+
+/// @brief A model whose charged strings sit exactly @p slack bytes below the
+///        aggregate budget.
+///
+/// Everything in it is a charged kind, so the slack is the room a further
+/// instance of any kind has to fit into: one larger than the slack crosses the
+/// limit if and only if its kind is charged.
+coverwise::model::GenerateOptions BudgetedModel(size_t slack) {
+  coverwise::model::GenerateOptions options;
+  options.parameters.emplace_back("a", ValuesTotalling(coverwise::model::kMaxAggregateStringBytes -
+                                                       slack - kBudgetedModelOverhead));
+  options.parameters.emplace_back("b", std::vector<std::string>{"1", "2"});
+  options.strength = 2;
+  return options;
+}
+
+/// @brief That model as a JSON document, so the command line reads the same one.
+std::string BudgetedModelJson(const coverwise::model::GenerateOptions& options) {
+  std::string document = R"({"parameters":[)";
+  for (size_t index = 0; index < options.parameters.size(); ++index) {
+    if (index > 0) document += ',';
+    document += R"({"name":")" + options.parameters[index].name + R"(","values":[)";
+    for (size_t value = 0; value < options.parameters[index].values.size(); ++value) {
+      if (value > 0) document += ',';
+      document += '"' + options.parameters[index].values[value] + '"';
+    }
+    document += "]}";
+  }
+  return document + "]}";
+}
+
+/// @brief Slack small enough that a single instance of a kind can cross it and
+///        stay inside the per-string limit, and large enough that the keys a
+///        row needs to carry that instance stay well under it.
+constexpr size_t kKindSlack = 2048;
+
+}  // namespace
+
+TEST(BudgetedKindsTest, TheGateChargesEveryKindOfModelString) {
+  const std::string oversized(kKindSlack + 1, 'z');
+  const std::string budget_refusal = coverwise::model::AggregateBudgetExceededMessage();
+
+  // The arithmetic first: the model fits, it fits with the slack exactly spent,
+  // and one byte more than the slack is refused for the budget and nothing else.
+  EXPECT_TRUE(coverwise::model::AcceptOptions(BudgetedModel(kKindSlack)).ok());
+  EXPECT_TRUE(coverwise::model::AcceptOptions(BudgetedModel(kKindSlack), kKindSlack).ok());
+  auto over = coverwise::model::AcceptOptions(BudgetedModel(kKindSlack), kKindSlack + 1);
+  ASSERT_FALSE(over.ok());
+  EXPECT_EQ(coverwise::model::SurfaceError(over.error()).text(), budget_refusal);
+
+  // One oversized instance per kind of model string. Each is refused, and for
+  // the budget rather than for a rule of its own — the gate weighs the budget
+  // before it looks at whether a sub-model or a weight names a real parameter.
+  std::vector<std::pair<std::string, coverwise::model::GenerateOptions>> by_kind;
+
+  auto parameter_name = BudgetedModel(kKindSlack);
+  parameter_name.parameters.emplace_back(oversized, std::vector<std::string>{"7", "8"});
+  by_kind.emplace_back("parameter name", std::move(parameter_name));
+
+  auto value = BudgetedModel(kKindSlack);
+  value.parameters[1].values.push_back(oversized);
+  by_kind.emplace_back("value", std::move(value));
+
+  auto alias = BudgetedModel(kKindSlack);
+  alias.parameters[1].set_aliases({{oversized}, {}});
+  by_kind.emplace_back("alias", std::move(alias));
+
+  auto equivalence_class = BudgetedModel(kKindSlack);
+  equivalence_class.parameters[1].set_equivalence_classes({oversized, "other"});
+  by_kind.emplace_back("class name", std::move(equivalence_class));
+
+  auto constraint = BudgetedModel(kKindSlack);
+  constraint.constraint_expressions.push_back(oversized);
+  by_kind.emplace_back("constraint expression", std::move(constraint));
+
+  auto sub_model = BudgetedModel(kKindSlack);
+  sub_model.sub_models.push_back({{oversized}, 1});
+  by_kind.emplace_back("sub-model parameter name", std::move(sub_model));
+
+  auto weight_parameter = BudgetedModel(kKindSlack);
+  weight_parameter.weights.entries[oversized]["1"] = 2.0;
+  by_kind.emplace_back("weight parameter name", std::move(weight_parameter));
+
+  auto weight_value = BudgetedModel(kKindSlack);
+  weight_value.weights.entries["b"][oversized] = 2.0;
+  by_kind.emplace_back("weight value name", std::move(weight_value));
+
+  for (auto& [kind, options] : by_kind) {
+    auto refused = coverwise::model::AcceptOptions(std::move(options));
+    ASSERT_FALSE(refused.ok()) << kind;
+    EXPECT_EQ(coverwise::model::SurfaceError(refused.error()).text(), budget_refusal) << kind;
+  }
+}
+
+TEST(BudgetedKindsTest, TheReaderChargesRowValuesAndNothingElseInARow) {
+  const std::string model_path = TempPath("kinds_model.json");
+  WriteFile(model_path, BudgetedModelJson(BudgetedModel(kKindSlack)));
+  const std::string budget_refusal = coverwise::model::AggregateBudgetExceededMessage();
+
+  const auto analyze = [&](const std::string& suite, const std::string& name) {
+    const std::string path = TempPath(name);
+    WriteFile(path, suite);
+    return RunCliCaptureStderr("analyze --params " + model_path + " --tests " + path);
+  };
+  const auto rows = [](size_t count, const std::string& member) {
+    std::string suite = "[";
+    for (size_t row = 0; row < count; ++row) {
+      if (row > 0) suite += ',';
+      suite += '{' + member + '}';
+    }
+    return suite + ']';
+  };
+
+  // A string row value is the caller's own text and is charged: four of them
+  // over the slack cross the limit.
+  const std::string wide_value(kKindSlack / 3, 's');
+  const auto strings = analyze(rows(4, R"("a":")" + wide_value + R"(")"), "kinds_strings.json");
+  EXPECT_EQ(strings.exit_code, 3) << strings.stdout_text.substr(0, 200);
+  EXPECT_NE(strings.stdout_text.find(budget_refusal), std::string::npos)
+      << strings.stdout_text.substr(0, 200);
+
+  // A row key is a parameter name, charged once as a model string. Charging it
+  // again per row would make the budget shrink with the parameter count.
+  const std::string wide_key(kKindSlack / 3, 'k');
+  const auto keys = analyze(rows(4, '"' + wide_key + R"(":1)"), "kinds_keys.json");
+  EXPECT_EQ(keys.stdout_text.find(budget_refusal), std::string::npos)
+      << keys.stdout_text.substr(0, 200);
+
+  // Numbers and booleans are rendered by the engine rather than supplied as
+  // text, so they cost nothing however many of them a suite carries.
+  const auto numbers = analyze(rows(300, R"("a":1234567890123.5)"), "kinds_numbers.json");
+  EXPECT_EQ(numbers.stdout_text.find(budget_refusal), std::string::npos)
+      << numbers.stdout_text.substr(0, 200);
+
+  const auto booleans = analyze(rows(800, R"("a":true)"), "kinds_booleans.json");
+  EXPECT_EQ(booleans.stdout_text.find(budget_refusal), std::string::npos)
+      << booleans.stdout_text.substr(0, 200);
+
+  // Text that does not resolve is kept for the diagnostic, and is charged where
+  // it is read rather than again wherever it is kept: this row fits once and
+  // would not fit twice.
+  const std::string unresolved((kKindSlack * 3) / 4, 'u');
+  const auto drifted = analyze(rows(1, R"("a":")" + unresolved + R"(")"), "kinds_drifted.json");
+  EXPECT_EQ(drifted.stdout_text.find(budget_refusal), std::string::npos)
+      << drifted.stdout_text.substr(0, 200);
 }
 
 // A recorded suite drifts from the model it was written against — a value gets
@@ -1052,6 +1456,32 @@ TEST(CliAnalyzeTest, ReportsARowWithAnOutOfDomainValueInInvalidTests) {
       << result.stdout_text;
 }
 
+// A recorded row is described back to the caller in the caller's own terms. The
+// two commands that consume such a suite read it with the same reader, so a row
+// carrying a value the model no longer declares has to be reported by that
+// value on both — naming the parameter alone leaves the caller unable to tell
+// which member of the row drifted.
+TEST(CliRecordedRowTest, TheRejectionReasonNamesTheValueTheRowCarried) {
+  const std::string model_path = TempPath("recorded_row_model.json");
+  WriteFile(model_path, R"({"parameters":[{"name":"browser","values":["chrome","firefox"]},)"
+                        R"({"name":"os","values":["linux","mac"]}]})");
+  const std::string rows_path = TempPath("recorded_row_suite.json");
+  WriteFile(rows_path, R"([{"browser":"edge","os":"linux"},{"browser":"chrome","os":"mac"},)"
+                       R"({"browser":"chrome","os":"linux"},{"browser":"firefox","os":"linux"},)"
+                       R"({"browser":"firefox","os":"mac"}])");
+
+  const auto analyzed = RunCli("analyze --params " + model_path + " --tests " + rows_path);
+  EXPECT_EQ(analyzed.exit_code, 3) << analyzed.stdout_text;
+  EXPECT_NE(analyzed.stdout_text.find("edge"), std::string::npos) << analyzed.stdout_text;
+  EXPECT_EQ(analyzed.stdout_text.find("missing value"), std::string::npos) << analyzed.stdout_text;
+
+  const auto extended = RunCli("extend --existing " + rows_path + " " + model_path);
+  EXPECT_EQ(extended.exit_code, 0) << extended.stdout_text;
+  EXPECT_NE(extended.stdout_text.find("value 'edge' is not declared by parameter browser"),
+            std::string::npos)
+      << extended.stdout_text;
+}
+
 // A suite at the documented row limit is accepted. The number that decides is
 // the documented row count, not the byte length of the document carrying it —
 // the same suite is accepted by the TypeScript surfaces, which never see a byte
@@ -1155,12 +1585,75 @@ TEST(SurfaceErrorTest, TheExitCodeMappingIsTotalAndDocumented) {
   EXPECT_EQ(SurfaceError(Error{Error::Code::kTupleExplosion, "", ""}).exit_code(), 3);
 }
 
+// Success is the one exit code a failure must never be given. A value outside
+// the enumeration is a failure of unknown kind, and answering 0 for it would
+// tell a caller gating on the exit code that nothing went wrong — the one
+// mistake nothing downstream can recover from.
+TEST(SurfaceErrorTest, OnlyTheOkCodeSurfacesAsSuccess) {
+  for (int raw = 0; raw <= 8; ++raw) {
+    const auto code = static_cast<Error::Code>(raw);
+    const int exit_code = SurfaceError(Error{code, "", ""}).exit_code();
+    if (code == Error::Code::kOk) {
+      EXPECT_EQ(exit_code, 0) << "raw " << raw;
+    } else {
+      EXPECT_NE(exit_code, 0) << "raw " << raw;
+    }
+  }
+  EXPECT_EQ(SurfaceError(Error{static_cast<Error::Code>(99), "", ""}).exit_code(), 3);
+}
+
 TEST(SurfaceErrorTest, AnAbsentDetailLeavesNoSeparatorBehind) {
   const Error without_detail{Error::Code::kInvalidInput, "At least one parameter is required", ""};
   EXPECT_EQ(SurfaceError(without_detail).text(), "At least one parameter is required");
 
   const Error with_detail{Error::Code::kInvalidInput, "Invalid strength", "strength must be >= 1"};
   EXPECT_EQ(SurfaceError(with_detail).text(), "Invalid strength: strength must be >= 1");
+}
+
+// A model-layer rejection is shown as the surfaced form of that very Error, not
+// as text a reader assembled on the way out. Every command that reads the model
+// document shares the reader, so all of them say the same thing.
+TEST(CliModelReaderTest, AModelRejectionIsTheSurfacedFormOfItsError) {
+  const std::string model_path = TempPath("reader_boundary_model.json");
+  WriteFile(model_path, R"({"parameters":[{"name":"a","type":"integer","range":[5,1],"values":[]},)"
+                        R"({"name":"b","values":["0","1"]}]})");
+  const std::string rows_path = TempPath("reader_boundary_rows.json");
+  WriteFile(rows_path, R"([{"a":"1","b":"0"}])");
+
+  const std::string expected =
+      "error: " +
+      SurfaceError(Error{Error::Code::kInvalidInput,
+                         "Boundary range must be finite and ordered for parameter a", ""})
+          .text() +
+      "\n";
+
+  for (const std::string& args : {"generate " + model_path, "stats " + model_path,
+                                  "extend --existing " + rows_path + " " + model_path}) {
+    const auto result = RunCliStderrOnly(args);
+    EXPECT_EQ(result.exit_code, 3) << args;
+    EXPECT_EQ(result.stdout_text, expected) << args;
+  }
+}
+
+// The detail is the half of an Error that says which of the caller's numbers
+// were in conflict. A reader that hands its caller a bare string has nowhere to
+// put it, so the caller is told a rule was broken without being told by what.
+TEST(CliModelReaderTest, ADetailedRejectionReachesTheCallerWhole) {
+  const std::string model_path = TempPath("reader_detail_model.json");
+  WriteFile(model_path,
+            R"({"parameters":[{"name":"a","values":["0","1"]},{"name":"b","values":["0","1"]}],)"
+            R"("strength":5})");
+
+  const std::string expected = "error: " +
+                               SurfaceError(Error{Error::Code::kInvalidInput,
+                                                  "Strength must be between 1 and parameter count",
+                                                  "strength=5, parameters=2"})
+                                   .text() +
+                               "\n";
+
+  const auto result = RunCliStderrOnly("generate " + model_path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+  EXPECT_EQ(result.stdout_text, expected);
 }
 
 TEST(CliExitCodeTest, OneMalformedConstraintExitsTheSameFromEverySubcommand) {
@@ -1416,4 +1909,77 @@ TEST(CliExtendTest, HandsBackAnExistingRowExactlyAsItWasSupplied) {
   EXPECT_NE(by_primary.stdout_text.find(R"("tests":[{"browser":"Chromium","os":"win"})"),
             std::string::npos)
       << by_primary.stdout_text;
+}
+
+// ---------------------------------------------------------------------------
+// Delivering output.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Run the CLI with its standard output closed, keeping stderr.
+///
+/// `2>&1` copies the capture pipe onto standard error before `>&-` closes
+/// standard output, so the diagnostic is still read back while every write to
+/// the report stream fails.
+CliResult RunCliWithClosedStdout(const std::string& args) {
+  return RunCommandLine(std::string(COVERWISE_CLI_PATH) + " " + args + " 2>&1 >&-");
+}
+
+}  // namespace
+
+// Standard output fails late: a closed pipe or a filesystem with no room left
+// surfaces when the stream is flushed, after the last insertion has returned.
+// A command that ends without looking exits 0 beside a truncated report, and a
+// caller gating on the exit code reads that document as a complete result.
+TEST(CliOutputTest, AReportThatCouldNotBeWrittenIsNotReportedAsSuccess) {
+  const std::string model_path = TempPath("output_stream_model.json");
+  WriteFile(model_path, R"({"parameters":[{"name":"a","values":["x","y"]},)"
+                        R"({"name":"b","values":["1","2"]}]})");
+  const std::string rows_path = TempPath("output_stream_rows.json");
+  WriteFile(rows_path,
+            R"([{"a":"x","b":"1"},{"a":"x","b":"2"},{"a":"y","b":"1"},{"a":"y","b":"2"}])");
+
+  const std::vector<std::string> commands = {
+      "generate " + model_path,
+      "stats " + model_path,
+      "analyze --params " + model_path + " --tests " + rows_path,
+      "extend --existing " + rows_path + " " + model_path,
+  };
+
+  for (const auto& args : commands) {
+    // Each of these writes a complete report and succeeds when the stream is
+    // there to take it, so the exit code below is about the stream alone.
+    const auto delivered = RunCli(args);
+    EXPECT_EQ(delivered.exit_code, 0) << args << ": " << delivered.stdout_text;
+
+    const auto undelivered = RunCliWithClosedStdout(args);
+    EXPECT_EQ(undelivered.exit_code, 3) << args << ": " << undelivered.stdout_text;
+    EXPECT_NE(undelivered.stdout_text.find("cannot write to standard output"), std::string::npos)
+        << args << ": " << undelivered.stdout_text;
+  }
+}
+
+// Usage the caller asked for is output the command produced, so it goes to
+// standard output where a redirect or a pipe can read it. Usage printed because
+// an invocation was wrong is a diagnostic and stays on standard error.
+TEST(CliHelpTest, RequestedUsageGoesToStandardOutputAndDiagnosedUsageToStandardError) {
+  for (const char* flag : {"--help", "-h"}) {
+    const auto requested = RunCli(flag);
+    EXPECT_EQ(requested.exit_code, 0) << flag;
+    EXPECT_NE(requested.stdout_text.find("coverwise generate"), std::string::npos) << flag;
+    EXPECT_NE(requested.stdout_text.find("Exit codes:"), std::string::npos) << flag;
+    EXPECT_EQ(RunCliStderrOnly(flag).stdout_text, "") << flag;
+  }
+
+  const auto no_command = RunCli("");
+  EXPECT_EQ(no_command.exit_code, 3) << no_command.stdout_text;
+  EXPECT_EQ(no_command.stdout_text, "");
+  EXPECT_NE(RunCliStderrOnly("").stdout_text.find("coverwise generate"), std::string::npos);
+
+  const auto unknown_command = RunCli("nosuchcommand");
+  EXPECT_EQ(unknown_command.exit_code, 3) << unknown_command.stdout_text;
+  EXPECT_EQ(unknown_command.stdout_text, "");
+  EXPECT_NE(RunCliStderrOnly("nosuchcommand").stdout_text.find("Unknown command"),
+            std::string::npos);
 }

@@ -16,6 +16,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -56,6 +57,14 @@ using coverwise::model::kMaxValuesPerParameter;
 /// build before any acceptance rule sees it.
 constexpr size_t kMaxObjectMembers = 16384;
 
+/// @brief Cap on how deeply values may nest in one JSON document.
+///
+/// Structural, not a documented input limit: the reader descends once per level,
+/// so this is what keeps a deliberately nested document from exhausting the
+/// stack before any acceptance rule sees it. Its equality with kMaxConstraints
+/// is a coincidence of two unrelated bounds rather than one shared limit.
+constexpr size_t kMaxNestingDepth = 256;
+
 // Every failure a caller sees — its exit code and its message alike — is read
 // off a SurfaceError, which only a model::Error can produce. No subcommand can
 // name an exit code: ExitStatus has no constructor taking one.
@@ -69,12 +78,39 @@ ExitStatus Fail(const coverwise::model::Error& error) {
   return surfaced;
 }
 
-/// @brief Report a failure the core never saw: an argument, a file, or a JSON
-/// document the CLI could not turn into a model. It is invalid input by
-/// definition, and routing it through a structured Error keeps its message and
-/// its exit code paired the same way a core failure's are.
-ExitStatus InvalidInput(std::string message) {
-  return Fail({coverwise::model::Error::Code::kInvalidInput, std::move(message), ""});
+/// @brief The failure a reader reports: an argument, a file, or a JSON document
+/// the CLI could not turn into a model is invalid input by definition.
+///
+/// Readers hand this back rather than a bare string so a message never travels
+/// separately from the code and detail it belongs to — the composition into user
+/// text happens once, in SurfaceError, at the surface.
+coverwise::model::Error ReaderError(std::string message) {
+  return {coverwise::model::Error::Code::kInvalidInput, std::move(message), ""};
+}
+
+/// @brief Report a failure the core never saw. Routing it through a structured
+/// Error keeps its message and its exit code paired the same way a core
+/// failure's are.
+ExitStatus InvalidInput(std::string message) { return Fail(ReaderError(std::move(message))); }
+
+/// @brief Flush standard output and turn a failed write into a failure status.
+///
+/// A report is delivered only if its bytes reached the caller, and standard
+/// output fails late: a closed pipe or a filesystem with no room left surfaces
+/// at flush time, long after the last insertion returned. A command that ends
+/// without looking would exit 0 beside a truncated document, and a caller
+/// gating on the exit code reads that document as a complete result.
+/// Both the C++ stream and the C stream underneath it are asked, because which
+/// of the two records the failed write depends on whether the two are still
+/// synchronized — a detail of the standard library, not of the report.
+ExitStatus FinishOutput(ExitStatus status) {
+  std::cout.flush();
+  const bool written =
+      static_cast<bool>(std::cout) && std::fflush(stdout) == 0 && std::ferror(stdout) == 0;
+  if (!written) {
+    return InvalidInput("cannot write to standard output");
+  }
+  return status;
 }
 
 /// @brief Print usage text and classify the invocation as invalid input.
@@ -230,8 +266,8 @@ class JsonParser {
   }
 
   JsonValue ParseValue(size_t depth = 0) {
-    if (depth > 256) {
-      error_ = "JSON nesting depth exceeds 256";
+    if (depth > kMaxNestingDepth) {
+      error_ = "JSON nesting depth exceeds " + std::to_string(kMaxNestingDepth);
       return {};
     }
     SkipWhitespace();
@@ -953,22 +989,23 @@ bool ParseBoundaryConfigs(const JsonValue& json,
 /// generation actually uses — a boundary parameter whose only spelled-out value
 /// is an invalid sentinel is well-formed, because expansion supplies the valid
 /// ones.
-/// @return true on success; on failure sets error and returns false.
-bool ParseModelParameters(const JsonValue& parameters_json,
-                          coverwise::model::GenerateOptions& options, std::string& error) {
-  if (!ParseParameters(parameters_json, options.parameters, error)) return false;
-  if (!ParseBoundaryConfigs(parameters_json, options.boundary_configs, error)) return false;
-  auto expansion = coverwise::model::ExpandBoundaries(options);
-  if (!expansion.ok()) {
-    error = expansion.message + (expansion.detail.empty() ? "" : ": " + expansion.detail);
-    return false;
+/// @return an ok Error on success, otherwise the failure as the model layer
+///         reported it — a model-layer Error is passed on whole rather than
+///         flattened into a string, so its code and its detail still reach the
+///         surface that renders it.
+coverwise::model::Error ParseModelParameters(const JsonValue& parameters_json,
+                                             coverwise::model::GenerateOptions& options) {
+  std::string error;
+  if (!ParseParameters(parameters_json, options.parameters, error)) {
+    return ReaderError(std::move(error));
   }
-  auto validation = coverwise::model::ValidateParameters(options.parameters);
-  if (!validation.ok()) {
-    error = validation.message;
-    return false;
+  if (!ParseBoundaryConfigs(parameters_json, options.boundary_configs, error)) {
+    return ReaderError(std::move(error));
   }
-  return true;
+  if (auto expansion = coverwise::model::ExpandBoundaries(options); !expansion.ok()) {
+    return expansion;
+  }
+  return coverwise::model::ValidateParameters(options.parameters);
 }
 
 /// @brief How strictly a row array is held to the declared parameter set.
@@ -984,13 +1021,28 @@ enum class TestRowPolicy {
   kRecorded,
 };
 
+/// @brief Caller-supplied row text charged so far in one invocation.
+///
+/// The documented aggregate budget bounds the strings a single call hands the
+/// engine, so every row array a subcommand reads draws from one total: `extend`
+/// reads both `existing` and `seeds`, and two half-sized suites are the same
+/// input dimension as one full-sized one.
+struct RowStringBudget {
+  size_t charged = 0;
+};
+
 /// @brief Parse test cases from a JSON array of objects with scalar values.
 /// Each test object maps parameter names to values; the result carries value
 /// indices matching the parameter definitions, or model::kUnassigned where a
 /// kRecorded row does not match the model.
+///
+/// Row text is the largest dimension of an input, so it is charged against the
+/// documented aggregate budget here, where it is read and before any of it
+/// reaches the engine.
 bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Parameter>& params,
                 TestRowPolicy policy, const char* field,
-                std::vector<coverwise::model::TestCase>& tests, std::string& error) {
+                std::vector<coverwise::model::TestCase>& tests, RowStringBudget& budget,
+                std::string& error) {
   if (json.type != JsonType::kArray) {
     error = std::string(field) + " must be a JSON array";
     return false;
@@ -1004,6 +1056,17 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
     if (t.type != JsonType::kObject) {
       error = std::string(field) + " " + std::to_string(i) + " must be an object";
       return false;
+    }
+    // A row's values are the caller's own strings; its keys are parameter names,
+    // which the model already charges once each. Charging keys per row too would
+    // make the budget shrink with the parameter count rather than bound the text
+    // the caller actually supplied.
+    //
+    // Counting is all this does. Whether the total is too large is the
+    // acceptance gate's judgement, and it is told the count, so neither the
+    // limit nor the sentence that reports it exists a second time here.
+    for (const auto& member : t.object_vals) {
+      if (member.type == JsonType::kString) budget.charged += member.string_val.size();
     }
     if (policy == TestRowPolicy::kSeed) {
       for (const auto& key : t.object_keys) {
@@ -1205,40 +1268,50 @@ bool ParseWeights(const JsonValue& json, coverwise::model::WeightConfig& weights
 /// `seeds` are held to the seed policy here even for `stats`, which reports no
 /// figure derived from them: the acceptance decision is the whole point of a
 /// preflight, so a seed row generation would refuse must not pass.
-/// @return true on success; on failure sets error and returns false.
-bool ParseModelDocument(const JsonValue& json, coverwise::model::GenerateOptions& options,
-                        std::string& error) {
+/// @param budget Row text charged so far in this invocation, which `seeds` draws
+///        from alongside whatever row array the subcommand reads separately.
+/// @return an ok Error on success, otherwise the failure to surface.
+coverwise::model::Error ParseModelDocument(const JsonValue& json,
+                                           coverwise::model::GenerateOptions& options,
+                                           RowStringBudget& budget) {
   // Parameters are parsed and their boundary value space expanded first, so
   // that everything below resolves value names against the value space
   // generation actually uses.
-  if (!ParseModelParameters(json["parameters"], options, error)) return false;
+  if (auto error = ParseModelParameters(json["parameters"], options); !error.ok()) return error;
 
+  std::string error;
   // Optional scalar fields.
-  if (!ParseOptionalUint32(json, "strength", 1, options.strength, error)) return false;
+  if (!ParseOptionalUint32(json, "strength", 1, options.strength, error)) {
+    return ReaderError(std::move(error));
+  }
   uint32_t seed = 0;
-  if (!ParseOptionalUint32(json, "seed", 0, seed, error)) return false;
+  if (!ParseOptionalUint32(json, "seed", 0, seed, error)) return ReaderError(std::move(error));
   options.seed = seed;
-  if (!ParseOptionalUint32(json, "maxTests", 0, options.max_tests, error)) return false;
+  if (!ParseOptionalUint32(json, "maxTests", 0, options.max_tests, error)) {
+    return ReaderError(std::move(error));
+  }
 
   // Constraints (array of strings).
   if (!ParseConstraintExpressions(json["constraints"], options.constraint_expressions, error)) {
-    return false;
+    return ReaderError(std::move(error));
   }
 
   // Weights: {"param_name": {"value_name": weight, ...}, ...}
-  if (!ParseWeights(json["weights"], options.weights, error)) return false;
+  if (!ParseWeights(json["weights"], options.weights, error)) return ReaderError(std::move(error));
 
   // Sub-models (mixed-strength parameter groups).
-  if (!ParseSubModels(json["subModels"], options.sub_models, error)) return false;
+  if (!ParseSubModels(json["subModels"], options.sub_models, error)) {
+    return ReaderError(std::move(error));
+  }
 
   // Seed tests (existing tests to build upon). Their value indices point into
   // the already-expanded value lists.
   const auto& seeds_val = json["seeds"];
   if (!seeds_val.IsNull() && !ParseTests(seeds_val, options.parameters, TestRowPolicy::kSeed,
-                                         "seeds", options.seeds, error)) {
-    return false;
+                                         "seeds", options.seeds, budget, error)) {
+    return ReaderError(std::move(error));
   }
-  return true;
+  return {};
 }
 
 // ---------------------------------------------------------------------------
@@ -1571,14 +1644,16 @@ ExitStatus RunGenerate(int argc, char* argv[]) {
     return InvalidInput("input must be a JSON object");
   }
 
-  std::string error;
+  RowStringBudget budget;
   coverwise::model::GenerateOptions options;
-  if (!ParseModelDocument(json, options, error)) {
-    return InvalidInput(error);
+  if (auto error = ParseModelDocument(json, options, budget); !error.ok()) {
+    return Fail(error);
   }
 
   const uint32_t strength = options.strength;
-  auto accepted = coverwise::model::AcceptOptions(std::move(options));
+  // The row text read above and the model's own strings are one input, so the
+  // gate judges them against one budget.
+  auto accepted = coverwise::model::AcceptOptions(std::move(options), budget.charged);
   if (!accepted.ok()) {
     return Fail(accepted.error());
   }
@@ -1594,7 +1669,7 @@ ExitStatus RunGenerate(int argc, char* argv[]) {
 
   WriteGenerateResult(result, effective_params, strength);
   ReportResultError(result);
-  return status;
+  return FinishOutput(status);
 }
 
 ExitStatus RunAnalyze(int argc, char* argv[]) {
@@ -1675,15 +1750,16 @@ ExitStatus RunAnalyze(int argc, char* argv[]) {
   }
 
   // Analyze uses the same effective boundary-expanded value space as generate.
-  // Its --strength is an analysis parameter rather than a property of the
-  // model: a suite may be analyzed at a strength above the parameter count,
-  // where the tuple universe is simply empty, and analyzeCoverage on the JS
-  // surfaces allows that too. Submit the model at strength 1 so the gate judges
-  // the model alone; ValidateCoverage receives the requested strength.
+  // Its --strength is an analysis parameter rather than a property of the model,
+  // so the model goes to the acceptance gate at strength 1 and the gate judges
+  // the model alone. The requested strength is judged by ValidateCoverage, which
+  // is fail-closed about it on every surface: 0, or more than the parameter
+  // count, is invalid input rather than a coverage claim over an empty tuple
+  // universe.
   coverwise::model::GenerateOptions model_options;
   model_options.strength = 1;
-  if (!ParseModelParameters(*params_array, model_options, error)) {
-    return InvalidInput(error);
+  if (auto model_error = ParseModelParameters(*params_array, model_options); !model_error.ok()) {
+    return Fail(model_error);
   }
   std::vector<coverwise::model::Parameter> params = model_options.parameters;
 
@@ -1741,13 +1817,14 @@ ExitStatus RunAnalyze(int argc, char* argv[]) {
   // the first drifted row.
   std::vector<coverwise::model::TestCase> tests;
   const JsonValue* tests_array = nullptr;
+  RowStringBudget budget;
   if (!ExtractTestsArray(tests_json, tests_array, error) ||
-      !ParseTests(*tests_array, params, TestRowPolicy::kRecorded, "tests", tests, error)) {
+      !ParseTests(*tests_array, params, TestRowPolicy::kRecorded, "tests", tests, budget, error)) {
     return InvalidInput(error);
   }
 
   model_options.constraint_expressions = constraint_expressions;
-  auto accepted = coverwise::model::AcceptOptions(std::move(model_options));
+  auto accepted = coverwise::model::AcceptOptions(std::move(model_options), budget.charged);
   if (!accepted.ok()) {
     return Fail(accepted.error());
   }
@@ -1776,14 +1853,14 @@ ExitStatus RunAnalyze(int argc, char* argv[]) {
   // even when the valid subset covers everything. The details are still in the
   // JSON body (invalidTests). This takes precedence over the coverage shortfall.
   if (!report.invalid_tests.empty()) {
-    return InvalidInput(std::to_string(report.invalid_tests.size()) +
-                        " invalid test(s) in the analyzed suite");
+    return FinishOutput(InvalidInput(std::to_string(report.invalid_tests.size()) +
+                                     " invalid test(s) in the analyzed suite"));
   }
   if (report.coverage_ratio < 1.0) {
-    return SurfaceError(
-        {coverwise::model::Error::Code::kInsufficientCoverage, "Coverage is below 100%", ""});
+    return FinishOutput(SurfaceError(
+        {coverwise::model::Error::Code::kInsufficientCoverage, "Coverage is below 100%", ""}));
   }
-  return ExitStatus::Success();
+  return FinishOutput(ExitStatus::Success());
 }
 
 ExitStatus RunExtend(int argc, char* argv[]) {
@@ -1827,9 +1904,12 @@ ExitStatus RunExtend(int argc, char* argv[]) {
   // resolved against it, so every row's value indices match the parameters that
   // generation and rendering share.
   std::string error;
+  // One budget for the whole invocation: the model document's `seeds` and the
+  // `--existing` suite are both caller row text handed to the same run.
+  RowStringBudget budget;
   coverwise::model::GenerateOptions options;
-  if (!ParseModelDocument(input_json, options, error)) {
-    return InvalidInput(error);
+  if (auto document_error = ParseModelDocument(input_json, options, budget); !document_error.ok()) {
+    return Fail(document_error);
   }
 
   // Read and parse existing tests.
@@ -1852,12 +1932,12 @@ ExitStatus RunExtend(int argc, char* argv[]) {
   const JsonValue* existing_array = nullptr;
   if (!ExtractTestsArray(existing_json, existing_array, error) ||
       !ParseTests(*existing_array, options.parameters, TestRowPolicy::kRecorded, "existing",
-                  existing, error)) {
+                  existing, budget, error)) {
     return InvalidInput(error);
   }
 
   const uint32_t strength = options.strength;
-  auto accepted = coverwise::model::AcceptOptions(std::move(options));
+  auto accepted = coverwise::model::AcceptOptions(std::move(options), budget.charged);
   if (!accepted.ok()) {
     return Fail(accepted.error());
   }
@@ -1872,7 +1952,7 @@ ExitStatus RunExtend(int argc, char* argv[]) {
 
   WriteGenerateResult(result, effective_params, strength, existing_array);
   ReportResultError(result);
-  return status;
+  return FinishOutput(status);
 }
 
 ExitStatus RunStats(int argc, char* argv[]) {
@@ -1899,13 +1979,13 @@ ExitStatus RunStats(int argc, char* argv[]) {
   // reader: a document generate would refuse must not be reported on as if it
   // were a model. None of the figures below is derived from the fields that only
   // generation uses.
-  std::string error;
+  RowStringBudget budget;
   coverwise::model::GenerateOptions options;
-  if (!ParseModelDocument(json, options, error)) {
-    return InvalidInput(error);
+  if (auto error = ParseModelDocument(json, options, budget); !error.ok()) {
+    return Fail(error);
   }
 
-  auto accepted = coverwise::model::AcceptOptions(std::move(options));
+  auto accepted = coverwise::model::AcceptOptions(std::move(options), budget.charged);
   if (!accepted.ok()) {
     return Fail(accepted.error());
   }
@@ -1960,7 +2040,7 @@ ExitStatus RunStats(int argc, char* argv[]) {
   w.EndObject();
   std::cout << '\n';
 
-  return ExitStatus::Success();
+  return FinishOutput(ExitStatus::Success());
 }
 
 const char* UsageText() {
@@ -1990,9 +2070,13 @@ int main(int argc, char* argv[]) {
 
     std::string command = argv[1];
 
+    // Usage asked for is information the caller requested and the command
+    // produced, so it goes to standard output, where `--help > help.txt` and
+    // `--help | grep` can read it. Usage printed because an invocation was
+    // wrong is a diagnostic and stays on standard error.
     if (command == "--help" || command == "-h") {
-      std::cerr << UsageText();
-      return ExitStatus::Success().exit_code();
+      std::cout << UsageText();
+      return FinishOutput(ExitStatus::Success()).exit_code();
     }
 
     if (command == "generate") {
