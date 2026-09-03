@@ -42,7 +42,7 @@ rebuild: clean build
 
 format:
 	find src tests tools -name '*.cpp' -o -name '*.h' | xargs clang-format -i
-	# TS/WASM fix (note: package.json's lint:fix covers js/ tests/wasm/ only, not src/ts/)
+	# TypeScript auto-fix: js/, tests/wasm/ and src/ts/.
 	yarn lint:fix
 	rye sync --pyproject bindings/python/pyproject.toml
 	rye run --pyproject bindings/python/pyproject.toml ruff format bindings/python/src bindings/python/tests

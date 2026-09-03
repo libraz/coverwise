@@ -116,7 +116,12 @@ if(COVERWISE_ENABLE_COVERAGE)
   endif()
 endif()
 
-if(NOT COVERWISE_BUILD_WASM)
+# Installing is a top-level-only effect: a parent that embeds coverwise through
+# add_subdirectory or FetchContent must not ship coverwise's headers, archive or
+# CMake package from its own install prefix, where a third-party
+# find_package(coverwise CONFIG) would then resolve to an archive built with the
+# parent's flags and language standard.
+if(COVERWISE_TOP_LEVEL AND NOT COVERWISE_BUILD_WASM)
   install(TARGETS coverwise_lib
     EXPORT coverwiseTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -124,12 +129,32 @@ if(NOT COVERWISE_BUILD_WASM)
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/coverwise
   )
-  install(DIRECTORY "${PROJECT_SOURCE_DIR}/src/"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/coverwise"
-    FILES_MATCHING PATTERN "*.h"
-    PATTERN "ts" EXCLUDE
-    PATTERN "binding" EXCLUDE
+  # The installed header set is exactly the transitive include closure of
+  # coverwise.h -- the surface the C++ API reference documents. Internal headers
+  # (the bitset representation above all, but also the coverage engine, the
+  # strategy layer and the option/error internals) stay out of the install tree
+  # so they cannot become a de facto public, version-pinned API.
+  set(COVERWISE_PUBLIC_HEADERS
+    coverwise.h
+    core/generator.h
+    model/boundary.h
+    model/constraint_ast.h
+    model/constraint_parser.h
+    model/error.h
+    model/generate_options.h
+    model/limits.h
+    model/parameter.h
+    model/test_case.h
+    util/string_util.h
+    validator/constraint_validator.h
+    validator/coverage_validator.h
   )
+  foreach(header IN LISTS COVERWISE_PUBLIC_HEADERS)
+    get_filename_component(header_subdir "${header}" DIRECTORY)
+    install(FILES "${PROJECT_SOURCE_DIR}/src/${header}"
+      DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/coverwise/${header_subdir}"
+    )
+  endforeach()
   install(EXPORT coverwiseTargets
     FILE coverwiseTargets.cmake
     NAMESPACE coverwise::

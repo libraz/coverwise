@@ -5,7 +5,7 @@
 [![codecov](https://codecov.io/gh/libraz/coverwise/branch/main/graph/badge.svg)](https://codecov.io/gh/libraz/coverwise)
 [![License](https://img.shields.io/github/license/libraz/coverwise)](https://github.com/libraz/coverwise/blob/main/LICENSE)
 
-Combinatorial test coverage engine via WebAssembly. Analyzes existing tests for coverage gaps, generates minimal test suites, and extends tests incrementally — no native dependencies.
+Combinatorial test coverage engine via WebAssembly. Analyzes existing tests for coverage gaps, generates compact test suites, and extends tests incrementally — no native dependencies.
 
 ## Install
 
@@ -74,11 +74,16 @@ const result = cw.generate({ parameters: [/* ... */] });
 
 ```html
 <script type="module">
-  import { Coverwise } from 'https://esm.sh/@libraz/coverwise';
+  import { Coverwise } from 'https://cdn.jsdelivr.net/npm/@libraz/coverwise/dist/js/index.js';
   const cw = await Coverwise.create();
   const result = cw.generate({ parameters: [/* ... */] });
 </script>
 ```
+
+Load the package files as published. A CDN that overlays a Node compatibility
+layer on browser code makes the WASM loader take its Node path, and
+`Coverwise.create()` then fails to initialize. The pure TypeScript entry point
+loads no WASM and has no such requirement.
 
 ## API
 
@@ -87,7 +92,7 @@ const result = cw.generate({ parameters: [/* ... */] });
 | `Coverwise.create()` | Create instance (loads WASM once) |
 | `cw.analyzeCoverage(params, tests, strength?, constraints?)` | Measure t-wise coverage, list uncovered combinations (constraint-excluded tuples are removed from the universe) |
 | `cw.extendTests(existing, input)` | Add only the tests needed to close coverage gaps |
-| `cw.generate(input)` | Generate minimal covering array from scratch |
+| `cw.generate(input)` | Generate compact covering array from scratch |
 | `cw.estimateModel(input)` | Preview model statistics |
 
 Function-based API (`init()` + `generate()`, `analyzeCoverage()`, ...) is also available.
@@ -97,13 +102,13 @@ Function-based API (`init()` + `generate()`, `analyzeCoverage()`, ...) is also a
 - **Coverage analysis** — Measure any test suite's t-wise coverage and list every uncovered combination
 - **Incremental extension** — Add only the tests needed to close coverage gaps
 - **Pairwise & t-wise** — 2-wise through arbitrary strength
-- **Constraints** — `IF/THEN/ELSE`, `AND/OR/NOT`, relational, `IN`, `LIKE`
+- **Constraints** — `IF/THEN/ELSE`, `IMPLIES`, `AND/OR/NOT`, relational, `IN`, `LIKE`
 - **Negative testing** — Auto-generate single-fault tests from `invalid` values
 - **Mixed strength** — Sub-models for critical parameter groups
 - **Boundary values** — Auto-expand integer/float ranges
 - **Equivalence classes** — Class-level coverage tracking
 - **Seed tests** — Build on existing tests incrementally
-- **Deterministic** — Same valid input + seed = identical output across native C++, WASM, and Pure TS ([parity tests](https://github.com/libraz/coverwise/blob/main/js/compat.test.ts))
+- **Deterministic** — Same valid input + seed = identical output across native C++, WASM, and Pure TS ([WASM / Pure TS parity tests](https://github.com/libraz/coverwise/blob/main/js/compat.test.ts))
 
 For valid, satisfiable models within the resource budget, generation without a restrictive
 `maxTests` limit targets 100% coverage. Constraint-unreachable tuples are excluded from the

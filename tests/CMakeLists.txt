@@ -54,7 +54,8 @@ coverwise_add_test(greedy_test algo/greedy_test.cpp)
 
 # Core tests
 coverwise_add_test(constraint_solver_test core/constraint_solver_test.cpp)
-coverwise_add_test(coverage_engine_test core/coverage_engine_test.cpp)
+coverwise_add_test(coverage_engine_test core/coverage_engine_test.cpp
+  support/allocation_counter.cpp)
 coverwise_add_test(generator_test core/generator_test.cpp)
 
 # Validator tests
@@ -106,14 +107,37 @@ add_test(NAME cmake_add_subdirectory_fixture
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_fixture.cmake
 )
 
+add_test(NAME cmake_add_subdirectory_cli_fixture
+  COMMAND ${CMAKE_COMMAND}
+    -DMODE=add_subdirectory
+    -DCONFIG=$<CONFIG>
+    -DCOVERWISE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+    -DCOVERWISE_BINARY_DIR=${PROJECT_BINARY_DIR}
+    -DFIXTURE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/add_subdirectory_cli
+    -DFIXTURE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/cmake-add-subdirectory-cli
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_fixture.cmake
+)
+
 add_test(NAME cmake_find_package_fixture
   COMMAND ${CMAKE_COMMAND}
     -DMODE=find_package
     -DCONFIG=$<CONFIG>
     -DCOVERWISE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
     -DCOVERWISE_BINARY_DIR=${PROJECT_BINARY_DIR}
+    -DCOVERWISE_EXPECTED_VERSION=${PROJECT_VERSION}
     -DFIXTURE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/find_package
     -DFIXTURE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/cmake-find-package
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_fixture.cmake
+)
+
+add_test(NAME cmake_installed_headers_fixture
+  COMMAND ${CMAKE_COMMAND}
+    -DMODE=find_package
+    -DCONFIG=$<CONFIG>
+    -DCOVERWISE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+    -DCOVERWISE_BINARY_DIR=${PROJECT_BINARY_DIR}
+    -DFIXTURE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/installed_headers
+    -DFIXTURE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/cmake-installed-headers
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_fixture.cmake
 )
 

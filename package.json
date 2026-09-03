@@ -22,6 +22,12 @@
     "./wasm": "./dist/coverwise.wasm",
     "./package.json": "./package.json"
   },
+  "typesVersions": {
+    "*": {
+      "pure": ["dist/js/pure/index.d.ts"],
+      "constraint": ["dist/js/constraint.d.ts"]
+    }
+  },
   "files": [
     "dist"
   ],
@@ -39,7 +45,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "prepack": "cp README.md /tmp/coverwise-readme-bak && cp README.npm.md README.md",
+    "prepack": "cp README.md /tmp/coverwise-readme-bak && cp npm-readme.md README.md",
     "postpack": "mv /tmp/coverwise-readme-bak README.md",
     "prepublishOnly": "yarn clean && yarn build && yarn lint && yarn test"
   },
