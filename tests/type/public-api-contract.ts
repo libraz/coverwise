@@ -10,9 +10,9 @@
 /// directive is itself a compile error, so this file fails in either direction.
 
 import { when } from '../../js/constraint.js';
-import { Coverwise as PureCoverwise } from '../../js/pure/index.js';
 import type { Constraint, GenerateResult, IfConstraint, NegativeCoverage } from '../../js/index.js';
 import { Coverwise as WasmCoverwise } from '../../js/index.js';
+import { Coverwise as PureCoverwise } from '../../js/pure/index.js';
 
 // A typed helper over the negative-testing report is the use case that requires
 // NegativeCoverage to be exported rather than reconstructed by hand.

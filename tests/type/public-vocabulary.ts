@@ -11,6 +11,7 @@
 
 import type {
   CoverwiseErrorCode,
+  ExtendInput,
   FloatBoundaryParameter,
   GenerateInput,
   IntegerBoundaryParameter,
@@ -23,9 +24,9 @@ import type {
 /// `-?` says that being optional on the published shape is no excuse for going
 /// unnamed here. Most of what these maps enumerate is optional, so a form that
 /// let optionality through would enumerate almost nothing.
-type EveryKey<K extends PropertyKey> = { [P in K]-?: true };
+export type EveryKey<K extends PropertyKey> = { [P in K]-?: true };
 
-/** Every field of a generate or extend input. */
+/** Every field of a generate input. */
 export const GENERATE_INPUT_FIELDS: EveryKey<keyof GenerateInput> = {
   parameters: true,
   constraints: true,
@@ -37,8 +38,25 @@ export const GENERATE_INPUT_FIELDS: EveryKey<keyof GenerateInput> = {
   subModels: true,
 };
 
+/**
+ * Every field of any published input shape.
+ *
+ * Keyed by the union rather than by one of the shapes: the extend input is a
+ * generate input plus fields of its own, and keying on the generate input alone
+ * left those fields named nowhere -- present on the published surface, absent
+ * from the vocabulary, and free to be renamed or dropped without anything
+ * failing. The union is what makes "a published input field" the thing the
+ * compiler counts.
+ */
+export type PublishedInputField = keyof GenerateInput | keyof ExtendInput;
+
+export const PUBLISHED_INPUT_FIELDS: EveryKey<PublishedInputField> = {
+  ...GENERATE_INPUT_FIELDS,
+  mode: true,
+};
+
 /** Every field any published parameter shape declares. */
-type ParameterField =
+export type ParameterField =
   | keyof PlainParameter
   | keyof IntegerBoundaryParameter
   | keyof FloatBoundaryParameter;
