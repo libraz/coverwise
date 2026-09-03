@@ -92,3 +92,39 @@ TEST(ValidateParametersTest, RejectsAliasPrimaryAndCaseOnlyCollisions) {
   EXPECT_EQ(coverwise::model::ValidateParameters({case_collision}).code,
             coverwise::model::Error::Code::kInvalidInput);
 }
+
+// The fold exists to decide equality, and a decision is all it is allowed to
+// produce: the case a caller wrote is the case that comes back, so which way
+// the fold happens to map letters stays invisible from outside.
+TEST(ValidateParametersTest, ARejectionQuotesTheTextTheCallerWroteNotTheFoldedForm) {
+  const Error duplicate_name = ValidateParameters({
+      Parameter{"OsName", {"a"}},
+      Parameter{"osNAME", {"b"}},
+  });
+  ASSERT_EQ(duplicate_name.code, Error::Code::kInvalidInput);
+  EXPECT_EQ(duplicate_name.message, "Parameter names must not differ only by ASCII case: 'osNAME'");
+
+  const Error ambiguous_value = ValidateParameters({Parameter{"Browser", {"Chrome", "CHROME"}}});
+  ASSERT_EQ(ambiguous_value.code, Error::Code::kInvalidInput);
+  EXPECT_EQ(ambiguous_value.message, "Ambiguous value or alias 'CHROME' in parameter 'Browser'");
+
+  Parameter aliased{"Browser", {"Chrome", "Edge"}};
+  aliased.set_aliases({{}, {"chROME"}});
+  const Error ambiguous_alias = ValidateParameters({aliased});
+  ASSERT_EQ(ambiguous_alias.code, Error::Code::kInvalidInput);
+  EXPECT_EQ(ambiguous_alias.message, "Ambiguous value or alias 'chROME' in parameter 'Browser'");
+}
+
+TEST(ParameterTest, ResolvingAValueByEitherCaseLeavesTheStoredSpellingAlone) {
+  const Parameter p{"Browser", {"Chrome", "FireFox"}};
+
+  for (const char* spelling : {"Chrome", "chrome", "CHROME", "cHrOmE"}) {
+    EXPECT_EQ(p.find_value_index(spelling, /*case_sensitive=*/false), 0u) << spelling;
+  }
+  EXPECT_EQ(p.find_value_index("chrome", /*case_sensitive=*/true), UINT32_MAX);
+
+  // Whatever spelling resolved it, the value itself is untouched.
+  EXPECT_EQ(p.values[0], "Chrome");
+  EXPECT_EQ(p.values[1], "FireFox");
+  EXPECT_EQ(p.display_name(1, 0), "FireFox");
+}

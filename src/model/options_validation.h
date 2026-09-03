@@ -4,7 +4,9 @@
 #ifndef COVERWISE_MODEL_OPTIONS_VALIDATION_H_
 #define COVERWISE_MODEL_OPTIONS_VALIDATION_H_
 
+#include <cstddef>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "model/generate_options.h"
@@ -14,12 +16,20 @@ namespace model {
 
 class AcceptedOptions;
 
+/// @brief The one sentence reporting that the aggregate string budget is spent.
+///
+/// The aggregate limit is documented per input rather than per surface, so a
+/// surface that charges caller text outside this gate — a reader accounting for
+/// test rows before they are resolved to value indices, say — rejects with this
+/// text rather than composing its own. Defined once so no surface can agree on
+/// the number while drifting on the words.
+std::string AggregateBudgetExceededMessage();
+
 /// @brief Validate a GenerateOptions object against the full acceptance rules.
 ///
-/// Callers that already hold a GenerateOptions (the engine re-checks its own
-/// input) use this directly. Public surfaces go through AcceptOptions instead,
-/// which also runs boundary expansion so the rules are applied to the value
-/// space generation will actually use.
+/// This is the rule set alone, judging the value space it is handed. Callers go
+/// through AcceptOptions instead, which runs boundary expansion first so the
+/// rules are applied to the value space generation will actually use.
 Error ValidateGenerateOptions(const GenerateOptions& options);
 
 /// @brief Validate every boundary config and expand the parameters it covers.
@@ -52,7 +62,7 @@ class ValidatedOptions {
   const GenerateOptions& get() const { return options_; }
 
  private:
-  friend AcceptedOptions AcceptOptions(GenerateOptions options);
+  friend AcceptedOptions AcceptOptions(GenerateOptions options, size_t charged_bytes);
 
   explicit ValidatedOptions(GenerateOptions options) : options_(std::move(options)) {}
 
@@ -75,7 +85,7 @@ class AcceptedOptions {
   const ValidatedOptions* operator->() const { return &*value_; }
 
  private:
-  friend AcceptedOptions AcceptOptions(GenerateOptions options);
+  friend AcceptedOptions AcceptOptions(GenerateOptions options, size_t charged_bytes);
 
   explicit AcceptedOptions(Error error) : error_(std::move(error)) {}
   explicit AcceptedOptions(ValidatedOptions value) : value_(std::move(value)) {}
@@ -91,6 +101,20 @@ class AcceptedOptions {
 /// object) into a GenerateOptions; every rule about what that struct may
 /// contain lives here, so the surfaces cannot disagree about what is accepted.
 AcceptedOptions AcceptOptions(GenerateOptions options);
+
+/// @brief Run the acceptance gate with part of the string budget already spent.
+///
+/// A surface reads caller text that the options do not carry to the engine: a
+/// test row arrives as value names and reaches the engine as value indices. The
+/// documented aggregate limit is per input, not per accumulator, so a surface
+/// that charges such text as it reads it hands the total here and the whole
+/// input is judged against one budget. Charging it here instead would need a
+/// second description of which strings count, which is the thing this gate
+/// exists to keep singular.
+///
+/// @param charged_bytes UTF-8 bytes the caller has already counted toward the
+///        aggregate limit. Zero behaves exactly like the single-argument form.
+AcceptedOptions AcceptOptions(GenerateOptions options, size_t charged_bytes);
 
 }  // namespace model
 }  // namespace coverwise

@@ -8,6 +8,9 @@
 #include <utility>
 #include <vector>
 
+#include "model/limits.h"
+#include "util/string_util.h"
+
 namespace coverwise {
 namespace model {
 
@@ -58,17 +61,6 @@ std::vector<uint32_t> Utf8Codepoints(const std::string& value) {
   std::vector<uint32_t> result;
   Utf8Codepoints(value, result);
   return result;
-}
-
-/// @brief Fold a string to lower case, ASCII letters only.
-std::string FoldAsciiString(const std::string& value) {
-  std::string folded = value;
-  for (char& c : folded) {
-    if (c >= 'A' && c <= 'Z') {
-      c = static_cast<char>(c + ('a' - 'A'));
-    }
-  }
-  return folded;
 }
 
 }  // namespace
@@ -299,7 +291,23 @@ ConstraintResult RelationalNode::Evaluate(const std::vector<uint32_t>& assignmen
 // --- InNode ---
 
 InNode::InNode(uint32_t param_index, std::vector<uint32_t> value_indices)
-    : param_index_(param_index), value_indices_(std::move(value_indices)) {}
+    : param_index_(param_index) {
+  // An index no parameter can hold is not a member of anything, so it is left
+  // out rather than allowed to size the table. That covers kUnassigned, which
+  // Evaluate answers kUnknown for before it ever reaches the table, and every
+  // index at or past kMaxValuesPerParameter, which no value of a well-formed
+  // model occupies. Bounding the index also bounds the table: it costs one bit
+  // per value a parameter is allowed to have, whatever the caller passes.
+  const auto in_domain = [](uint32_t vi) { return vi < kMaxValuesPerParameter; };
+  uint32_t highest = 0;
+  for (uint32_t vi : value_indices) {
+    if (in_domain(vi) && vi > highest) highest = vi;
+  }
+  members_.assign(static_cast<size_t>(highest) + 1, false);
+  for (uint32_t vi : value_indices) {
+    if (in_domain(vi)) members_[vi] = true;
+  }
+}
 
 ConstraintResult InNode::Evaluate(const std::vector<uint32_t>& assignment) const {
   if (param_index_ >= assignment.size()) {
@@ -309,12 +317,10 @@ ConstraintResult InNode::Evaluate(const std::vector<uint32_t>& assignment) const
   if (val == kUnassigned) {
     return ConstraintResult::kUnknown;
   }
-  for (uint32_t vi : value_indices_) {
-    if (val == vi) {
-      return ConstraintResult::kTrue;
-    }
+  if (val >= members_.size()) {
+    return ConstraintResult::kFalse;
   }
-  return ConstraintResult::kFalse;
+  return members_[val] ? ConstraintResult::kTrue : ConstraintResult::kFalse;
 }
 
 // --- LikeNode ---
@@ -323,19 +329,19 @@ LikeNode::LikeNode(uint32_t param_index, const std::string& pattern,
                    const std::vector<std::string>& param_values, bool case_sensitive)
     : param_index_(param_index), pattern_(pattern) {
   // Case-insensitive matching folds the pattern and every value once here, so
-  // Evaluate stays a precomputed lookup. Folding is ASCII-only (same policy as
-  // util::CaseInsensitiveEqual) and byte-wise folding is safe on UTF-8 because
-  // no byte of a multi-byte sequence falls in the 'A'-'Z' range.
+  // Evaluate stays a precomputed lookup. The fold is util::FoldAsciiString,
+  // which is the same one util::CaseInsensitiveEqual applies, so LIKE and the
+  // equality operators cannot disagree about what case-insensitive means.
   //
   // The pattern is decomposed into codepoints once and each value reuses one
   // scratch buffer, so construction costs (sum of value lengths + pattern
   // length) rather than (value count x pattern length).
   const std::vector<uint32_t> pattern_codepoints =
-      Utf8Codepoints(case_sensitive ? pattern : FoldAsciiString(pattern));
+      Utf8Codepoints(case_sensitive ? pattern : util::FoldAsciiString(pattern));
   std::vector<uint32_t> value_codepoints;
   matches_.resize(param_values.size());
   for (size_t i = 0; i < param_values.size(); ++i) {
-    Utf8Codepoints(case_sensitive ? param_values[i] : FoldAsciiString(param_values[i]),
+    Utf8Codepoints(case_sensitive ? param_values[i] : util::FoldAsciiString(param_values[i]),
                    value_codepoints);
     matches_[i] = GlobMatch(pattern_codepoints, value_codepoints);
   }
@@ -407,7 +413,7 @@ std::pair<ValueKeys, ValueKeys> InternValuePair(const std::vector<std::string>& 
   const auto intern = [&](const std::vector<std::string>& values) {
     ValueKeys keys(values.size());
     for (size_t i = 0; i < values.size(); ++i) {
-      const std::string folded = case_sensitive ? values[i] : FoldAsciiString(values[i]);
+      const std::string folded = case_sensitive ? values[i] : util::FoldAsciiString(values[i]);
       const auto next = static_cast<uint32_t>(table.size());
       keys[i] = table.emplace(folded, next).first->second;
     }

@@ -3,6 +3,13 @@
 import { isNumeric } from '../util/string_util.js';
 import type { BoundaryConfig } from './boundary.js';
 import { BoundaryType, expandBoundaryValues } from './boundary.js';
+import {
+  BOUNDARY_METADATA_FIELDS,
+  boundaryAcceptanceError,
+  INTEGER_BOUNDARY_STEP,
+  isSafeBoundaryInteger,
+} from './boundary-rules.js';
+import { aggregateBudgetExceeded } from './budget.js';
 import { ErrorCode, type ErrorInfo, okError } from './error.js';
 import {
   MAX_AGGREGATE_STRING_BYTES,
@@ -144,7 +151,7 @@ function validateStringBudget(options: GenerateOptions, params: Parameter[]): Er
     }
     aggregate += bytes;
     if (aggregate > MAX_AGGREGATE_STRING_BYTES) {
-      return invalid(`Input strings exceed ${MAX_AGGREGATE_STRING_BYTES} UTF-8 bytes`);
+      return invalid(aggregateBudgetExceeded());
     }
     return okError();
   };
@@ -201,12 +208,30 @@ function validateStringBudget(options: GenerateOptions, params: Parameter[]): Er
       }
     }
   }
+  // A row enters the engine as value indices and costs nothing, except where a
+  // position did not resolve: that text is the caller's own and is carried
+  // through to the diagnostics, so it is charged like any other input string.
+  for (let row = 0; row < options.seeds.length; ++row) {
+    const unresolved = options.seeds[row].unresolved;
+    if (!unresolved) {
+      continue;
+    }
+    const context = `Value in seeds row ${row}`;
+    for (const text of unresolved) {
+      const error = account(text, context);
+      if (error.code !== ErrorCode.Ok) {
+        return error;
+      }
+    }
+  }
   return okError();
 }
 
 /**
  * Validate every boundary config against the declared value list.
  *
+ * This is the only place a boundary config is judged: a surface converts the
+ * caller's fields into one and this decides whether the engine will honor it.
  * Runs before expansion because the checks are about the configured range and
  * the values the caller wrote down — after expansion the generated boundary
  * values would mask, for instance, a duplicate numeric identity.
@@ -219,7 +244,7 @@ function validateBoundaryConfigs(
   for (const [paramName, config] of Object.entries(boundaryConfigs)) {
     const param = byName.get(paramName);
     if (!param) {
-      return invalid(`Unknown parameter in boundary config: ${paramName}`);
+      return invalid(boundaryAcceptanceError.unknownParameter(paramName));
     }
     if (
       param.values.length === 0 &&
@@ -227,14 +252,14 @@ function validateBoundaryConfigs(
         param.allAliases.length > 0 ||
         param.equivalenceClasses.length > 0)
     ) {
-      return invalid(`Metadata requires explicit values for boundary parameter ${paramName}`);
+      return invalid(boundaryAcceptanceError.metadataWithoutValues(paramName));
     }
     if (
       !Number.isFinite(config.minValue) ||
       !Number.isFinite(config.maxValue) ||
       config.minValue > config.maxValue
     ) {
-      return invalid(`Boundary range must be finite and ordered for parameter ${paramName}`);
+      return invalid(boundaryAcceptanceError.range(paramName));
     }
     const boundaryValues =
       config.type === BoundaryType.Integer
@@ -255,7 +280,7 @@ function validateBoundaryConfigs(
             config.maxValue + config.step,
           ];
     if (boundaryValues.some((value) => !Number.isFinite(value))) {
-      return invalid(`Boundary expansion must produce finite values for parameter ${paramName}`);
+      return invalid(boundaryAcceptanceError.expansion(paramName));
     }
     const numericIdentities = new Set<number>();
     for (const value of param.values) {
@@ -264,28 +289,26 @@ function validateBoundaryConfigs(
       }
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) {
-        return invalid(
-          `Boundary parameter contains a non-finite numeric value: ${paramName}=${value}`,
-        );
+        return invalid(boundaryAcceptanceError.nonFiniteValue(paramName, value));
       }
       if (numericIdentities.has(numeric)) {
-        return invalid(`Boundary parameter contains duplicate numeric identities: ${paramName}`);
+        return invalid(boundaryAcceptanceError.duplicateIdentities(paramName));
       }
       numericIdentities.add(numeric);
     }
     if (config.type === BoundaryType.Float) {
       if (!Number.isFinite(config.step) || config.step <= 0) {
-        return invalid(`Boundary step must be finite and positive for parameter ${paramName}`);
+        return invalid(boundaryAcceptanceError.floatStep(paramName));
       }
     } else {
       // Integer expansion always steps by one, so a caller asking for anything
       // else is asking for a value set the engine will not produce. Rejecting is
       // the only answer that keeps the model JSON meaning one thing everywhere.
-      if (config.step !== 1) {
-        return invalid(`Integer boundary step must be 1 for parameter ${paramName}`);
+      if (config.step !== INTEGER_BOUNDARY_STEP) {
+        return invalid(boundaryAcceptanceError.integerStep(paramName));
       }
-      if (!Number.isSafeInteger(config.minValue) || !Number.isSafeInteger(config.maxValue)) {
-        return invalid(`Integer boundary endpoints must be safe integers for ${paramName}`);
+      if (!isSafeBoundaryInteger(config.minValue) || !isSafeBoundaryInteger(config.maxValue)) {
+        return invalid(boundaryAcceptanceError.integerEndpoints(paramName));
       }
       // Gate on the shared isNumeric predicate (same as the identity loop above
       // and the C++ core) so both surfaces classify a value as numeric — and
@@ -294,12 +317,35 @@ function validateBoundaryConfigs(
         if (!isNumeric(value)) {
           continue;
         }
-        if (!Number.isSafeInteger(Number(value))) {
-          return invalid(
-            `Integer boundary parameter contains a non-integral or out-of-range value: ${paramName}=${value}`,
-          );
+        if (!isSafeBoundaryInteger(Number(value))) {
+          return invalid(boundaryAcceptanceError.integerValue(paramName, value));
         }
       }
+    }
+  }
+  return okError();
+}
+
+/**
+ * Refuse per-value metadata that does not run parallel to the value list.
+ *
+ * Expansion rebuilds these arrays against the value set it produces, so a
+ * length that never matched is silently made to match and the flags land on
+ * whichever values happened to be generated. The C++ core refuses inside
+ * ExpandBoundaryValues; the check sits here because the TypeScript expansion
+ * has no error channel of its own, and putting it in a caller instead would be
+ * a model rule stated outside the model.
+ */
+function validateBoundaryMetadata(param: Parameter): ErrorInfo {
+  const [invalidField, aliasesField, classesField] = BOUNDARY_METADATA_FIELDS;
+  const lengths: Array<[string, number]> = [
+    [invalidField, param.invalid.length],
+    [aliasesField, param.allAliases.length],
+    [classesField, param.equivalenceClasses.length],
+  ];
+  for (const [field, length] of lengths) {
+    if (length > 0 && length !== param.values.length) {
+      return invalid(boundaryAcceptanceError.metadataLength(param.name, field));
     }
   }
   return okError();
@@ -312,7 +358,9 @@ function validateBoundaryConfigs(
  * final value list to map a value name to an index, and before judging the
  * parameter set — the rules apply to the value space the engine will use, not to
  * the shorter list the caller wrote down. Mirrors ExpandBoundaries in the C++
- * model layer.
+ * model layer, including the order it applies its two rules in: every config is
+ * judged before any parameter is expanded, so which of two malformed
+ * parameters is named does not depend on where each sits in the list.
  *
  * @param params - Parameters to expand; not modified.
  * @param boundaryConfigs - Config per parameter name.
@@ -330,11 +378,18 @@ export function expandBoundaries(
   if (configError.code !== ErrorCode.Ok) {
     return { params, error: configError };
   }
-  const expanded = params.map((param) =>
-    Object.hasOwn(boundaryConfigs, param.name)
-      ? expandBoundaryValues(param, boundaryConfigs[param.name])
-      : param,
-  );
+  const expanded: Parameter[] = [];
+  for (const param of params) {
+    if (!Object.hasOwn(boundaryConfigs, param.name)) {
+      expanded.push(param);
+      continue;
+    }
+    const metadataError = validateBoundaryMetadata(param);
+    if (metadataError.code !== ErrorCode.Ok) {
+      return { params, error: metadataError };
+    }
+    expanded.push(expandBoundaryValues(param, boundaryConfigs[param.name]));
+  }
   return { params: expanded, error: okError() };
 }
 

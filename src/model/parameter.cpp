@@ -8,17 +8,6 @@
 
 namespace coverwise {
 namespace model {
-namespace {
-
-std::string FoldAsciiName(const std::string& value) {
-  std::string folded = value;
-  for (char& c : folded) {
-    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-  }
-  return folded;
-}
-
-}  // namespace
 
 uint32_t Parameter::valid_count() const {
   if (invalid_.empty()) return size();
@@ -83,14 +72,6 @@ bool StringsEqual(const std::string& a, const std::string& b, bool case_sensitiv
   return util::CaseInsensitiveEqual(a, b);
 }
 
-std::string AsciiCaseFold(std::string value) {
-  for (char& c : value) {
-    unsigned char uc = static_cast<unsigned char>(c);
-    if (uc >= 'A' && uc <= 'Z') c = static_cast<char>(uc + ('a' - 'A'));
-  }
-  return value;
-}
-
 }  // namespace
 
 uint32_t Parameter::find_value_index(const std::string& name, bool case_sensitive) const {
@@ -151,7 +132,7 @@ Error ValidateParameters(const std::vector<Parameter>& params) {
     if (!seen_names.insert(p.name).second) {
       return {Error::Code::kInvalidInput, "Duplicate parameter name '" + p.name + "'", ""};
     }
-    if (!seen_folded_names.insert(FoldAsciiName(p.name)).second) {
+    if (!seen_folded_names.insert(util::FoldAsciiString(p.name)).second) {
       return {Error::Code::kInvalidInput,
               "Parameter names must not differ only by ASCII case: '" + p.name + "'", ""};
     }
@@ -191,7 +172,7 @@ Error ValidateParameters(const std::vector<Parameter>& params) {
 
     std::unordered_set<std::string> resolution_names;
     for (const auto& value : p.values) {
-      auto canonical = AsciiCaseFold(value);
+      auto canonical = util::FoldAsciiString(value);
       if (!resolution_names.insert(canonical).second) {
         return {Error::Code::kInvalidInput,
                 "Ambiguous value or alias '" + value + "' in parameter '" + p.name + "'", ""};
@@ -199,7 +180,7 @@ Error ValidateParameters(const std::vector<Parameter>& params) {
     }
     for (const auto& aliases : p.all_aliases()) {
       for (const auto& alias : aliases) {
-        auto canonical = AsciiCaseFold(alias);
+        auto canonical = util::FoldAsciiString(alias);
         if (!resolution_names.insert(canonical).second) {
           return {Error::Code::kInvalidInput,
                   "Ambiguous value or alias '" + alias + "' in parameter '" + p.name + "'", ""};

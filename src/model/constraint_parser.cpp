@@ -53,17 +53,6 @@ struct Token {
 
 // --- Tokenizer ---
 
-std::string ToUpper(const std::string& s) {
-  std::string result = s;
-  for (auto& c : result) {
-    auto uc = static_cast<unsigned char>(c);
-    if (uc >= static_cast<unsigned char>('a') && uc <= static_cast<unsigned char>('z')) {
-      c = static_cast<char>(uc - ('a' - 'A'));
-    }
-  }
-  return result;
-}
-
 bool IsAsciiDigit(char c) { return c >= '0' && c <= '9'; }
 
 bool IsAsciiAlphaNumeric(char c) {
@@ -133,6 +122,10 @@ struct TokenizeResult {
   Error error;
 };
 
+/// @brief Classify a word already run through util::FoldAsciiString.
+///
+/// Keyword matching is case-insensitive, and it is case-insensitive by the one
+/// fold the rest of the engine uses rather than a second rule of its own.
 TokenType ClassifyKeyword(const std::string& upper) {
   if (upper == "AND") return TokenType::kAnd;
   if (upper == "OR") return TokenType::kOr;
@@ -337,9 +330,7 @@ TokenizeResult Tokenize(const std::string& expr) {
         ++j;
       }
       std::string word = expr.substr(i, j - i);
-      std::string upper = ToUpper(word);
-
-      TokenType type = ClassifyKeyword(upper);
+      TokenType type = ClassifyKeyword(util::FoldAsciiString(word));
       tokens.push_back({type, word, start});
       i = j;
       expect_pattern = (type == TokenType::kLike);
@@ -936,8 +927,11 @@ class Parser {
 
     if (Current().type == TokenType::kIdentifier) {
       const Token& rhs_tok = Advance();
-      // Check if RHS is a parameter name
-      if (IsParameterName(rhs_tok.text, params_, options_.case_sensitive)) {
+      // A quoted right-hand side is a literal value, never a parameter
+      // reference, so a quoted token that collides with a parameter name is not
+      // silently turned into a parameter-to-parameter comparison. This is the
+      // same rule = and != apply.
+      if (!rhs_tok.was_quoted && IsParameterName(rhs_tok.text, params_, options_.case_sensitive)) {
         auto rp2 = ResolveParam(rhs_tok.text, params_, options_.case_sensitive);
         if (!rp2.error.ok()) {
           return {nullptr, rp2.error};

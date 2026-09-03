@@ -27,22 +27,33 @@ const Parameter* FindParameter(const std::vector<Parameter>& params, const std::
   return nullptr;
 }
 
-/// @brief Charge every string in the model against the documented byte budgets.
+/// @brief Charge every string in the options against the documented byte budgets.
 ///
 /// std::string already holds UTF-8, so size() is the byte length the JavaScript
 /// surfaces compute with TextEncoder. Both the per-string and the aggregate
 /// bound are documented input limits, so they belong to the acceptance contract
 /// rather than to any one surface's reader.
-Error ValidateStringBudget(const GenerateOptions& options) {
-  size_t aggregate = 0;
+///
+/// Recorded rows are charged too. A row's members reach the engine as value
+/// indices, but a member that did not resolve keeps the caller's own text, and
+/// that text is the largest input dimension there is: rows are bounded in count
+/// and each row in width, so leaving them uncharged means no bound at all on
+/// what a caller can hand the engine to hold.
+Error ValidateStringBudget(const GenerateOptions& options, size_t charged_bytes) {
+  size_t aggregate = charged_bytes;
+  // A caller's own total can exhaust the budget on its own, and a model always
+  // has at least a parameter name to charge, but the verdict must not depend on
+  // there being something left to walk.
+  if (aggregate > kMaxAggregateStringBytes) {
+    return Invalid(AggregateBudgetExceededMessage());
+  }
   auto account = [&aggregate](const std::string& value, const std::string& context) {
     if (value.size() > kMaxStringBytes) {
       return Invalid(context + " exceeds " + std::to_string(kMaxStringBytes) + " UTF-8 bytes");
     }
     aggregate += value.size();
     if (aggregate > kMaxAggregateStringBytes) {
-      return Invalid("Input strings exceed " + std::to_string(kMaxAggregateStringBytes) +
-                     " UTF-8 bytes");
+      return Invalid(AggregateBudgetExceededMessage());
     }
     return Error{};
   };
@@ -82,6 +93,12 @@ Error ValidateStringBudget(const GenerateOptions& options) {
     for (const auto& [value_name, weight] : value_weights) {
       (void)weight;
       if (auto error = account(value_name, "Weight value name"); !error.ok()) return error;
+    }
+  }
+  for (size_t row = 0; row < options.seeds.size(); ++row) {
+    const std::string context = "Value in seeds row " + std::to_string(row);
+    for (const auto& text : options.seeds[row].unresolved) {
+      if (auto error = account(text, context); !error.ok()) return error;
     }
   }
   return {};
@@ -168,10 +185,11 @@ Error ValidateBoundaryConfigs(const GenerateOptions& options) {
   return {};
 }
 
-}  // namespace
-
-Error ValidateGenerateOptions(const GenerateOptions& options) {
-  if (auto budget_error = ValidateStringBudget(options); !budget_error.ok()) return budget_error;
+/// @brief The whole rule set, judged with @p charged_bytes already spent.
+Error ValidateOptions(const GenerateOptions& options, size_t charged_bytes) {
+  if (auto budget_error = ValidateStringBudget(options, charged_bytes); !budget_error.ok()) {
+    return budget_error;
+  }
   auto boundary_error = ValidateBoundaryConfigs(options);
   if (!boundary_error.ok()) return boundary_error;
 
@@ -237,6 +255,16 @@ Error ValidateGenerateOptions(const GenerateOptions& options) {
   return {};
 }
 
+}  // namespace
+
+std::string AggregateBudgetExceededMessage() {
+  return "Input strings exceed " + std::to_string(kMaxAggregateStringBytes) + " UTF-8 bytes";
+}
+
+Error ValidateGenerateOptions(const GenerateOptions& options) {
+  return ValidateOptions(options, 0);
+}
+
 Error ExpandBoundaries(GenerateOptions& options) {
   if (options.boundary_configs.empty()) return {};
   auto config_error = ValidateBoundaryConfigs(options);
@@ -253,13 +281,17 @@ Error ExpandBoundaries(GenerateOptions& options) {
 }
 
 AcceptedOptions AcceptOptions(GenerateOptions options) {
+  return AcceptOptions(std::move(options), 0);
+}
+
+AcceptedOptions AcceptOptions(GenerateOptions options, size_t charged_bytes) {
   // Expansion runs first so every later rule is applied to the value space the
   // engine will use. Judging the declared values instead would, for instance,
   // reject a boundary parameter whose only spelled-out value is an invalid
   // sentinel, even though expansion is about to supply six valid ones.
   auto expansion_error = ExpandBoundaries(options);
   if (!expansion_error.ok()) return AcceptedOptions(std::move(expansion_error));
-  auto validation_error = ValidateGenerateOptions(options);
+  auto validation_error = ValidateOptions(options, charged_bytes);
   if (!validation_error.ok()) return AcceptedOptions(std::move(validation_error));
   return AcceptedOptions(ValidatedOptions(std::move(options)));
 }

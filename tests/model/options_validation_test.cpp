@@ -12,11 +12,13 @@
 #include "model/boundary.h"
 #include "model/limits.h"
 #include "model/parameter.h"
+#include "model/test_case.h"
 
 namespace {
 
 using coverwise::model::AcceptedOptions;
 using coverwise::model::AcceptOptions;
+using coverwise::model::AggregateBudgetExceededMessage;
 using coverwise::model::BoundaryConfig;
 using coverwise::model::Error;
 using coverwise::model::GenerateOptions;
@@ -148,9 +150,99 @@ TEST(OptionsGateTest, RejectsStringDataBeyondTheAggregateBudget) {
 
   auto accepted = AcceptOptions(std::move(options));
   ASSERT_FALSE(accepted.ok());
-  EXPECT_EQ(accepted.error().message,
-            "Input strings exceed " + std::to_string(coverwise::model::kMaxAggregateStringBytes) +
-                " UTF-8 bytes");
+  EXPECT_EQ(accepted.error().message, AggregateBudgetExceededMessage());
+}
+
+// Recorded rows are the largest input dimension there is, so the aggregate
+// budget has to cover the caller text they carry. A row's members reach the
+// engine as indices, but a member that did not resolve keeps the caller's own
+// string, and nothing else bounds how much of it a caller may hand over.
+TEST(OptionsGateTest, RejectsRowStringDataBeyondTheAggregateBudget) {
+  GenerateOptions options = TwoBinaryParameters();
+  const size_t row_count = 40;
+  const size_t fields_per_row = 2;
+  const size_t field_bytes = 60 * 1024;
+  ASSERT_GT(row_count * fields_per_row * field_bytes, coverwise::model::kMaxAggregateStringBytes);
+  for (size_t row = 0; row < row_count; ++row) {
+    coverwise::model::TestCase recorded;
+    recorded.values.assign(fields_per_row, coverwise::model::kUnassigned);
+    recorded.unresolved.assign(fields_per_row, std::string(field_bytes, 'x'));
+    options.seeds.push_back(std::move(recorded));
+  }
+
+  auto accepted = AcceptOptions(std::move(options));
+  ASSERT_FALSE(accepted.ok());
+  EXPECT_EQ(accepted.error().message, AggregateBudgetExceededMessage());
+}
+
+// A row that resolved carries no caller text, so recording rows does not itself
+// spend the budget the model's own strings are charged against.
+TEST(OptionsGateTest, ResolvedRowsSpendNothingOfTheAggregateBudget) {
+  GenerateOptions options = TwoBinaryParameters();
+  for (size_t row = 0; row < coverwise::model::kMaxTests; ++row) {
+    options.seeds.push_back(coverwise::model::TestCase{{0, 1}});
+  }
+
+  auto accepted = AcceptOptions(std::move(options));
+  EXPECT_TRUE(accepted.ok()) << accepted.error().message;
+}
+
+// The aggregate limit is per input, not per accumulator. A surface that reads
+// caller text the options do not carry to the engine — a test row arrives as
+// value names and reaches the engine as indices — charges those bytes itself
+// and hands the total in, so the two halves are judged against one budget.
+TEST(OptionsGateTest, ChargedBytesShareTheBudgetWithTheModelStrings) {
+  // Fifteen values of 60 KiB: each is inside the per-string limit, and together
+  // they are most of the aggregate one.
+  constexpr size_t kValueBytes = 60 * 1024;
+  constexpr size_t kValueCount = 15;
+  constexpr size_t kHalf = kValueBytes * kValueCount;
+  static_assert(kValueBytes <= coverwise::model::kMaxStringBytes);
+  static_assert(2 * kHalf > coverwise::model::kMaxAggregateStringBytes);
+  auto model_of = [](size_t bytes) {
+    GenerateOptions options = TwoBinaryParameters();
+    std::vector<std::string> values;
+    for (size_t index = 0; index < kValueCount; ++index) {
+      values.push_back(std::string(bytes / kValueCount - 8, 'x') + std::to_string(1000000 + index));
+    }
+    options.parameters.emplace_back("wide", std::move(values));
+    return options;
+  };
+
+  // Each half fits on its own.
+  EXPECT_TRUE(AcceptOptions(model_of(kHalf)).ok());
+  EXPECT_TRUE(AcceptOptions(TwoBinaryParameters(), kHalf).ok());
+
+  // Their sum does not, and says so in the one sentence this limit has.
+  auto accepted = AcceptOptions(model_of(kHalf), kHalf);
+  ASSERT_FALSE(accepted.ok());
+  EXPECT_EQ(accepted.error().code, Error::Code::kInvalidInput);
+  EXPECT_EQ(accepted.error().message, AggregateBudgetExceededMessage());
+}
+
+// A caller's own total can exhaust the budget before the model is walked, and
+// the answer must not depend on there being anything left to charge.
+TEST(OptionsGateTest, ChargedBytesAloneCanExhaustTheBudget) {
+  auto accepted =
+      AcceptOptions(TwoBinaryParameters(), coverwise::model::kMaxAggregateStringBytes + 1);
+  ASSERT_FALSE(accepted.ok());
+  EXPECT_EQ(accepted.error().message, AggregateBudgetExceededMessage());
+}
+
+// Charging nothing is the single-argument gate, so a surface with no text of
+// its own to account for keeps exactly the behaviour it had.
+TEST(OptionsGateTest, ChargingNothingMatchesTheSingleArgumentGate) {
+  auto plain = AcceptOptions(TwoBinaryParameters());
+  auto charged = AcceptOptions(TwoBinaryParameters(), 0);
+  ASSERT_TRUE(plain.ok()) << plain.error().message;
+  ASSERT_TRUE(charged.ok()) << charged.error().message;
+  EXPECT_EQ(charged->get().parameters.size(), plain->get().parameters.size());
+
+  GenerateOptions rejected = TwoBinaryParameters();
+  rejected.strength = 5;
+  GenerateOptions same = rejected;
+  EXPECT_EQ(AcceptOptions(std::move(rejected)).error().message,
+            AcceptOptions(std::move(same), 0).error().message);
 }
 
 TEST(OptionsGateTest, RejectsASingleStringBeyondThePerStringBudget) {

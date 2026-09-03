@@ -18,6 +18,7 @@ import {
   RelOp,
   UNASSIGNED,
 } from './constraint-ast.js';
+import { MAX_VALUES_PER_PARAMETER } from './limits.js';
 
 const { True, False, Unknown } = ConstraintResult;
 
@@ -290,6 +291,42 @@ describe('InNode', () => {
   it('returns Unknown when param index is out of range', () => {
     const node = new InNode(5, [0]);
     expect(node.evaluate([0])).toBe(Unknown);
+  });
+
+  it('answers False past the largest member', () => {
+    const node = new InNode(0, [1, 3]);
+    expect(node.evaluate([4])).toBe(False);
+    expect(node.evaluate([9999])).toBe(False);
+  });
+
+  it('does not let an index no parameter can hold match or size the table', () => {
+    // A membership table is indexed by value index, so what bounds the table is
+    // the largest index a parameter may have. An index past that belongs to no
+    // parameter and is not a member of anything.
+    const node = new InNode(0, [1, MAX_VALUES_PER_PARAMETER, UNASSIGNED - 1]);
+    expect(node.evaluate([1])).toBe(True);
+    expect(node.evaluate([MAX_VALUES_PER_PARAMETER])).toBe(False);
+    expect(node.evaluate([UNASSIGNED - 1])).toBe(False);
+  });
+
+  it('matches nothing for an empty set but still answers the unassigned branch', () => {
+    const node = new InNode(0, []);
+    expect(node.evaluate([UNASSIGNED])).toBe(Unknown);
+    expect(node.evaluate([0])).toBe(False);
+  });
+
+  it('treats a repeated member as one member', () => {
+    const node = new InNode(0, [2, 2, 2]);
+    expect(node.evaluate([2])).toBe(True);
+    expect(node.evaluate([1])).toBe(False);
+  });
+
+  it('does not let the order the set was written in reach the answer', () => {
+    const ascending = new InNode(0, [1, 3, 5]);
+    const shuffled = new InNode(0, [5, 1, 3]);
+    for (let value = 0; value <= 7; ++value) {
+      expect(shuffled.evaluate([value])).toBe(ascending.evaluate([value]));
+    }
   });
 });
 
@@ -568,6 +605,40 @@ describe('atom construction and evaluation cost', () => {
     // rather than copied across, which is why it is not the 5.0 the core uses:
     // 3.0 sits clear of contention and still well below 8.8.
     expect(longMs).toBeLessThan(shortMs * 3.0);
+  });
+
+  it('tests IN membership without walking the set', { timeout: MEASUREMENT_TIMEOUT_MS }, () => {
+    // A large IN set must not cost more per evaluation than a small one: an IN
+    // clause is the plain way to write a long disjunction, so it must not be
+    // the slow way. Precomputing membership at construction is what makes these
+    // two runs cost the same.
+    const evaluations = 2000000;
+    const domain = 4096;
+    const evaluate = (setSize: number): (() => void) => {
+      const node = new InNode(
+        0,
+        Array.from({ length: setSize }, (_, i) => i),
+      );
+      const assignment = [0];
+      return () => {
+        // Sweeping the whole domain keeps both runs on the same mix of members
+        // and non-members, so neither is handed the cheaper answer more often.
+        for (let i = 0; i < evaluations; i++) {
+          assignment[0] = i % domain;
+          node.evaluate(assignment);
+        }
+      };
+    };
+
+    const [smallMs, largeMs] = fastestEach(TIMING_RUNS, evaluate(10), evaluate(2000));
+
+    // A membership lookup is one indexed read whatever the set holds, so the
+    // honest ratio is 1.0 and anything above it is contention. The bound
+    // separates that from walking the set, which costs 136x here, measured by
+    // scanning the member list on every evaluation. Two orders of magnitude
+    // apart leaves the bound room to sit far above contention and still give
+    // the regression nowhere to hide.
+    expect(largeMs).toBeLessThan(smallMs * 5.0);
   });
 
   it('keeps the case-folding policy in the interned values', () => {

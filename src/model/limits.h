@@ -1,5 +1,10 @@
 /// @file limits.h
 /// @brief The documented input limits, defined once for every surface.
+///
+/// These decide what a model may declare, and every one of them is published in
+/// the user-facing documentation, so they are part of what coverwise accepts
+/// rather than of how it is tuned. The internal budgets that bound how much
+/// work a decision may cost live in tuning_limits.h, which is not installed.
 
 #ifndef COVERWISE_MODEL_LIMITS_H_
 #define COVERWISE_MODEL_LIMITS_H_
@@ -35,13 +40,21 @@ inline constexpr size_t kMaxAggregateStringBytes = 1024 * 1024;
 /// @brief Upper bound on the raw bytes of one JSON document a surface reads.
 ///
 /// This is a memory guard for file/stdin reads, not part of the acceptance
-/// contract: the per-entity limits above decide what is accepted. It is sized
-/// well above what a document satisfying those limits needs (a kMaxTests-row
-/// suite over a realistic parameter count is a few tens of megabytes of JSON
-/// syntax, while the strings it carries stay inside kMaxAggregateStringBytes),
-/// so a caller never meets this bound before meeting a documented one. A
-/// surface that reads documents must say in its own documentation that it
-/// applies this bound.
+/// contract: the per-entity limits above decide what is accepted. It stops a
+/// runaway or truncated stream from being read into memory without end.
+///
+/// It is applied to the bytes as they arrive, before any of them are parsed, so
+/// it counts JSON syntax -- every brace, quote, colon and repeated key -- while
+/// kMaxAggregateStringBytes counts only the text a caller supplied. For a wide
+/// model the syntax dominates, and this bound is then the first one a document
+/// meets: 100 parameters at kMaxTests rows is upwards of 100 MiB of JSON
+/// carrying well under kMaxAggregateStringBytes of row text. For models of
+/// ordinary width it sits far outside the limits above and a caller meets one
+/// of those first.
+///
+/// A surface that reads documents must say in its own documentation that it
+/// applies this bound, and must name the document rather than the row count
+/// when it fires, since the suite may be well inside every limit above.
 inline constexpr size_t kMaxDocumentBytes = 64 * 1024 * 1024;
 
 }  // namespace model

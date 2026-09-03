@@ -1,6 +1,11 @@
 /**
  * The documented input limits, defined once for every TypeScript surface.
  *
+ * These decide what a model may declare, and every one of them is published in
+ * the user-facing documentation, so they are part of what coverwise accepts
+ * rather than of how it is tuned. The internal budgets that bound how much work
+ * a decision may cost live in `tuning-limits.ts`.
+ *
  * This module is the TypeScript mirror of `src/model/limits.h`. The two are
  * kept in lockstep by `limits.test.ts`, which reads the header and asserts each
  * constant matches, so adding a limit on one side without the other fails the

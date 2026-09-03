@@ -205,6 +205,8 @@ class RelationalNode : public ConstraintNode {
 /// @brief IN-set membership test: param IN {val1, val2, ...}.
 ///
 /// Three-valued: unassigned -> kUnknown, value in set -> kTrue, else kFalse.
+/// Membership is precomputed at construction time, so evaluation costs the same
+/// whatever the size of the set.
 class InNode : public ConstraintNode {
  public:
   /// @param param_index Index of the parameter.
@@ -214,7 +216,13 @@ class InNode : public ConstraintNode {
 
  private:
   uint32_t param_index_;
-  std::vector<uint32_t> value_indices_;
+  // Membership by value index, the same way LikeNode precomputes its matches.
+  // Sized to the largest index the set actually holds, and never past the
+  // largest a parameter may have: one bit per value, so the whole table is
+  // smaller than the index list it replaces even for the widest legal set.
+  // A value index past the end is not in the set, which is the answer an entry
+  // would have carried anyway.
+  std::vector<bool> members_;
 };
 
 /// @brief LIKE pattern matching: param LIKE pattern.

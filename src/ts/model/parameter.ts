@@ -1,6 +1,6 @@
 /// Parameter definition for combinatorial test generation.
 
-import { asciiCaseInsensitiveEqual } from '../util/string_util.js';
+import { asciiCaseInsensitiveEqual, asciiToUpper } from '../util/string_util.js';
 import { MAX_PARAMETERS, MAX_VALUES_PER_PARAMETER } from './limits.js';
 import { UNASSIGNED } from './test-case.js';
 
@@ -188,10 +188,6 @@ export function hasInvalidValues(params: Parameter[]): boolean {
   return params.some((p) => p.hasInvalidValues);
 }
 
-function foldAsciiName(value: string): string {
-  return value.replace(/[A-Z]/g, (char) => char.toLowerCase());
-}
-
 export { MAX_PARAMETERS };
 
 /**
@@ -224,7 +220,7 @@ export function validateParameters(params: Parameter[]): string {
       return `Duplicate parameter name '${p.name}'`;
     }
     seenNames.add(p.name);
-    const foldedName = foldAsciiName(p.name);
+    const foldedName = asciiToUpper(p.name);
     if (seenFoldedNames.has(foldedName)) {
       return `Parameter names must not differ only by ASCII case: '${p.name}'`;
     }
@@ -256,7 +252,7 @@ export function validateParameters(params: Parameter[]): string {
     }
     const resolutionNames = new Set<string>();
     for (const value of p.values) {
-      const canonical = value.replace(/[A-Z]/g, (char) => char.toLowerCase());
+      const canonical = asciiToUpper(value);
       if (resolutionNames.has(canonical)) {
         return `Ambiguous value or alias '${value}' in parameter '${p.name}'`;
       }
@@ -264,7 +260,7 @@ export function validateParameters(params: Parameter[]): string {
     }
     for (const aliases of p.allAliases) {
       for (const alias of aliases) {
-        const canonical = alias.replace(/[A-Z]/g, (char) => char.toLowerCase());
+        const canonical = asciiToUpper(alias);
         if (resolutionNames.has(canonical)) {
           return `Ambiguous value or alias '${alias}' in parameter '${p.name}'`;
         }

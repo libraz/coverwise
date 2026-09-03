@@ -23,6 +23,7 @@ import {
   RelOp,
 } from './constraint-ast.js';
 import { ErrorCode, type ErrorInfo, okError } from './error.js';
+import { utf8ByteLength } from './utf8.js';
 
 /** Minimal parameter interface required by the constraint parser. */
 export interface Parameter {
@@ -92,11 +93,6 @@ interface Token {
 
 // --- Tokenizer ---
 
-// Keyword matching is ASCII-only by design, matching the C++ core.
-function toUpper(s: string): string {
-  return asciiToUpper(s);
-}
-
 function isIdentChar(c: string): boolean {
   const code = c.charCodeAt(0);
   return (
@@ -130,15 +126,6 @@ function buildCodepointPositions(value: string): number[] {
   }
   positions[value.length] = codepoints;
   return positions;
-}
-
-function utf8ByteLength(value: string): number {
-  let bytes = 0;
-  for (const character of value) {
-    const codepoint = character.codePointAt(0) ?? 0;
-    bytes += codepoint <= 0x7f ? 1 : codepoint <= 0x7ff ? 2 : codepoint <= 0xffff ? 3 : 4;
-  }
-  return bytes;
 }
 
 function isDigit(c: string): boolean {
@@ -217,6 +204,10 @@ function parseFiniteDecimal(value: string): number | null {
   return parsed;
 }
 
+/// Classify a word already run through asciiToUpper.
+///
+/// Keyword matching is case-insensitive, and it is case-insensitive by the one
+/// fold the rest of the engine uses rather than a second rule of its own.
 function classifyKeyword(upper: string): TokenType {
   switch (upper) {
     case 'AND':
@@ -449,9 +440,7 @@ function tokenize(expr: string): TokenizeResult {
         j++;
       }
       const word = expr.substring(i, j);
-      const upper = toUpper(word);
-
-      const type = classifyKeyword(upper);
+      const type = classifyKeyword(asciiToUpper(word));
       tokens.push({ type, text: word, position: start });
       i = j;
       expectPattern = type === TokenType.Like;
@@ -1195,8 +1184,14 @@ class Parser {
 
     if (this.current().type === TokenType.Identifier) {
       const rhsTok = this.advance();
-      // Check if RHS is a parameter name
-      if (isParameterName(rhsTok.text, this.params, this.options.caseSensitive)) {
+      // A quoted right-hand side is a literal value, never a parameter
+      // reference, so a quoted token that collides with a parameter name is not
+      // silently turned into a param-to-param comparison. This is the same rule
+      // = and != apply.
+      if (
+        !rhsTok.wasQuoted &&
+        isParameterName(rhsTok.text, this.params, this.options.caseSensitive)
+      ) {
         const rp2 = resolveParam(rhsTok.text, this.params, this.options.caseSensitive);
         if (rp2.error.code !== ErrorCode.Ok) {
           return { constraint: null, error: rp2.error };

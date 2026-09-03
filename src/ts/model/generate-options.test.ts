@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createBoundaryConfig } from './boundary.js';
+import { boundaryAcceptanceError } from './boundary-rules.js';
+import { aggregateBudgetExceeded } from './budget.js';
 import { ErrorCode } from './error.js';
 import {
   createGenerateOptions,
@@ -163,6 +165,81 @@ describe('expandBoundaries', () => {
     expect(result.error.code).toBe(ErrorCode.InvalidInput);
     expect(result.params[0].values).toEqual([]);
   });
+
+  // A config naming a parameter the model does not declare describes a value
+  // space for nothing. The public surfaces key their configs by the parameter
+  // they read them from and so cannot produce one, which leaves this rule
+  // reachable only from here.
+  it('rejects a config for a parameter the model does not declare', () => {
+    const result = expandBoundaries([new Parameter('n', ['1'])], {
+      other: createBoundaryConfig({ minValue: 0, maxValue: 10 }),
+    });
+    expect(result.error.code).toBe(ErrorCode.InvalidInput);
+    expect(result.error.message).toBe(boundaryAcceptanceError.unknownParameter('other'));
+  });
+
+  // Metadata runs parallel to the value list, and expansion rebuilds it against
+  // the value set it produces — so a length that never matched is silently made
+  // to match, and the flags land on values the caller never marked. The public
+  // surfaces build these arrays themselves and keep them parallel, so this is a
+  // rule about the core rather than about a reachable input: what it pins is
+  // that the pure port refuses what the C++ core refuses.
+  it('rejects metadata whose length disagrees with the value list', () => {
+    const cases: Array<{ field: string; build: () => Parameter }> = [
+      {
+        field: 'invalid',
+        build: () => new Parameter('n', ['5'], [true, false]),
+      },
+      {
+        field: 'aliases',
+        build: () => {
+          const param = new Parameter('n', ['5']);
+          param.setAliases([['five'], ['six']]);
+          return param;
+        },
+      },
+      {
+        field: 'equivalence classes',
+        build: () => {
+          const param = new Parameter('n', ['5']);
+          param.setEquivalenceClasses(['low', 'high']);
+          return param;
+        },
+      },
+    ];
+
+    for (const { field, build } of cases) {
+      const result = expandBoundaries([build()], {
+        n: createBoundaryConfig({ minValue: 0, maxValue: 10 }),
+      });
+      expect(result.error.code, field).toBe(ErrorCode.InvalidInput);
+      expect(result.error.message, field).toBe(boundaryAcceptanceError.metadataLength('n', field));
+      expect(result.params[0].values, field).toEqual(['5']);
+    }
+  });
+
+  it('expands a parameter whose metadata runs parallel to its values', () => {
+    const param = new Parameter('n', ['5'], [true]);
+    const result = expandBoundaries([param], {
+      n: createBoundaryConfig({ minValue: 0, maxValue: 10 }),
+    });
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.params[0].values).toEqual(['-1', '0', '1', '5', '9', '10', '11']);
+    expect(result.params[0].invalid).toEqual([false, false, false, true, false, false, false]);
+  });
+
+  // Per-value metadata is positional, so a parameter that declares none of its
+  // values has nothing for it to attach to: expansion would generate the values
+  // and the flags would land on whichever ones happened to be produced.
+  it('rejects per-value metadata on a parameter that declares no values', () => {
+    const param = new Parameter('n', []);
+    param.setInvalid([true]);
+    const result = expandBoundaries([param], {
+      n: createBoundaryConfig({ minValue: 0, maxValue: 10 }),
+    });
+    expect(result.error.code).toBe(ErrorCode.InvalidInput);
+    expect(result.error.message).toBe(boundaryAcceptanceError.metadataWithoutValues('n'));
+  });
 });
 
 describe('validateGenerateOptions acceptance limits', () => {
@@ -226,6 +303,57 @@ describe('validateGenerateOptions acceptance limits', () => {
     const options = createGenerateOptions({ parameters: [...twoBinary, { name: 'wide', values }] });
     const error = validateGenerateOptions(options);
     expect(error.code).toBe(ErrorCode.InvalidInput);
-    expect(error.message).toBe(`Input strings exceed ${MAX_AGGREGATE_STRING_BYTES} UTF-8 bytes`);
+    expect(error.message).toBe(aggregateBudgetExceeded());
+  });
+
+  // Budgets are byte budgets. A model measured in characters would accept
+  // several times the documented text whenever the caller writes outside ASCII,
+  // which is the case the limit exists for.
+  it('charges non-ASCII text by its UTF-8 length', () => {
+    const fourBytesPerCharacter = '𝒳';
+    const charactersPerValue = Math.floor(MAX_STRING_BYTES / 4) - 1;
+    const valueCount = Math.floor(MAX_AGGREGATE_STRING_BYTES / (charactersPerValue * 4)) + 1;
+    const values = Array.from(
+      { length: valueCount },
+      (_unused, i) => fourBytesPerCharacter.repeat(charactersPerValue) + String(i),
+    );
+    const options = createGenerateOptions({ parameters: [...twoBinary, { name: 'wide', values }] });
+    const error = validateGenerateOptions(options);
+    expect(error.code).toBe(ErrorCode.InvalidInput);
+    expect(error.message).toBe(aggregateBudgetExceeded());
+  });
+
+  // A row reaches the engine as value indices, so a suite of resolved rows is
+  // free. What a row does carry is the text of any position that did not
+  // resolve, which the diagnostics quote back, so that text is charged like any
+  // other caller string.
+  it('spends nothing on rows whose every position resolved', () => {
+    const seeds = Array.from({ length: 1000 }, () => ({ values: [0, 1] }));
+    const options = createGenerateOptions({ parameters: twoBinary, seeds });
+    expect(validateGenerateOptions(options).code).toBe(ErrorCode.Ok);
+  });
+
+  it('charges the text of a row position that did not resolve', () => {
+    const text = 'x'.repeat(60 * 1024);
+    const rowCount = Math.ceil(MAX_AGGREGATE_STRING_BYTES / (2 * text.length)) + 1;
+    const seeds = Array.from({ length: rowCount }, () => ({
+      values: [0xffffffff, 0xffffffff],
+      unresolved: [text, text],
+    }));
+    const options = createGenerateOptions({ parameters: twoBinary, seeds });
+    const error = validateGenerateOptions(options);
+    expect(error.code).toBe(ErrorCode.InvalidInput);
+    expect(error.message).toBe(aggregateBudgetExceeded());
+  });
+
+  it('names the row a too-large unresolved value came from', () => {
+    const seeds = [
+      { values: [0, 1] },
+      { values: [0xffffffff, 1], unresolved: ['x'.repeat(MAX_STRING_BYTES + 1), ''] },
+    ];
+    const options = createGenerateOptions({ parameters: twoBinary, seeds });
+    const error = validateGenerateOptions(options);
+    expect(error.code).toBe(ErrorCode.InvalidInput);
+    expect(error.message).toBe(`Value in seeds row 1 exceeds ${MAX_STRING_BYTES} UTF-8 bytes`);
   });
 });

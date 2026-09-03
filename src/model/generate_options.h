@@ -66,7 +66,11 @@ struct GenerateOptions {
 ///
 /// kStrict is currently the only supported mode; the enum is kept for forward
 /// compatibility. Extend() switches on this explicitly rather than ignoring it.
-enum class ExtendMode {
+///
+/// The underlying type is fixed so that a value outside the enumerator list is
+/// a representable value rather than undefined behaviour: Extend() answers such
+/// a value with an error, which is only meaningful if the caller can form one.
+enum class ExtendMode : uint32_t {
   kStrict,  ///< Keep existing tests exactly as-is
 };
 

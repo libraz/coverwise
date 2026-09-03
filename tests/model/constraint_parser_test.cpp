@@ -1454,18 +1454,48 @@ TEST(ConstraintParserTest, QuotedLikePatternWithSpace) {
   EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kFalse);
 }
 
-TEST(ConstraintParserTest, QuotedParamNameWithSpaceRelational) {
-  std::vector<Parameter> params = {
-      {"start date", {"1", "5", "10"}, {}},
-      {"end date", {"1", "5", "10"}, {}},
+// Whether a right-hand identifier is resolved as a parameter reference is
+// decided by the quoting alone, and the relational operators decide it the same
+// way = and != do. A quoted operand that happens to spell a parameter name is a
+// literal, so it parses to whatever it would parse to if no parameter carried
+// that name -- here, a non-numeric literal, which no relational operator
+// accepts.
+TEST(ConstraintParserTest, QuotedRelationalRhsIsALiteralNotAParameterReference) {
+  const std::vector<Parameter> with_collision = {
+      {"threshold", {"1", "5", "10"}, {}},
+      {"limit", {"1", "5", "10"}, {}},
   };
-  // Builder emits: "start date" < "end date"
-  auto result = ParseConstraint("\"start date\" < \"end date\"", params);
-  ASSERT_TRUE(result.error.ok()) << result.error.message;
-  std::vector<uint32_t> a1 = {0, 2};  // start=1, end=10 → true
-  std::vector<uint32_t> a2 = {2, 0};  // start=10, end=1 → false
-  EXPECT_EQ(result.constraint->Evaluate(a1), ConstraintResult::kTrue);
-  EXPECT_EQ(result.constraint->Evaluate(a2), ConstraintResult::kFalse);
+  const std::vector<Parameter> without_collision = {
+      {"threshold", {"1", "5", "10"}, {}},
+      {"ceiling", {"1", "5", "10"}, {}},
+  };
+
+  for (const char* op : {"<", "<=", ">", ">="}) {
+    const std::string quoted = std::string("threshold ") + op + " \"limit\"";
+    auto colliding = ParseConstraint(quoted, with_collision);
+    auto plain = ParseConstraint(quoted, without_collision);
+    EXPECT_FALSE(colliding.error.ok()) << quoted;
+    EXPECT_EQ(colliding.error.code, plain.error.code) << quoted;
+    EXPECT_EQ(colliding.error.message, plain.error.message) << quoted;
+
+    // The unquoted form is still a parameter-to-parameter comparison.
+    auto unquoted = ParseConstraint(std::string("threshold ") + op + " limit", with_collision);
+    EXPECT_TRUE(unquoted.error.ok()) << unquoted.error.message;
+  }
+}
+
+// A quoted operand that spells a number is still a number, so quoting costs a
+// relational comparison nothing it could otherwise have expressed.
+TEST(ConstraintParserTest, QuotedRelationalRhsStillReadsAsANumericLiteral) {
+  const std::vector<Parameter> params = {
+      {"threshold", {"1", "5", "10"}, {}},
+      {"7", {"a", "b"}, {}},
+  };
+
+  auto quoted = ParseConstraint("threshold < \"7\"", params);
+  ASSERT_TRUE(quoted.error.ok()) << quoted.error.message;
+  EXPECT_EQ(quoted.constraint->Evaluate({0, 0}), ConstraintResult::kTrue);
+  EXPECT_EQ(quoted.constraint->Evaluate({2, 0}), ConstraintResult::kFalse);
 }
 
 TEST(ConstraintParserLimitsTest, StrictDecimalGrammarAndRange) {

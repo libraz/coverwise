@@ -1,6 +1,7 @@
 /// AST-based constraint representation for combinatorial test generation.
 
 import { asciiToUpper, isNumeric, toDouble } from '../util/string_util.js';
+import { MAX_VALUES_PER_PARAMETER } from './limits.js';
 import { UNASSIGNED } from './test-case.js';
 
 export { UNASSIGNED };
@@ -387,12 +388,41 @@ export class RelationalNode implements ConstraintNode {
  * IN-set membership test: param IN {val1, val2, ...}.
  *
  * Three-valued: unassigned -> Unknown, value in set -> True, else False.
+ * Membership is precomputed at construction time, so evaluation costs the same
+ * whatever the size of the set.
  */
 export class InNode implements ConstraintNode {
+  /**
+   * Membership by value index, the same way LikeNode precomputes its matches.
+   * Sized to the largest index the set actually holds, and never past the
+   * largest a parameter may have. A value index past the end is not in the set,
+   * which is the answer an entry would have carried anyway.
+   */
+  private readonly members: boolean[];
+
   constructor(
     private readonly paramIndex: number,
     private readonly valueIndices: number[],
-  ) {}
+  ) {
+    // An index no parameter can hold is not a member of anything, so it is left
+    // out rather than allowed to size the table. That covers UNASSIGNED, which
+    // evaluate answers Unknown for before it ever reaches the table, and every
+    // index at or past MAX_VALUES_PER_PARAMETER, which no value of a
+    // well-formed model occupies.
+    const inDomain = (vi: number): boolean => vi >= 0 && vi < MAX_VALUES_PER_PARAMETER;
+    let highest = 0;
+    for (const vi of valueIndices) {
+      if (inDomain(vi) && vi > highest) {
+        highest = vi;
+      }
+    }
+    this.members = new Array<boolean>(highest + 1).fill(false);
+    for (const vi of valueIndices) {
+      if (inDomain(vi)) {
+        this.members[vi] = true;
+      }
+    }
+  }
 
   evaluate(assignment: number[]): ConstraintResult {
     if (this.paramIndex >= assignment.length) {
@@ -402,12 +432,10 @@ export class InNode implements ConstraintNode {
     if (val === UNASSIGNED) {
       return ConstraintResult.Unknown;
     }
-    for (const vi of this.valueIndices) {
-      if (val === vi) {
-        return ConstraintResult.True;
-      }
+    if (val >= this.members.length) {
+      return ConstraintResult.False;
     }
-    return ConstraintResult.False;
+    return this.members[val] ? ConstraintResult.True : ConstraintResult.False;
   }
 
   toString(): string {

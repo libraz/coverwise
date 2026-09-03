@@ -38,7 +38,9 @@ class SurfaceError {
   /// Total over Error::Code: constraint errors are 1, insufficient coverage is
   /// 2, invalid input and tuple explosion are 3, ok is 0. The raw enum value is
   /// never used as an exit code — kTupleExplosion is 4, which is not one of the
-  /// documented exit codes.
+  /// documented exit codes. Only kOk maps to 0: a value outside the enumeration
+  /// is a failure whose kind is unknown, and reporting an unknown failure as
+  /// success is the one answer that cannot be recovered from downstream.
   int exit_code() const { return exit_code_; }
 
   /// @brief `message` on its own, or `message: detail` when a detail is present.
@@ -57,7 +59,7 @@ class SurfaceError {
       case Error::Code::kOk:
         return 0;
     }
-    return 0;
+    return 3;
   }
 
   static std::string Compose(const Error& error) {

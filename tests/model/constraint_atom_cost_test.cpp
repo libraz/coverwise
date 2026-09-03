@@ -1,12 +1,14 @@
 /// @file constraint_atom_cost_test.cpp
-/// @brief Constraint atoms do their string work once, at construction.
+/// @brief Constraint atoms do their string work once, at construction, and the
+///   answers they give are unchanged by having done it early.
 ///
-/// The assertions here are ratios between two runs of the same shape, never
-/// absolute durations: only the ratio expresses the invariant, and only the
-/// ratio survives being run on a loaded machine or under a sanitizer.
+/// The cost assertions here are ratios between two runs of the same shape,
+/// never absolute durations: only the ratio expresses the invariant, and only
+/// the ratio survives being run on a loaded machine or under a sanitizer.
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -16,10 +18,14 @@
 #include "core/generator.h"
 #include "model/constraint_ast.h"
 #include "model/generate_options.h"
+#include "model/limits.h"
+#include "util/string_util.h"
+#include "validator/coverage_validator.h"
 
 using coverwise::core::Generate;
 using coverwise::model::ConstraintResult;
 using coverwise::model::GenerateOptions;
+using coverwise::model::InNode;
 using coverwise::model::kUnassigned;
 using coverwise::model::LikeNode;
 using coverwise::model::ParamEqualsNode;
@@ -130,14 +136,12 @@ TEST(ConstraintAtomCostTest, PrecomputedLikeMatchesAgreeWithTheGlobMatcher) {
 
   const LikeNode insensitive(0, pattern, values, false);
   const LikeNode sensitive(0, pattern, values, true);
+  const std::string folded_pattern = coverwise::util::FoldAsciiString(pattern);
 
   for (uint32_t i = 0; i < values.size(); ++i) {
-    std::string folded_value = values[i];
-    for (char& c : folded_value) {
-      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    }
+    const std::string folded_value = coverwise::util::FoldAsciiString(values[i]);
     const std::vector<uint32_t> assignment = {i};
-    EXPECT_EQ(insensitive.Evaluate(assignment), LikeNode::GlobMatch(pattern, folded_value)
+    EXPECT_EQ(insensitive.Evaluate(assignment), LikeNode::GlobMatch(folded_pattern, folded_value)
                                                     ? ConstraintResult::kTrue
                                                     : ConstraintResult::kFalse)
         << values[i];
@@ -188,9 +192,16 @@ TEST(ConstraintAtomCostTest, GenerationWithParameterComparisonsDoesNotScaleWithV
   // The end-to-end form of the same invariant: a model whose constraints
   // compare one parameter against another must not get slower just because its
   // values are longer strings.
-  auto [short_ms, long_ms] = FastestMsEach(
-      3, [] { Generate(ModelWithLongValues(2, true)); },
-      [] { Generate(ModelWithLongValues(512, true)); });
+  //
+  // Both models are built before the timing starts, so what is timed is the
+  // generate run and not the cost of assembling the options it reads -- and
+  // building the long-valued one costs more than the short, which is exactly
+  // the difference this test is trying to attribute elsewhere.
+  const GenerateOptions short_model = ModelWithLongValues(2, true);
+  const GenerateOptions long_model = ModelWithLongValues(512, true);
+
+  auto [short_ms, long_ms] =
+      FastestMsEach(3, [&] { Generate(short_model); }, [&] { Generate(long_model); });
 
   // Same two regimes as the atom-level gate, seen through a whole generate run,
   // and the bound is again a separator rather than a budget. End-to-end dilutes
@@ -216,6 +227,189 @@ TEST(ConstraintAtomCostTest, InternedKeysKeepTheCaseFoldingPolicy) {
   EXPECT_EQ(insensitive_not.Evaluate({0, 0}), ConstraintResult::kFalse);
   EXPECT_EQ(insensitive.Evaluate({1, 1}), ConstraintResult::kFalse);
   EXPECT_EQ(insensitive_not.Evaluate({1, 1}), ConstraintResult::kTrue);
+}
+
+TEST(ConstraintAtomCostTest, InMembershipEvaluationDoesNotScaleWithSetSize) {
+  // A large IN set must not cost more per evaluation than a small one: an IN
+  // clause is the plain way to write a long disjunction, so it must not be the
+  // slow way. Precomputing membership at construction is what makes the two
+  // runs cost the same; scanning the set made the large one scale with it.
+  constexpr int kEvaluations = 2'000'000;
+  constexpr uint32_t kSmallSet = 10;
+  constexpr uint32_t kLargeSet = 2000;
+  constexpr uint32_t kDomain = 4096;
+
+  const auto set_of = [](uint32_t count) {
+    std::vector<uint32_t> indices;
+    indices.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) indices.push_back(i);
+    return indices;
+  };
+  const InNode small_node(0, set_of(kSmallSet));
+  const InNode large_node(0, set_of(kLargeSet));
+
+  // Sweeping the whole domain keeps both runs on the same mix of members and
+  // non-members, so neither is handed the cheaper answer more often.
+  const auto evaluate = [](const InNode& node) {
+    return [&node] {
+      std::vector<uint32_t> assignment = {0};
+      for (int i = 0; i < kEvaluations; ++i) {
+        assignment[0] = static_cast<uint32_t>(i) % kDomain;
+        (void)node.Evaluate(assignment);
+      }
+    };
+  };
+
+  auto [small_ms, large_ms] = FastestMsEach(3, evaluate(small_node), evaluate(large_node));
+
+  // A membership lookup is one indexed read whatever the set holds, so the
+  // honest ratio is 1.0 and anything above it is contention. The bound
+  // separates that from the scanning regime, where a 2000-member set costs
+  // hundreds of times a 10-member one -- two orders of magnitude of room, so
+  // the bound sits far above what a loaded parallel run produces and still
+  // leaves the regression no way under it.
+  EXPECT_LT(large_ms, small_ms * 5.0) << "set of " << kSmallSet << ": " << small_ms
+                                      << " ms, set of " << kLargeSet << ": " << large_ms << " ms";
+}
+
+TEST(ConstraintAtomCostTest, PrecomputedMembershipKeepsEveryInBranch) {
+  const InNode node(0, {1, 3});
+
+  EXPECT_EQ(node.Evaluate({}), ConstraintResult::kUnknown);
+  EXPECT_EQ(node.Evaluate({kUnassigned}), ConstraintResult::kUnknown);
+  EXPECT_EQ(node.Evaluate({1}), ConstraintResult::kTrue);
+  EXPECT_EQ(node.Evaluate({3}), ConstraintResult::kTrue);
+  EXPECT_EQ(node.Evaluate({0}), ConstraintResult::kFalse);
+  EXPECT_EQ(node.Evaluate({2}), ConstraintResult::kFalse);
+  // Past the largest member, and past anything the table holds.
+  EXPECT_EQ(node.Evaluate({4}), ConstraintResult::kFalse);
+  EXPECT_EQ(node.Evaluate({9999}), ConstraintResult::kFalse);
+
+  // A membership table is indexed by value index, so what bounds the table is
+  // the largest index a parameter may have. An index past that belongs to no
+  // parameter and is not a member of anything, so it neither matches nor sizes
+  // the table -- a set holding one costs what its in-domain members cost.
+  const InNode out_of_domain(0, {1, coverwise::model::kMaxValuesPerParameter, UINT32_MAX - 1});
+  EXPECT_EQ(out_of_domain.Evaluate({1}), ConstraintResult::kTrue);
+  EXPECT_EQ(out_of_domain.Evaluate({coverwise::model::kMaxValuesPerParameter}),
+            ConstraintResult::kFalse);
+  EXPECT_EQ(out_of_domain.Evaluate({UINT32_MAX - 1}), ConstraintResult::kFalse);
+
+  // An empty set matches nothing but still answers the unassigned branch.
+  const InNode empty(0, {});
+  EXPECT_EQ(empty.Evaluate({kUnassigned}), ConstraintResult::kUnknown);
+  EXPECT_EQ(empty.Evaluate({0}), ConstraintResult::kFalse);
+
+  // A repeated member is one member.
+  const InNode repeated(0, {2, 2, 2});
+  EXPECT_EQ(repeated.Evaluate({2}), ConstraintResult::kTrue);
+  EXPECT_EQ(repeated.Evaluate({1}), ConstraintResult::kFalse);
+}
+
+TEST(ConstraintAtomCostTest, InConstraintGenerationStaysDeterministicAndOrderIndependent) {
+  // Membership is precomputed from the set, so how the set was written must not
+  // reach the suite: the same seed produces the same rows, and permuting the
+  // set produces the same rows too.
+  const auto model = [](const char* set_expression) {
+    GenerateOptions opts;
+    opts.parameters.push_back({"env", {"dev", "stg", "prod", "qa", "demo"}, {}});
+    opts.parameters.push_back({"region", {"us", "eu", "ap"}, {}});
+    opts.parameters.push_back({"tier", {"free", "pro", "team"}, {}});
+    opts.strength = 2;
+    opts.seed = 42;
+    opts.constraint_expressions.push_back(std::string("env IN ") + set_expression);
+    return opts;
+  };
+  const auto rows = [](const coverwise::model::GenerateResult& result) {
+    std::vector<std::vector<uint32_t>> values;
+    values.reserve(result.tests.size());
+    for (const auto& test : result.tests) values.push_back(test.values);
+    return values;
+  };
+
+  const auto first = Generate(model("{dev, stg, prod}"));
+  const auto again = Generate(model("{dev, stg, prod}"));
+  const auto permuted = Generate(model("{prod, dev, stg}"));
+
+  ASSERT_FALSE(first.tests.empty());
+  EXPECT_EQ(rows(first), rows(again));
+  EXPECT_EQ(rows(first), rows(permuted));
+
+  // And the constraint holds: no row outside the set reaches the suite.
+  for (const auto& test : first.tests) {
+    EXPECT_LT(test.values[0], 3u) << "env index " << test.values[0];
+  }
+}
+
+// Case folding decides which value a name resolves to, so it sits underneath
+// every generated row. These are the models whose tuple universe is known
+// independently of the generator: the suite must cover that universe, repeat
+// exactly for a given seed, and render every value in the case it was defined
+// with. Nothing here pins a test count -- the count is the generator's to
+// choose, the coverage is not.
+TEST(ConstraintAtomCostTest, KnownModelsCoverTheirTupleUniverseAndRepeatExactly) {
+  const auto render = [](const coverwise::model::GenerateResult& result) {
+    std::vector<std::string> rows;
+    rows.reserve(result.tests.size());
+    for (const auto& test : result.tests) {
+      std::string row;
+      for (size_t p = 0; p < test.values.size(); ++p) {
+        if (p > 0) row += ',';
+        row += result.parameters[p].name;
+        row += '=';
+        row += result.parameters[p].values[test.values[p]];
+      }
+      rows.push_back(row);
+    }
+    return rows;
+  };
+
+  // Pair count enumerated from the model shape, not copied from a past run.
+  const auto pair_universe = [](const std::vector<coverwise::model::Parameter>& params) {
+    uint64_t pairs = 0;
+    for (size_t i = 0; i < params.size(); ++i) {
+      for (size_t j = i + 1; j < params.size(); ++j) {
+        pairs += static_cast<uint64_t>(params[i].values.size()) * params[j].values.size();
+      }
+    }
+    return pairs;
+  };
+
+  std::vector<GenerateOptions> models(3);
+  models[0].parameters = {{"A", {"0", "1"}, {}}, {"B", {"0", "1"}, {}}, {"C", {"0", "1"}, {}}};
+  models[1].parameters = {{"A", {"1", "2", "3"}, {}}, {"B", {"a", "b"}, {}}, {"C", {"x", "y"}, {}}};
+  // The same shape spelled in mixed case, which is what the fold acts on.
+  models[2].parameters = {{"OsName", {"MacOS", "Ubuntu"}, {}},
+                          {"Browser", {"Chrome", "FireFox"}, {}},
+                          {"Arch", {"ARM", "x86"}, {}}};
+  for (auto& model : models) {
+    model.strength = 2;
+    model.seed = 42;
+  }
+
+  for (const auto& model : models) {
+    const auto result = Generate(model);
+    const auto repeated = Generate(model);
+    ASSERT_TRUE(result.error.ok()) << result.error.message;
+
+    EXPECT_EQ(render(result), render(repeated)) << model.parameters[0].name;
+
+    const auto report =
+        coverwise::validator::ValidateCoverage(result.parameters, result.tests, model.strength);
+    EXPECT_EQ(report.total_tuples, pair_universe(model.parameters)) << model.parameters[0].name;
+    EXPECT_EQ(report.covered_tuples, report.total_tuples) << model.parameters[0].name;
+    EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0) << model.parameters[0].name;
+
+    // Every rendered value is one the model defined, spelled the way it was
+    // defined -- the fold never reaches the output.
+    for (const auto& test : result.tests) {
+      for (size_t p = 0; p < test.values.size(); ++p) {
+        const auto& defined = model.parameters[p].values;
+        const auto& rendered = result.parameters[p].values[test.values[p]];
+        EXPECT_NE(std::find(defined.begin(), defined.end(), rendered), defined.end()) << rendered;
+      }
+    }
+  }
 }
 
 TEST(ConstraintAtomCostTest, InternedKeysKeepTheUnassignedAndOutOfRangeBranches) {

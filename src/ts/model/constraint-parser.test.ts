@@ -81,6 +81,43 @@ describe('constraint parser safety limits', () => {
     expect(parseConstraint('speed != mode', params).error.code).toBe(ErrorCode.Ok);
   });
 
+  it('treats a quoted relational RHS as a literal, not a parameter reference', () => {
+    // Whether a right-hand identifier resolves as a parameter reference is
+    // decided by the quoting alone, and the relational operators decide it the
+    // same way = and != do. A quoted operand that happens to spell a parameter
+    // name parses to whatever it would parse to if no parameter carried that
+    // name -- here a non-numeric literal, which no relational operator accepts.
+    const withCollision = [
+      new Parameter('threshold', ['1', '5', '10']),
+      new Parameter('limit', ['1', '5', '10']),
+    ];
+    const withoutCollision = [
+      new Parameter('threshold', ['1', '5', '10']),
+      new Parameter('ceiling', ['1', '5', '10']),
+    ];
+
+    for (const op of ['<', '<=', '>', '>=']) {
+      const quoted = `threshold ${op} "limit"`;
+      const colliding = parseConstraint(quoted, withCollision);
+      const plain = parseConstraint(quoted, withoutCollision);
+      expect(colliding.error.code).not.toBe(ErrorCode.Ok);
+      expect(colliding.error.code).toBe(plain.error.code);
+      expect(colliding.error.message).toBe(plain.error.message);
+
+      // The unquoted form is still a parameter-to-parameter comparison.
+      expect(parseConstraint(`threshold ${op} limit`, withCollision).error.code).toBe(ErrorCode.Ok);
+    }
+  });
+
+  it('still reads a quoted relational RHS that spells a number as a number', () => {
+    const params = [new Parameter('threshold', ['1', '5', '10']), new Parameter('7', ['a', 'b'])];
+
+    const quoted = parseConstraint('threshold < "7"', params);
+    expect(quoted.error.code).toBe(ErrorCode.Ok);
+    expect(quoted.constraint?.evaluate([0, 0])).toBe(ConstraintResult.True);
+    expect(quoted.constraint?.evaluate([2, 0])).toBe(ConstraintResult.False);
+  });
+
   it('compares two parameters case-insensitively by default, honoring caseSensitive', () => {
     // Regression: param-to-param comparison previously compared value strings
     // byte-strict even when name/value matching is case-insensitive by default,
