@@ -58,6 +58,29 @@ export function asciiToUpper(s: string): string {
   return result;
 }
 
+/// Order two strings the way the C++ core orders them.
+///
+/// The core keeps caller-supplied maps in `std::map<std::string>`, which orders
+/// keys by UTF-8 bytes, and UTF-8 byte order is code point order — so comparing
+/// code points reproduces it. JavaScript's own `<` compares UTF-16 code units
+/// instead, which sorts a supplementary character ahead of U+E000..U+FFFF and
+/// would make a diagnostic name a different key than the native surface does.
+///
+/// @returns Negative if `a` sorts first, positive if `b` does, 0 if equal.
+export function compareUtf8(a: string, b: string): number {
+  const left = Array.from(a);
+  const right = Array.from(b);
+  const shared = Math.min(left.length, right.length);
+  for (let i = 0; i < shared; ++i) {
+    // Array.from splits on code points, so each element has exactly one.
+    const diff = (left[i].codePointAt(0) as number) - (right[i].codePointAt(0) as number);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return left.length - right.length;
+}
+
 /// Compare two strings for equality using ASCII-only case folding.
 ///
 /// Matches the C++ `CaseInsensitiveEqual`: bytes >= 0x80 are compared

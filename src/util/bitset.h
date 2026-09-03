@@ -10,9 +10,12 @@
 namespace coverwise {
 namespace util {
 
-/// @brief A dynamic bitset optimized for coverage tracking.
+/// @brief A dynamic bitset for coverage tracking.
 ///
-/// Uses uint64_t blocks for efficient bulk operations (AND, OR, popcount).
+/// The set is addressed one bit at a time -- Set, Clear and Test on a flat
+/// tuple index -- with Count and Reset covering the whole set. There is no
+/// set-wise operation: the coverage engine reaches a tuple by computing its
+/// index, never by combining two bitsets.
 class DynamicBitset {
  public:
   /// @brief Construct a bitset with the given number of bits, all cleared.

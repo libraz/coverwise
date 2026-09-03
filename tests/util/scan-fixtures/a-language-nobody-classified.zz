@@ -1,0 +1,6 @@
+A file in a language the scan has no reading for.
+
+Standing in for a binding written in something the repository does not hold
+yet. Discovery reports it as unclassified rather than skipping it, so adding a
+surface in a new language stops the suite instead of passing through it
+unscanned.

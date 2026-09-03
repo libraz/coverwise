@@ -20,11 +20,7 @@
 /// @param runs Rounds to sample. Every gate here is an upper bound, so raise
 ///        this until the high side of the ratio stops moving.
 /// @returns The fastest `first` and the fastest `second`, in milliseconds.
-export function fastestEach(
-  runs: number,
-  first: () => void,
-  second: () => void,
-): [number, number] {
+export function fastestEach(runs: number, first: () => void, second: () => void): [number, number] {
   const timed = (fn: () => void): number => {
     const start = performance.now();
     fn();

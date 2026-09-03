@@ -9,6 +9,7 @@ import {
 import {
   asciiCaseInsensitiveEqual,
   asciiToUpper,
+  compareUtf8,
   isNumeric,
   jsNumberToString,
   toDouble,
@@ -218,6 +219,33 @@ describe('asciiCaseInsensitiveEqual', () => {
 
   it('returns false for different lengths', () => {
     expect(asciiCaseInsensitiveEqual('ab', 'abc')).toBe(false);
+  });
+});
+
+describe('compareUtf8', () => {
+  const sorted = (values: string[]) => [...values].sort(compareUtf8);
+
+  it('orders by code point, which is the order of the UTF-8 bytes', () => {
+    expect(compareUtf8('a', 'b')).toBeLessThan(0);
+    expect(compareUtf8('b', 'a')).toBeGreaterThan(0);
+    expect(compareUtf8('a', 'a')).toBe(0);
+    expect(sorted(['zzz', 'aaa', 'MMM'])).toEqual(['MMM', 'aaa', 'zzz']);
+  });
+
+  it('puts a prefix ahead of the string that extends it', () => {
+    expect(compareUtf8('ab', 'abc')).toBeLessThan(0);
+    expect(compareUtf8('', 'a')).toBeLessThan(0);
+  });
+
+  // This is the whole reason the comparator exists: the built-in ordering
+  // compares UTF-16 code units, so a surrogate pair sorts below U+E000..U+FFFF
+  // and a diagnostic would name a different key than the native surface does.
+  it('sorts a supplementary character after the private-use area, unlike the default', () => {
+    const supplementary = '\u{1F600}';
+    const privateUse = '';
+    expect(compareUtf8(privateUse, supplementary)).toBeLessThan(0);
+    expect([privateUse, supplementary].sort()).toEqual([supplementary, privateUse]);
+    expect(sorted([privateUse, supplementary])).toEqual([privateUse, supplementary]);
   });
 });
 

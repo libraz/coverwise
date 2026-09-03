@@ -15,9 +15,12 @@ function popcount32(x: number): number {
   return (x * 0x01010101) >>> 24;
 }
 
-/// A dynamic bitset optimized for coverage tracking.
+/// A dynamic bitset for coverage tracking.
 ///
-/// Uses Uint32Array blocks for efficient bulk operations (AND, OR, popcount).
+/// The set is addressed one bit at a time -- set, clear and test on a flat
+/// tuple index -- with count and reset covering the whole set. There is no
+/// set-wise operation: the coverage engine reaches a tuple by computing its
+/// index, never by combining two bitsets.
 export class DynamicBitset {
   private numBits: number;
   private blocks: Uint32Array;
