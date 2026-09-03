@@ -13,6 +13,7 @@
 #include "model/constraint_ast.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
+#include "model/tuning_limits.h"
 #include "util/bitset.h"
 #include "util/combinatorics.h"
 
@@ -25,14 +26,6 @@ namespace core {
 /// For large t-wise, consider sparse mode (future).
 class CoverageEngine {
  public:
-  /// @brief Maximum number of tuples before refusing to proceed.
-  /// ~16M tuples ≈ 2MB bitset. Beyond this, performance degrades.
-  static constexpr uint32_t kMaxTuples = 16'000'000;
-  /// Maximum materialized parameter combinations and lookup-table rows.
-  static constexpr uint32_t kMaxCombinations = 1'000'000;
-  /// Maximum number of human-readable uncovered tuples returned per result.
-  static constexpr uint32_t kMaxDiagnosticTuples = 1'000;
-
   /// @brief An immutable parameter set shared by a family of engines.
   ///
   /// An engine only ever reads its parameters, so several engines over the same
@@ -50,7 +43,7 @@ class CoverageEngine {
   /// @brief Initialize coverage tracking for the given parameters and strength.
   /// @param params The parameter definitions.
   /// @param strength The interaction strength (t). 2 = pairwise.
-  /// @return Error if tuple count exceeds kMaxTuples.
+  /// @return Error if tuple count exceeds model::kMaxTuples.
   static std::pair<CoverageEngine, model::Error> Create(const std::vector<model::Parameter>& params,
                                                         uint32_t strength) {
     return CreateShared(ShareParameters(params), strength);
@@ -63,7 +56,7 @@ class CoverageEngine {
   /// @param all_params All parameter definitions.
   /// @param param_subset Indices of parameters to cover (must be sorted).
   /// @param strength The interaction strength (t).
-  /// @return Error if tuple count exceeds kMaxTuples.
+  /// @return Error if tuple count exceeds model::kMaxTuples.
   static std::pair<CoverageEngine, model::Error> Create(
       const std::vector<model::Parameter>& all_params, const std::vector<uint32_t>& param_subset,
       uint32_t strength) {
@@ -182,11 +175,44 @@ class CoverageEngine {
   /// @brief Check if all valid tuples are covered.
   bool IsComplete() const { return CoveredCount() == TotalTuples(); }
 
-  /// @brief Collect all uncovered tuples as human-readable objects.
+  /// @brief Collect uncovered tuples as human-readable objects.
+  ///
+  /// This is the diagnostic view, so it is bounded: @p limit is what a caller
+  /// is willing to materialize, and model::kMaxDiagnosticTuples is what a result may
+  /// carry. A caller that only needs a count or an overlap decision uses
+  /// ForEachUncoveredTuple() instead, which builds nothing.
   /// @param params Parameter definitions (for resolving names and values).
   /// @return Vector of uncovered tuples with human-readable representations.
   std::vector<model::UncoveredTuple> GetUncoveredTuples(
-      const std::vector<model::Parameter>& params, uint32_t limit = kMaxDiagnosticTuples) const;
+      const std::vector<model::Parameter>& params,
+      uint32_t limit = model::kMaxDiagnosticTuples) const;
+
+  /// @brief Visit every currently-uncovered tuple as plain indices.
+  ///
+  /// Nothing is materialized per tuple: the callback borrows the walk's own
+  /// buffers, so the cost of counting uncovered tuples does not depend on how
+  /// many there are.
+  /// @param fn Called as fn(const uint32_t* combo, const uint32_t* value_indices)
+  ///           with `strength` entries in each, returning false to stop.
+  template <typename Fn>
+  void ForEachUncoveredTuple(Fn fn) const {
+    ForEachTupleUntil([&fn](uint32_t /*global_index*/, const uint32_t* combo,
+                            const std::vector<uint32_t>& value_indices) {
+      return fn(combo, value_indices.data());
+    });
+  }
+
+  /// @brief Whether this engine still counts the given tuple as uncovered.
+  ///
+  /// Tuple identity is the parameter combination plus its value tuple, so this
+  /// answers for a tuple another engine enumerated. False when this engine does
+  /// not enumerate that combination at all, and false when it holds it as
+  /// covered or excluded.
+  /// @param params Global parameter indices in ascending order.
+  /// @param value_indices Value index per entry of @p params.
+  /// @param count Size of both arrays; a tuple of another size is never one of
+  ///        this engine's.
+  bool NeedsTuple(const uint32_t* params, const uint32_t* value_indices, uint32_t count) const;
 
   /// @brief A single uncovered tuple expressed as a partial assignment.
   struct UncoveredAssignment {

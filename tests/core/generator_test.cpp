@@ -12,6 +12,7 @@
 #include "core/coverage_engine.h"
 #include "model/constraint_ast.h"
 #include "model/constraint_parser.h"
+#include "model/options_validation.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
 #include "validator/constraint_validator.h"
@@ -427,7 +428,7 @@ TEST(GeneratorTest, OverlappingSubModelSpendsDiagnosticBudgetOnDistinctTuples) {
 
   // The truncated list is full and holds no repeats, so the budget was spent
   // entirely on interactions the user has not seen yet.
-  ASSERT_EQ(result.uncovered.size(), coverwise::core::CoverageEngine::kMaxDiagnosticTuples);
+  ASSERT_EQ(result.uncovered.size(), coverwise::model::kMaxDiagnosticTuples);
   EXPECT_EQ(DistinctTupleCount(result.uncovered), result.uncovered.size());
   EXPECT_EQ(result.omitted_uncovered, result.uncovered_count - result.uncovered.size());
 }
@@ -625,9 +626,64 @@ TEST(GeneratorTest, NegativeTestingWarnsWhenInvalidValueCannotSatisfyConstraints
   auto result = Generate(opts);
 
   EXPECT_TRUE(result.negative_tests.empty());
+  // Nothing containing A=bad is feasible, so there is no shortfall to report:
+  // the warning states that fact instead of claiming an unmet target. The
+  // metrics say the same thing, which is what makes the two readable together.
   EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "No feasible negative coverage target for A=bad"),
+            result.warnings.end());
+  EXPECT_EQ(std::find(result.warnings.begin(), result.warnings.end(),
                       "Negative coverage incomplete for A=bad"),
             result.warnings.end());
+  ASSERT_TRUE(result.negative_coverage.has_value());
+  EXPECT_EQ(result.negative_coverage->total_tuples, 0u);
+  EXPECT_EQ(result.negative_coverage->omitted_tuples, 0u);
+}
+
+// The negative metrics and the warnings are meant to be read against each
+// other, so no warning may claim a shortfall the metrics do not show.
+TEST(GeneratorTest, NoNegativeWarningClaimsAShortfallTheMetricsDoNotShow) {
+  auto claims_incompleteness = [](const std::vector<std::string>& warnings) {
+    for (const auto& warning : warnings) {
+      if (warning.rfind("Negative coverage incomplete for ", 0) == 0) return true;
+    }
+    return false;
+  };
+
+  {
+    // Every single-fault combination for the invalid value is forbidden.
+    GenerateOptions opts;
+    opts.parameters = {
+        {"A", {"valid", "bad"}, {false, true}},
+        {"B", {"b0", "b1"}, {}},
+    };
+    opts.strength = 2;
+    opts.constraint_expressions = {"A!=bad"};
+
+    auto result = Generate(opts);
+
+    ASSERT_TRUE(result.negative_coverage.has_value());
+    EXPECT_EQ(result.negative_coverage->omitted_tuples, 0u);
+    EXPECT_DOUBLE_EQ(result.negative_coverage->coverage_ratio, 1.0);
+    EXPECT_FALSE(claims_incompleteness(result.warnings));
+  }
+  {
+    // maxTests stops negative generation with feasible targets still uncovered.
+    GenerateOptions opts;
+    opts.parameters = {
+        {"A", {"valid", "bad"}, {false, true}},
+        {"B", {"b0", "b1", "b2"}, {}},
+    };
+    opts.strength = 2;
+    opts.max_tests = 2;
+
+    auto result = Generate(opts);
+
+    ASSERT_TRUE(result.negative_coverage.has_value());
+    ASSERT_TRUE(claims_incompleteness(result.warnings));
+    EXPECT_GT(result.negative_coverage->omitted_tuples, 0u);
+    EXPECT_LT(result.negative_coverage->coverage_ratio, 1.0);
+  }
 }
 
 TEST(GeneratorTest, LargeModelFullCoverage) {
@@ -1527,4 +1583,286 @@ TEST(GeneratorTest, AWarningForAnErrorWithADetailKeepsIt) {
   ASSERT_FALSE(result.error.detail.empty());
   ASSERT_FALSE(result.warnings.empty());
   EXPECT_EQ(result.warnings[0], result.error.message + ": " + result.error.detail);
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance at the engine entry
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using coverwise::model::BoundaryConfig;
+using coverwise::model::Error;
+
+/// @brief The code the model gate answers with for these options.
+Error::Code GateCode(GenerateOptions options) {
+  auto accepted = coverwise::model::AcceptOptions(std::move(options));
+  return accepted.ok() ? Error::Code::kOk : accepted.error().code;
+}
+
+/// @brief A model whose weights name a value only boundary expansion produces.
+GenerateOptions BoundaryWeightModel() {
+  GenerateOptions opts;
+  opts.parameters = {Parameter("age", {"50"}), Parameter("plan", {"free", "pro"})};
+  opts.boundary_configs["age"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 0.0, 10.0, 1.0};
+  // Expansion around [0, 10] puts "1" in the value list; the declared list does not.
+  opts.weights.entries["age"]["1"] = 3.0;
+  opts.strength = 2;
+  return opts;
+}
+
+}  // namespace
+
+// The rules that resolve names and count values are applied to the value space
+// generation will use, so a weight naming a generated boundary value is a model
+// the engine accepts rather than one it rejects on the declared values.
+TEST(GeneratorAcceptanceTest, WeightsMayNameAValueExpansionProduces) {
+  const auto opts = BoundaryWeightModel();
+
+  ASSERT_EQ(GateCode(opts), Error::Code::kOk);
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_FALSE(result.tests.empty());
+}
+
+// Every entry point of the engine answers with the code the model gate answers
+// with for the same options: acceptance is decided in one place, not once per
+// entry point.
+TEST(GeneratorAcceptanceTest, EveryEntryPointReturnsTheModelGateCode) {
+  std::vector<std::pair<std::string, GenerateOptions>> cases;
+  cases.emplace_back("weights on a generated boundary value", BoundaryWeightModel());
+
+  {
+    auto opts = BoundaryWeightModel();
+    opts.weights.entries["age"]["not a value"] = 2.0;
+    cases.emplace_back("weights on a value nothing produces", std::move(opts));
+  }
+  {
+    auto opts = BoundaryWeightModel();
+    opts.boundary_configs["age"].step = 5.0;
+    cases.emplace_back("integer boundary with a step other than one", std::move(opts));
+  }
+  {
+    // The declared value is an invalid sentinel and the range supplies the rest.
+    GenerateOptions opts;
+    opts.parameters = {Parameter("age", {"999"}, {true}), Parameter("plan", {"free", "pro"})};
+    opts.boundary_configs["age"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 0.0, 10.0, 1.0};
+    opts.strength = 2;
+    cases.emplace_back("boundary parameter declaring only an invalid value", std::move(opts));
+  }
+  {
+    // The metadata length disagrees with the declared values, which expansion
+    // itself rejects before any later rule sees the parameter.
+    GenerateOptions opts;
+    opts.parameters = {Parameter("n", {"5"}, {true, false}), Parameter("plan", {"free", "pro"})};
+    opts.boundary_configs["n"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+    opts.strength = 2;
+    cases.emplace_back("boundary parameter with mismatched metadata", std::move(opts));
+  }
+  {
+    // '5' is unambiguous before expansion and collides with a generated value
+    // after it, so the collection is judged on the expanded value space.
+    GenerateOptions opts;
+    Parameter n("n", {"10"});
+    n.set_aliases({{"5"}});
+    opts.parameters = {n, Parameter("os", {"win", "mac"})};
+    opts.boundary_configs["n"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+    opts.strength = 2;
+    cases.emplace_back("alias that only expansion makes ambiguous", std::move(opts));
+  }
+  {
+    GenerateOptions opts;
+    std::vector<std::string> values;
+    for (size_t index = 0; index < 20; ++index) {
+      values.push_back(std::string(60 * 1024, 'x') + std::to_string(index));
+    }
+    opts.parameters = {Parameter("wide", std::move(values)), Parameter("plan", {"free", "pro"})};
+    opts.strength = 2;
+    cases.emplace_back("string data beyond the aggregate budget", std::move(opts));
+  }
+  {
+    auto opts = BoundaryWeightModel();
+    opts.strength = 0;
+    cases.emplace_back("strength below one", std::move(opts));
+  }
+  {
+    auto opts = BoundaryWeightModel();
+    opts.sub_models.push_back(SubModel{{"nonexistent"}, 1});
+    cases.emplace_back("sub-model naming an unknown parameter", std::move(opts));
+  }
+  {
+    // The range would supply the values, but per-value metadata has nothing to
+    // attach to until it does.
+    GenerateOptions opts;
+    Parameter n("n", {});
+    n.set_invalid({true});
+    opts.parameters = {n, Parameter("plan", {"free", "pro"})};
+    opts.boundary_configs["n"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 0.0, 10.0, 1.0};
+    opts.strength = 2;
+    cases.emplace_back("boundary parameter carrying metadata but no declared values",
+                       std::move(opts));
+  }
+  {
+    // Within the maximum as declared, past it once expansion has run.
+    GenerateOptions opts;
+    std::vector<std::string> values;
+    for (int value = 1; value <= 16381; ++value) values.push_back(std::to_string(value));
+    opts.parameters = {Parameter("n", std::move(values)), Parameter("plan", {"free", "pro"})};
+    opts.boundary_configs["n"] =
+        BoundaryConfig{BoundaryConfig::Type::kInteger, 100000.0, 100001.0, 1.0};
+    opts.strength = 2;
+    cases.emplace_back("expansion pushing the value count past the per-parameter maximum",
+                       std::move(opts));
+  }
+  {
+    // A row's members reach the engine as indices, but a member that did not
+    // resolve keeps the caller's own text, and that text is charged.
+    GenerateOptions opts;
+    opts.parameters = {Parameter("a", {"0", "1"}), Parameter("b", {"0", "1"})};
+    opts.strength = 2;
+    for (size_t row = 0; row < 40; ++row) {
+      TestCase recorded;
+      recorded.values.assign(2, coverwise::model::kUnassigned);
+      recorded.unresolved = {std::string(60 * 1024, 'x'), std::string(60 * 1024, 'y')};
+      opts.seeds.push_back(std::move(recorded));
+    }
+    cases.emplace_back("recorded-row text beyond the aggregate budget", std::move(opts));
+  }
+
+  const std::vector<TestCase> no_existing;
+  for (const auto& [name, opts] : cases) {
+    const Error::Code gate = GateCode(opts);
+    EXPECT_EQ(Generate(opts).error.code, gate) << name;
+    EXPECT_EQ(EstimateModel(opts).error.code, gate) << name;
+    EXPECT_EQ(Extend(no_existing, opts, ExtendMode::kStrict).error.code, gate) << name;
+  }
+}
+
+// Expansion runs before the rest of the acceptance rules, so a failure of the
+// expansion itself is the answer the caller gets rather than a later rule's
+// account of the value space expansion never produced.
+TEST(GeneratorAcceptanceTest, AnExpansionFailureIsTheAnswerTheCallerGets) {
+  GenerateOptions opts;
+  opts.parameters = {Parameter("n", {"5"}, {true, false}), Parameter("plan", {"free", "pro"})};
+  opts.boundary_configs["n"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+  opts.strength = 2;
+
+  auto result = Generate(opts);
+
+  EXPECT_EQ(result.error.code, Error::Code::kInvalidInput);
+  EXPECT_EQ(result.error.message, "Invalid metadata length for parameter 'n': invalid");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings[0], result.error.message);
+}
+
+// Seed rows address values by index into the value list the caller declared, so
+// expansion must move them onto the value space the engine runs on.
+TEST(GeneratorAcceptanceTest, SeedRowsAddressTheDeclaredValueSpace) {
+  GenerateOptions opts;
+  opts.parameters = {Parameter("n", {"5"}), Parameter("os", {"win", "mac"})};
+  opts.boundary_configs["n"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+  opts.strength = 2;
+  // n is at its only declared value, os is at "mac".
+  opts.seeds = {TestCase{{0, 1}}};
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  const uint32_t five = result.parameters[0].find_value_index("5");
+  ASSERT_NE(five, coverwise::model::kUnassigned);
+  ASSERT_FALSE(result.tests.empty());
+  EXPECT_EQ(result.tests[0].values[0], five);
+  EXPECT_EQ(result.tests[0].values[1], 1u);
+  // The seed took part in coverage rather than being reported as unusable.
+  EXPECT_TRUE(result.warnings.empty()) << result.warnings[0];
+}
+
+// Whether a value is a number is decided by the shared decimal grammar. The
+// pure-TS port runs the same case, so the two remaps agree index for index.
+TEST(GeneratorAcceptanceTest, ValueIdentityFollowsTheSharedNumericGrammar) {
+  const std::vector<std::string> spellings = {" 5", "0x10", "5.0", "five"};
+  GenerateOptions opts;
+  opts.parameters = {Parameter("n", spellings), Parameter("os", {"win", "mac"})};
+  opts.boundary_configs["n"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+  opts.strength = 2;
+  for (uint32_t index = 0; index < spellings.size(); ++index) {
+    opts.seeds.push_back(TestCase{{index, 0}});
+  }
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  const auto& expanded = result.parameters[0];
+  // "5.0" is the only number here, so it absorbs the generated 5 and keeps its
+  // own spelling; " 5" and "0x10" are text under the shared grammar and are
+  // carried over untouched rather than folded onto a generated value.
+  EXPECT_EQ(expanded.values,
+            (std::vector<std::string>{"3", "4", "5.0", "6", "7", " 5", "0x10", "five"}));
+  ASSERT_GE(result.tests.size(), spellings.size());
+  for (size_t index = 0; index < spellings.size(); ++index) {
+    EXPECT_EQ(expanded.values[result.tests[index].values[0]], spellings[index]);
+  }
+}
+
+// An extend mode the engine does not implement is answered with an error. The
+// alternative -- treating it as strict, or returning an ok result the caller's
+// rows never reached -- loses the suite the caller already had.
+TEST(GeneratorAcceptanceTest, ExtendRejectsAModeItDoesNotImplement) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  opts.strength = 2;
+  const std::vector<TestCase> existing = {TestCase{{0, 0}}, TestCase{{1, 1}}};
+
+  auto result = Extend(existing, opts, static_cast<ExtendMode>(99));
+
+  EXPECT_FALSE(result.error.ok());
+  EXPECT_EQ(result.error.code, Error::Code::kInvalidInput);
+  // Either every row survives or the call fails; an ok result holding fewer
+  // rows than it was handed is what must be impossible.
+  EXPECT_TRUE(!result.error.ok() || result.tests.size() >= existing.size());
+
+  auto strict = Extend(existing, opts, ExtendMode::kStrict);
+  ASSERT_TRUE(strict.error.ok()) << strict.error.message;
+  EXPECT_GE(strict.tests.size(), existing.size());
+}
+
+// The uncovered report is a diagnostic, so its size is bounded by the
+// diagnostic budget while the count it summarizes stays exact. A model that
+// stops far short of coverage must not be answered by materializing one
+// readable tuple per missing one.
+TEST(GeneratorAcceptanceTest, TheUncoveredReportStaysWithinTheDiagnosticBudget) {
+  constexpr uint32_t kParams = 30;
+  constexpr uint32_t kSubModelParams = 10;
+  GenerateOptions opts;
+  SubModel sub;
+  sub.strength = 2;
+  for (uint32_t pi = 0; pi < kParams; ++pi) {
+    const std::string name = "p" + std::to_string(pi);
+    opts.parameters.push_back({name, {"0", "1"}, {}});
+    if (pi < kSubModelParams) sub.parameter_names.push_back(name);
+  }
+  opts.strength = 2;
+  opts.max_tests = 1;
+  opts.sub_models = {sub};
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  ASSERT_EQ(result.tests.size(), 1u);
+
+  // One test covers one value pair per parameter pair, so the global engine is
+  // short by three of the four value pairs of every parameter pair. The
+  // sub-model's parameters are a subset of the global model's, so every tuple
+  // it is short of is one the global engine is short of too, and the union adds
+  // nothing.
+  const uint32_t param_pairs = kParams * (kParams - 1) / 2;
+  EXPECT_EQ(result.uncovered_count, param_pairs * 3);
+  EXPECT_LE(result.uncovered.size(), static_cast<size_t>(coverwise::model::kMaxDiagnosticTuples));
+  EXPECT_LT(result.uncovered.size(), result.uncovered_count);
+  EXPECT_EQ(result.omitted_uncovered, result.uncovered_count - result.uncovered.size());
 }

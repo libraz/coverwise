@@ -4,7 +4,8 @@ import { ErrorCode } from '../model/error.js';
 import type { GenerateOptions } from '../model/generate-options.js';
 import { createGenerateOptions } from '../model/generate-options.js';
 import { Parameter } from '../model/parameter.js';
-import type { GenerateResult } from '../model/test-case.js';
+import { type GenerateResult, UNASSIGNED } from '../model/test-case.js';
+import { MAX_DIAGNOSTIC_TUPLES } from '../model/tuning-limits.js';
 import { validateConstraintReport } from '../validator/constraint-validator.js';
 import { validateCoverage } from '../validator/coverage-validator.js';
 import { CoverageEngine } from './coverage-engine.js';
@@ -511,7 +512,48 @@ describe('generate', () => {
       }),
     );
     expect(result.negativeTests).toEqual([]);
-    expect(result.warnings).toContain('Negative coverage incomplete for A=bad');
+    // Nothing containing A=bad is feasible, so there is no shortfall to report:
+    // the warning states that fact instead of claiming an unmet target. The
+    // metrics say the same thing, which is what makes the two readable together.
+    expect(result.warnings).toContain('No feasible negative coverage target for A=bad');
+    expect(result.warnings).not.toContain('Negative coverage incomplete for A=bad');
+    expect(result.negativeCoverage?.totalTuples).toBe(0);
+    expect(result.negativeCoverage?.omittedTuples).toBe(0);
+  });
+
+  it('never claims a shortfall the negative metrics do not show', () => {
+    const claimsIncompleteness = (warnings: string[]): boolean =>
+      warnings.some((warning) => warning.startsWith('Negative coverage incomplete for '));
+
+    // Every single-fault combination for the invalid value is forbidden.
+    const noTarget = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'A', values: ['valid', 'bad'], invalid: [false, true] },
+          { name: 'B', values: ['b0', 'b1'] },
+        ],
+        strength: 2,
+        constraintExpressions: ['A!=bad'],
+      }),
+    );
+    expect(noTarget.negativeCoverage?.omittedTuples).toBe(0);
+    expect(noTarget.negativeCoverage?.coverageRatio).toBe(1);
+    expect(claimsIncompleteness(noTarget.warnings)).toBe(false);
+
+    // maxTests stops negative generation with feasible targets still uncovered.
+    const truncated = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'A', values: ['valid', 'bad'], invalid: [false, true] },
+          { name: 'B', values: ['b0', 'b1', 'b2'] },
+        ],
+        strength: 2,
+        maxTests: 2,
+      }),
+    );
+    expect(claimsIncompleteness(truncated.warnings)).toBe(true);
+    expect(truncated.negativeCoverage?.omittedTuples).toBeGreaterThan(0);
+    expect(truncated.negativeCoverage?.coverageRatio).toBeLessThan(1);
   });
 });
 
@@ -602,9 +644,46 @@ describe('overlapping sub-model diagnostics', () => {
 
     // The truncated list is full and holds no repeats, so the budget was spent
     // entirely on interactions the user has not seen yet.
-    expect(result.uncovered).toHaveLength(CoverageEngine.MAX_DIAGNOSTIC_TUPLES);
+    expect(result.uncovered).toHaveLength(MAX_DIAGNOSTIC_TUPLES);
     expect(distinctTupleCount(result.uncovered)).toBe(result.uncovered.length);
     expect(result.omittedUncovered).toBe(result.uncoveredCount - result.uncovered.length);
+  });
+
+  it('never asks an engine for more readable tuples than the budget', () => {
+    // The readable form of a tuple is only ever built for the report, so no call
+    // path may size it by the shortfall: a large model would otherwise build one
+    // object per missing tuple just to count them.
+    const names = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
+    const requested: number[] = [];
+    const original = CoverageEngine.prototype.getUncoveredTuples;
+    CoverageEngine.prototype.getUncoveredTuples = function (
+      params: Parameter[],
+      limit = MAX_DIAGNOSTIC_TUPLES,
+    ) {
+      requested.push(limit);
+      return original.call(this, params, limit);
+    };
+    let result: GenerateResult;
+    try {
+      result = generate(
+        createGenerateOptions({
+          parameters: names.map((name) => ({ name, values: ['0', '1', '2', '3', '4', '5'] })),
+          strength: 2,
+          seed: 7,
+          maxTests: 1,
+          subModels: [{ parameterNames: names.slice(0, 8), strength: 2 }],
+        }),
+      );
+    } finally {
+      CoverageEngine.prototype.getUncoveredTuples = original;
+    }
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.uncoveredCount).toBeGreaterThan(MAX_DIAGNOSTIC_TUPLES);
+    expect(requested.length).toBeGreaterThan(0);
+    for (const limit of requested) {
+      expect(limit).toBeLessThanOrEqual(MAX_DIAGNOSTIC_TUPLES);
+    }
   });
 });
 
@@ -726,6 +805,37 @@ describe('boundary expansion', () => {
     const remapped = result.parameters[0].findValueIndex('50');
     expect(result.tests[0].values[0]).toBe(remapped);
     expect(result.parameters[0].values[result.tests[0].values[0]]).toBe('50');
+  });
+
+  it('decides value identity by the shared numeric grammar, not by coercion', () => {
+    // ' 5' and '0x10' are text under the shared decimal grammar, so expansion
+    // leaves them alone; only '5.0' is a number and dedups against the generated
+    // 5. Number() coercion accepts leading whitespace and hex, so deciding
+    // identity with it would fold two of these rows onto a generated value the
+    // C++ core keeps them distinct from.
+    const spellings = [' 5', '0x10', '5.0', 'five'];
+    const result = generate(
+      createGenerateOptions({
+        parameters: [
+          { name: 'n', values: spellings },
+          { name: 'os', values: ['win', 'mac'] },
+        ],
+        boundaryConfigs: {
+          n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 },
+        },
+        seeds: spellings.map((_, index) => ({ values: [index, 0] })),
+      }),
+    );
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    const expanded = result.parameters[0];
+    // '5.0' is the only number, so it absorbs the generated 5 and keeps its own
+    // spelling; the other three are carried over as text.
+    expect(expanded.values).toEqual(['3', '4', '5.0', '6', '7', ' 5', '0x10', 'five']);
+    // Every recorded row still addresses the value it was written against.
+    spellings.forEach((spelling, index) => {
+      expect(expanded.values[result.tests[index].values[0]]).toBe(spelling);
+    });
   });
 
   it('rejects non-finite expansion and duplicate numeric identities', () => {
@@ -1112,5 +1222,178 @@ describe('generate completion phase (coverage completeness)', () => {
     expect(result.coverage).toBe(1.0);
     expect(result.uncovered).toHaveLength(0);
     expect(countPositiveViolations(result, opts)).toBe(0);
+  });
+});
+
+describe('acceptance at the engine entry', () => {
+  /// A model whose weights name a value only boundary expansion produces.
+  function boundaryWeightModel(): GenerateOptions {
+    return createGenerateOptions({
+      parameters: [
+        { name: 'age', values: ['50'] },
+        { name: 'plan', values: ['free', 'pro'] },
+      ],
+      boundaryConfigs: { age: { type: BoundaryType.Integer, minValue: 0, maxValue: 10, step: 1 } },
+      // Expansion around [0, 10] puts '1' in the value list; the declared list does not.
+      weights: { entries: { age: { '1': 3 } } },
+    });
+  }
+
+  /// The same models the C++ twin runs, with the code its gate answers with.
+  const cases: Array<{ name: string; expected: ErrorCode; options: () => GenerateOptions }> = [
+    {
+      name: 'weights on a generated boundary value',
+      expected: ErrorCode.Ok,
+      options: boundaryWeightModel,
+    },
+    {
+      name: 'weights on a value nothing produces',
+      expected: ErrorCode.InvalidInput,
+      options: () => {
+        const opts = boundaryWeightModel();
+        opts.weights.entries.age['not a value'] = 2;
+        return opts;
+      },
+    },
+    {
+      name: 'integer boundary with a step other than one',
+      expected: ErrorCode.InvalidInput,
+      options: () => {
+        const opts = boundaryWeightModel();
+        opts.boundaryConfigs.age.step = 5;
+        return opts;
+      },
+    },
+    {
+      name: 'boundary parameter declaring only an invalid value',
+      expected: ErrorCode.Ok,
+      options: () =>
+        createGenerateOptions({
+          parameters: [
+            { name: 'age', values: ['999'], invalid: [true] },
+            { name: 'plan', values: ['free', 'pro'] },
+          ],
+          boundaryConfigs: {
+            age: { type: BoundaryType.Integer, minValue: 0, maxValue: 10, step: 1 },
+          },
+        }),
+    },
+    {
+      // '5' is unambiguous before expansion and collides with a generated value
+      // after it, so the collection is judged on the expanded value space.
+      name: 'alias that only expansion makes ambiguous',
+      expected: ErrorCode.InvalidInput,
+      options: () =>
+        createGenerateOptions({
+          parameters: [
+            { name: 'n', values: ['10'], aliases: [['5']] },
+            { name: 'os', values: ['win', 'mac'] },
+          ],
+          boundaryConfigs: { n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 } },
+        }),
+    },
+    {
+      name: 'string data beyond the aggregate budget',
+      expected: ErrorCode.InvalidInput,
+      options: () =>
+        createGenerateOptions({
+          parameters: [
+            {
+              name: 'wide',
+              values: Array.from({ length: 20 }, (_, i) => `${'x'.repeat(60 * 1024)}${i}`),
+            },
+            { name: 'plan', values: ['free', 'pro'] },
+          ],
+        }),
+    },
+    {
+      // Expanding first would rebuild a metadata array of matching length and
+      // mask the disagreement, so expansion rejects it before any later rule
+      // sees the parameter.
+      name: 'boundary parameter with mismatched metadata',
+      expected: ErrorCode.InvalidInput,
+      options: () =>
+        createGenerateOptions({
+          parameters: [
+            { name: 'n', values: ['5'], invalid: [true, false] },
+            { name: 'plan', values: ['free', 'pro'] },
+          ],
+          boundaryConfigs: { n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 } },
+        }),
+    },
+    {
+      name: 'strength below one',
+      expected: ErrorCode.InvalidInput,
+      options: () => {
+        const opts = boundaryWeightModel();
+        opts.strength = 0;
+        return opts;
+      },
+    },
+    {
+      name: 'sub-model naming an unknown parameter',
+      expected: ErrorCode.InvalidInput,
+      options: () => {
+        const opts = boundaryWeightModel();
+        opts.subModels.push({ parameterNames: ['nonexistent'], strength: 1 });
+        return opts;
+      },
+    },
+    {
+      // The range would supply the values, but per-value metadata has nothing
+      // to attach to until it does.
+      name: 'boundary parameter carrying metadata but no declared values',
+      expected: ErrorCode.InvalidInput,
+      options: () =>
+        createGenerateOptions({
+          parameters: [
+            { name: 'n', values: [], invalid: [true] },
+            { name: 'plan', values: ['free', 'pro'] },
+          ],
+          boundaryConfigs: {
+            n: { type: BoundaryType.Integer, minValue: 0, maxValue: 10, step: 1 },
+          },
+        }),
+    },
+    {
+      // Within the maximum as declared, past it once expansion has run.
+      name: 'expansion pushing the value count past the per-parameter maximum',
+      expected: ErrorCode.InvalidInput,
+      options: () =>
+        createGenerateOptions({
+          parameters: [
+            { name: 'n', values: Array.from({ length: 16381 }, (_, i) => String(i + 1)) },
+            { name: 'plan', values: ['free', 'pro'] },
+          ],
+          boundaryConfigs: {
+            n: { type: BoundaryType.Integer, minValue: 100000, maxValue: 100001, step: 1 },
+          },
+        }),
+    },
+    {
+      // A row's members reach the engine as indices, but a member that did not
+      // resolve keeps the caller's own text, and that text is charged.
+      name: 'recorded-row text beyond the aggregate budget',
+      expected: ErrorCode.InvalidInput,
+      options: () =>
+        createGenerateOptions({
+          parameters: [
+            { name: 'a', values: ['0', '1'] },
+            { name: 'b', values: ['0', '1'] },
+          ],
+          seeds: Array.from({ length: 40 }, () => ({
+            values: [UNASSIGNED, UNASSIGNED],
+            unresolved: ['x'.repeat(60 * 1024), 'y'.repeat(60 * 1024)],
+          })),
+        }),
+    },
+  ];
+
+  it('answers every entry point with the same code the C++ gate answers with', () => {
+    for (const testCase of cases) {
+      expect(generate(testCase.options()).error.code, testCase.name).toBe(testCase.expected);
+      expect(estimateModel(testCase.options()).error.code, testCase.name).toBe(testCase.expected);
+      expect(extend([], testCase.options()).error.code, testCase.name).toBe(testCase.expected);
+    }
   });
 });

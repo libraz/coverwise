@@ -5,6 +5,7 @@ import type { ConstraintNode } from '../model/constraint-ast.js';
 import { ErrorCode, type ErrorInfo, okError } from '../model/error.js';
 import { hasInvalidValues, type Parameter, UNASSIGNED } from '../model/parameter.js';
 import type { TestCase, UncoveredTuple } from '../model/test-case.js';
+import { MAX_COMBINATIONS, MAX_DIAGNOSTIC_TUPLES, MAX_TUPLES } from '../model/tuning-limits.js';
 import { DynamicBitset } from '../util/bitset.js';
 import { checkedBinomial, generateCombinationsFlat } from '../util/combinatorics.js';
 import {
@@ -25,12 +26,6 @@ export interface CreateResult {
 ///
 /// Hard limit on total tuple count to prevent t-wise explosion.
 export class CoverageEngine {
-  /// Maximum number of tuples before refusing to proceed.
-  /// ~16M tuples. Beyond this, performance degrades.
-  static readonly MAX_TUPLES = 16_000_000;
-  static readonly MAX_COMBINATIONS = 1_000_000;
-  static readonly MAX_DIAGNOSTIC_TUPLES = 1_000;
-
   private params_: Parameter[] = [];
   private strength_ = 0;
   private totalTuples_ = 0;
@@ -91,10 +86,10 @@ export class CoverageEngine {
     engine.initCombinations();
     engine.totalTuples_ = engine.computeTotalTuples();
 
-    if (engine.totalTuples_ > CoverageEngine.MAX_TUPLES) {
+    if (engine.totalTuples_ > MAX_TUPLES) {
       return {
         engine: new CoverageEngine(),
-        error: makeTupleExplosionError(engine.totalTuples_, CoverageEngine.MAX_TUPLES),
+        error: makeTupleExplosionError(engine.totalTuples_, MAX_TUPLES),
       };
     }
 
@@ -127,10 +122,10 @@ export class CoverageEngine {
     engine.initCombinationsFromSubset();
     engine.totalTuples_ = engine.computeTotalTuples();
 
-    if (engine.totalTuples_ > CoverageEngine.MAX_TUPLES) {
+    if (engine.totalTuples_ > MAX_TUPLES) {
       return {
         engine: new CoverageEngine(),
-        error: makeTupleExplosionError(engine.totalTuples_, CoverageEngine.MAX_TUPLES),
+        error: makeTupleExplosionError(engine.totalTuples_, MAX_TUPLES),
       };
     }
 
@@ -433,12 +428,14 @@ export class CoverageEngine {
     return this.coveredCount === this.totalTuples;
   }
 
-  /// Collect all uncovered tuples as human-readable objects.
+  /// Collect uncovered tuples as human-readable objects.
+  ///
+  /// This is the diagnostic view, so it is bounded: `limit` is what a caller is
+  /// willing to materialize, and MAX_DIAGNOSTIC_TUPLES is what a result may
+  /// carry. A caller that only needs a count or an overlap decision uses
+  /// forEachUncoveredTuple instead, which builds nothing.
   /// @param params Parameter definitions (for resolving names and values).
-  getUncoveredTuples(
-    params: Parameter[],
-    limit = CoverageEngine.MAX_DIAGNOSTIC_TUPLES,
-  ): UncoveredTuple[] {
+  getUncoveredTuples(params: Parameter[], limit = MAX_DIAGNOSTIC_TUPLES): UncoveredTuple[] {
     const uncovered: UncoveredTuple[] = [];
 
     this.forEachTuple((_ci, _vi, combo, valueIndices) => {
@@ -459,6 +456,59 @@ export class CoverageEngine {
     });
 
     return uncovered;
+  }
+
+  /// Visit every currently-uncovered tuple as plain indices.
+  ///
+  /// Nothing is materialized per tuple: the callback borrows the walk's own
+  /// buffers, so the cost of counting uncovered tuples does not depend on how
+  /// many there are.
+  /// @param fn Called with the parameter combination and its value indices,
+  ///   returning false to stop.
+  forEachUncoveredTuple(
+    fn: (combo: readonly number[], valueIndices: readonly number[]) => boolean,
+  ): void {
+    this.forEachTuple((_ci, _vi, combo, valueIndices) => fn(combo, valueIndices));
+  }
+
+  /// Whether this engine still counts the given tuple as uncovered.
+  ///
+  /// Tuple identity is the parameter combination plus its value tuple, so this
+  /// answers for a tuple another engine enumerated. False when this engine does
+  /// not enumerate that combination at all, and false when it holds it as
+  /// covered or excluded.
+  /// @param params Global parameter indices in ascending order.
+  /// @param valueIndices Value index per entry of `params`.
+  needsTuple(params: readonly number[], valueIndices: readonly number[]): boolean {
+    if (this.strength_ === 0 || params.length !== this.strength_) {
+      return false;
+    }
+    const combos = this.paramToCombos_[params[0]];
+    if (combos === undefined) {
+      return false;
+    }
+    // Combinations are stored with their parameter indices ascending, so the
+    // caller's ascending tuple either matches one of the combinations containing
+    // its first parameter or is not enumerated here at all.
+    for (const ci of combos) {
+      const base = ci * this.strength_;
+      let same = true;
+      for (let j = 0; j < this.strength_; ++j) {
+        if (this.paramCombinations_[base + j] !== params[j]) {
+          same = false;
+          break;
+        }
+      }
+      if (!same) {
+        continue;
+      }
+      let localIndex = 0;
+      for (let j = 0; j < this.strength_; ++j) {
+        localIndex += valueIndices[j] * this.comboMultipliers_[base + j];
+      }
+      return !this.covered_.test(this.combinationOffsets_[ci] + localIndex);
+    }
+    return false;
   }
 
   /// Return the first currently-uncovered tuple as a partial assignment, or null.
@@ -684,12 +734,12 @@ export class CoverageEngine {
       let product = 1;
       for (let j = 0; j < this.strength_; ++j) {
         product *= this.params_[this.paramCombinations_[base + j]].size;
-        if (product > CoverageEngine.MAX_TUPLES) {
+        if (product > MAX_TUPLES) {
           return Math.min(total + product, Number.MAX_SAFE_INTEGER);
         }
       }
       total += product;
-      if (total > CoverageEngine.MAX_TUPLES) {
+      if (total > MAX_TUPLES) {
         return Math.min(total, Number.MAX_SAFE_INTEGER);
       }
     }
@@ -706,13 +756,13 @@ function preflightModel(
   if (strength === 0 || strength > n) {
     return { total: 0, error: okError() };
   }
-  if (checkedBinomial(n, strength, CoverageEngine.MAX_COMBINATIONS) === null) {
+  if (checkedBinomial(n, strength, MAX_COMBINATIONS) === null) {
     return {
       total: 0,
       error: {
         code: ErrorCode.TupleExplosion,
         message: 'parameter combination metadata exceeds safety limit',
-        detail: `Combinations exceed limit: ${CoverageEngine.MAX_COMBINATIONS}. Reduce strength or parameter count.`,
+        detail: `Combinations exceed limit: ${MAX_COMBINATIONS}. Reduce strength or parameter count.`,
       },
     };
   }
@@ -728,12 +778,12 @@ function preflightModel(
       const pi = subset === null ? local : subset[local];
       product *= params[pi].size;
     }
-    if (product > CoverageEngine.MAX_TUPLES) {
-      return { total: 0, error: makeTupleExplosionError(product, CoverageEngine.MAX_TUPLES) };
+    if (product > MAX_TUPLES) {
+      return { total: 0, error: makeTupleExplosionError(product, MAX_TUPLES) };
     }
     total += product;
-    if (total > CoverageEngine.MAX_TUPLES) {
-      return { total: 0, error: makeTupleExplosionError(total, CoverageEngine.MAX_TUPLES) };
+    if (total > MAX_TUPLES) {
+      return { total: 0, error: makeTupleExplosionError(total, MAX_TUPLES) };
     }
 
     let pos = strength - 1;

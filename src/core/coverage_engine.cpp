@@ -36,12 +36,12 @@ model::Error PreflightModel(const std::vector<model::Parameter>& params,
   }
 
   uint64_t combination_count = 0;
-  if (!util::CheckedBinomial(n, strength, util::BinomialLimit(CoverageEngine::kMaxCombinations),
+  if (!util::CheckedBinomial(n, strength, util::BinomialLimit(model::kMaxCombinations),
                              combination_count)) {
     model::Error err;
     err.code = model::Error::Code::kTupleExplosion;
     err.message = "parameter combination metadata exceeds safety limit";
-    err.detail = "Combinations exceed limit: " + std::to_string(CoverageEngine::kMaxCombinations) +
+    err.detail = "Combinations exceed limit: " + std::to_string(model::kMaxCombinations) +
                  ". Reduce strength or parameter count.";
     return err;
   }
@@ -60,12 +60,12 @@ model::Error PreflightModel(const std::vector<model::Parameter>& params,
       uint64_t radix = params[pi].size();
       product = (radix != 0 && product > kU64Max / radix) ? kU64Max : product * radix;
     }
-    if (product > CoverageEngine::kMaxTuples) {
-      return MakeTupleExplosionError(product, CoverageEngine::kMaxTuples);
+    if (product > model::kMaxTuples) {
+      return MakeTupleExplosionError(product, model::kMaxTuples);
     }
-    if (total > CoverageEngine::kMaxTuples - product) {
+    if (total > model::kMaxTuples - product) {
       uint64_t reported = (total > kU64Max - product) ? kU64Max : total + product;
-      return MakeTupleExplosionError(reported, CoverageEngine::kMaxTuples);
+      return MakeTupleExplosionError(reported, model::kMaxTuples);
     }
     total += product;
 
@@ -93,8 +93,8 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::CreateShared(SharedParam
   engine.InitCombinations();
   engine.total_tuples_ = engine.ComputeTotalTuples();
 
-  if (engine.total_tuples_ > kMaxTuples) {
-    return {CoverageEngine{}, MakeTupleExplosionError(engine.total_tuples_, kMaxTuples)};
+  if (engine.total_tuples_ > model::kMaxTuples) {
+    return {CoverageEngine{}, MakeTupleExplosionError(engine.total_tuples_, model::kMaxTuples)};
   }
 
   engine.BuildLookupTables();
@@ -114,8 +114,8 @@ std::pair<CoverageEngine, model::Error> CoverageEngine::CreateShared(
   engine.InitCombinationsFromSubset();
   engine.total_tuples_ = engine.ComputeTotalTuples();
 
-  if (engine.total_tuples_ > kMaxTuples) {
-    return {CoverageEngine{}, MakeTupleExplosionError(engine.total_tuples_, kMaxTuples)};
+  if (engine.total_tuples_ > model::kMaxTuples) {
+    return {CoverageEngine{}, MakeTupleExplosionError(engine.total_tuples_, model::kMaxTuples)};
   }
 
   engine.BuildLookupTables();
@@ -190,12 +190,12 @@ uint32_t CoverageEngine::ComputeTotalTuples() {
     uint64_t product = 1;
     for (uint32_t j = 0; j < strength_; ++j) {
       product *= Parameters()[combo[j]].size();
-      if (product > kMaxTuples) {
+      if (product > model::kMaxTuples) {
         return static_cast<uint32_t>(std::min(total + product, static_cast<uint64_t>(UINT32_MAX)));
       }
     }
     total += product;
-    if (total > kMaxTuples) {
+    if (total > model::kMaxTuples) {
       return static_cast<uint32_t>(std::min(total, static_cast<uint64_t>(UINT32_MAX)));
     }
   }
@@ -339,6 +339,34 @@ std::vector<model::UncoveredTuple> CoverageEngine::GetUncoveredTuples(
   });
 
   return result;
+}
+
+bool CoverageEngine::NeedsTuple(const uint32_t* params, const uint32_t* value_indices,
+                                uint32_t count) const {
+  if (count == 0 || count != strength_) return false;
+  if (params[0] >= param_to_combos_.size()) return false;
+
+  // Combinations are stored with their parameter indices ascending, so the
+  // caller's ascending tuple either matches one of the combinations containing
+  // its first parameter or is not enumerated here at all.
+  for (uint32_t ci : param_to_combos_[params[0]]) {
+    const uint32_t* combo = Combo(ci);
+    bool same = true;
+    for (uint32_t j = 0; j < strength_; ++j) {
+      if (combo[j] != params[j]) {
+        same = false;
+        break;
+      }
+    }
+    if (!same) continue;
+    const uint32_t* mults = Mults(ci);
+    uint32_t local_index = 0;
+    for (uint32_t j = 0; j < strength_; ++j) {
+      local_index += value_indices[j] * mults[j];
+    }
+    return !covered_.Test(combination_offsets_[ci] + local_index);
+  }
+  return false;
 }
 
 bool CoverageEngine::FirstUncovered(UncoveredAssignment& out) const {

@@ -8,10 +8,12 @@
 
 #include "model/constraint_ast.h"
 #include "model/parameter.h"
+#include "support/allocation_counter.h"
 
 using coverwise::core::CoverageEngine;
 using coverwise::model::Parameter;
 using coverwise::model::TestCase;
+using coverwise::test_support::AllocationCounter;
 
 namespace {
 
@@ -552,4 +554,106 @@ TEST(CoverageEngineTest, EnginesOverOneModelShareASingleParameterSet) {
   auto [copied, copied_err] = CoverageEngine::Create(params, {0, 1}, 2);
   ASSERT_TRUE(copied_err.ok());
   EXPECT_EQ(copied.TotalTuples(), sub_ab.TotalTuples());
+}
+
+namespace {
+
+/// @brief What the two ways of reading uncovered tuples cost on one model.
+struct UncoveredCost {
+  uint64_t uncovered = 0;         ///< Tuples the engine is short of.
+  uint64_t walk_allocations = 0;  ///< Allocations made by ForEachUncoveredTuple().
+  uint64_t listed = 0;            ///< Tuples GetUncoveredTuples() returned.
+  uint64_t list_allocations = 0;  ///< Allocations made by GetUncoveredTuples().
+};
+
+/// @brief Read every uncovered tuple of a ten-parameter model both ways.
+UncoveredCost MeasureUncoveredCost(uint32_t values_per_param) {
+  std::vector<Parameter> params;
+  for (uint32_t pi = 0; pi < 10; ++pi) {
+    std::vector<std::string> values;
+    for (uint32_t vi = 0; vi < values_per_param; ++vi) {
+      values.push_back(std::to_string(vi));
+    }
+    params.push_back({"p" + std::to_string(pi), values, {}});
+  }
+  auto created = CoverageEngine::Create(params, 2);
+  EXPECT_TRUE(created.second.ok());
+  const CoverageEngine& engine = created.first;
+
+  UncoveredCost cost;
+  cost.uncovered = engine.TotalTuples() - engine.CoveredCount();
+  {
+    uint64_t visited = 0;
+    AllocationCounter counter;
+    engine.ForEachUncoveredTuple([&](const uint32_t*, const uint32_t*) {
+      ++visited;
+      return true;
+    });
+    cost.walk_allocations = counter.Stop();
+    EXPECT_EQ(visited, cost.uncovered);
+  }
+  {
+    AllocationCounter counter;
+    auto listed = engine.GetUncoveredTuples(params);
+    cost.list_allocations = counter.Stop();
+    cost.listed = listed.size();
+  }
+  return cost;
+}
+
+}  // namespace
+
+// Neither way of reading uncovered tuples costs in proportion to how many there
+// are: the walk builds nothing per tuple, and the readable list is bounded by
+// the diagnostic budget. Both models below are short of far more tuples than
+// that budget, and by a factor of four from each other.
+TEST(CoverageEngineDiagnosticTest, ReadingUncoveredTuplesCostsTheDiagnosticBudget) {
+  const UncoveredCost smaller = MeasureUncoveredCost(8);
+  const UncoveredCost larger = MeasureUncoveredCost(16);
+
+  ASSERT_GT(smaller.uncovered, coverwise::model::kMaxDiagnosticTuples);
+  ASSERT_GT(larger.uncovered, smaller.uncovered * 3);
+
+  // The walk owns two buffers sized by the strength and nothing else.
+  EXPECT_EQ(larger.walk_allocations, smaller.walk_allocations);
+  EXPECT_LE(larger.walk_allocations, 4u);
+
+  // The readable list stops at the budget, so its cost is the same on both.
+  EXPECT_EQ(smaller.listed, coverwise::model::kMaxDiagnosticTuples);
+  EXPECT_EQ(larger.listed, smaller.listed);
+  EXPECT_EQ(larger.list_allocations, smaller.list_allocations);
+}
+
+// The overlap decision between two engines is answered on plain indices, and it
+// answers the same question the tuple's own engine does.
+TEST(CoverageEngineDiagnosticTest, NeedsTupleAnswersForATupleAnotherEngineEnumerated) {
+  std::vector<Parameter> params = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1"}, {}},
+      {"C", {"c0", "c1"}, {}},
+  };
+  auto shared = CoverageEngine::ShareParameters(params);
+  auto global_result = CoverageEngine::CreateShared(shared, 2);
+  ASSERT_TRUE(global_result.second.ok());
+  auto sub_result = CoverageEngine::CreateShared(shared, {0, 1}, 2);
+  ASSERT_TRUE(sub_result.second.ok());
+  CoverageEngine& global = global_result.first;
+  CoverageEngine& sub_ab = sub_result.first;
+
+  global.AddTestCase(TestCase{{0, 0, 0}});
+
+  sub_ab.ForEachUncoveredTuple([&](const uint32_t* combo, const uint32_t* value_indices) {
+    const bool covered_by_the_test = value_indices[0] == 0 && value_indices[1] == 0;
+    EXPECT_EQ(global.NeedsTuple(combo, value_indices, 2), !covered_by_the_test);
+    // A tuple of a size this engine does not enumerate is never one of its own.
+    EXPECT_FALSE(global.NeedsTuple(combo, value_indices, 3));
+    return true;
+  });
+
+  // A parameter combination outside the subset engine is not its tuple either,
+  // even while the global engine still needs it.
+  const uint32_t bc_params[] = {1, 2};
+  const uint32_t bc_values[] = {1, 1};
+  EXPECT_TRUE(global.NeedsTuple(bc_params, bc_values, 2));
+  EXPECT_FALSE(sub_ab.NeedsTuple(bc_params, bc_values, 2));
 }

@@ -13,6 +13,7 @@
 #include "algo/greedy.h"
 #include "core/constraint_solver.h"
 #include "core/coverage_engine.h"
+#include "core/engine_input.h"
 #include "model/constraint_ast.h"
 #include "model/constraint_parser.h"
 #include "model/options_validation.h"
@@ -78,27 +79,6 @@ bool ShapesOverlap(const EngineShape& a, const EngineShape& b) {
   std::set_intersection(a.params.begin(), a.params.end(), b.params.begin(), b.params.end(),
                         std::back_inserter(shared));
   return shared.size() >= a.strength;
-}
-
-/// @brief Whether @p engine still counts the tuple @p indices as uncovered.
-///
-/// Scoring one (parameter, value) pair against a partial assignment that fixes
-/// the tuple's remaining pairs isolates a single parameter combination: no other
-/// combination containing the scored parameter is fully assigned. The score is
-/// therefore 1 when that combination's value tuple is still uncovered here, and
-/// 0 when it is covered, excluded, or outside the engine's parameter subset.
-/// Only meaningful for an engine whose strength equals the tuple size, which
-/// ShapesOverlap() establishes before this is called.
-bool EngineNeedsTuple(const CoverageEngine& engine,
-                      const std::vector<std::pair<uint32_t, uint32_t>>& indices,
-                      size_t param_count) {
-  if (indices.empty()) return false;
-  model::TestCase partial;
-  partial.values.assign(param_count, model::kUnassigned);
-  for (size_t k = 1; k < indices.size(); ++k) {
-    partial.values[indices[k].first] = indices[k].second;
-  }
-  return engine.ScoreValue(partial, indices[0].first, indices[0].second) == 1;
 }
 
 /// @brief Check if all engines are complete.
@@ -265,9 +245,16 @@ model::Error GenerateNegativeTests(const std::vector<model::Parameter>& params,
 
       metrics.total_tuples += fresh_cov.TotalTuples();
       metrics.covered_tuples += fresh_cov.CoveredCount();
-      if (!fresh_cov.IsComplete() || no_feasible_target) {
-        warnings.push_back("Negative coverage incomplete for " + params[pi].name + "=" +
-                           params[pi].values[vi]);
+      // Two different facts, reported as two different warnings. A value with no
+      // feasible target contributes nothing to the metrics, so calling that
+      // "incomplete" contradicts the very numbers the caller is told to read it
+      // against: the metrics would show the whole universe covered while the
+      // warning claimed a shortfall.
+      const std::string value_name = params[pi].name + "=" + params[pi].values[vi];
+      if (!fresh_cov.IsComplete()) {
+        warnings.push_back("Negative coverage incomplete for " + value_name);
+      } else if (no_feasible_target) {
+        warnings.push_back("No feasible negative coverage target for " + value_name);
       }
     }
   }
@@ -313,29 +300,24 @@ std::vector<std::vector<double>> ResolveWeights(const std::vector<model::Paramet
   return resolved;
 }
 
-/// @brief Apply boundary value expansion to parameters with boundary configs.
-void ApplyBoundaryExpansion(GenerateOptions& opts) {
-  if (opts.boundary_configs.empty()) return;
-  const auto original_params = opts.parameters;
-  for (auto& param : opts.parameters) {
-    auto it = opts.boundary_configs.find(param.name);
-    if (it != opts.boundary_configs.end()) {
-      param = model::ExpandBoundaryValues(param, it->second);
-    }
-  }
-
-  // Test cases carry indices into the input value arrays. Boundary expansion
-  // sorts and inserts values, so remap every valid old index by value identity.
-  for (auto& test : opts.seeds) {
-    for (size_t pi = 0; pi < test.values.size() && pi < original_params.size(); ++pi) {
+/// @brief Move seed value indices onto the expanded value space.
+///
+/// Seed rows address values by index into the value list the caller declared,
+/// while boundary expansion sorts and inserts values, so every index that still
+/// names a declared value is looked up again by value identity. An index that
+/// no longer names anything is left alone for seed validation to describe.
+void RemapSeedValueIndices(const std::vector<model::Parameter>& declared,
+                           GenerateOptions& options) {
+  for (auto& test : options.seeds) {
+    for (size_t pi = 0; pi < test.values.size() && pi < declared.size(); ++pi) {
       const uint32_t old_index = test.values[pi];
-      if (old_index >= original_params[pi].size()) continue;
-      const auto& old_value = original_params[pi].values[old_index];
-      uint32_t new_index = opts.parameters[pi].find_value_index(old_value);
+      if (old_index >= declared[pi].size()) continue;
+      const auto& old_value = declared[pi].values[old_index];
+      uint32_t new_index = options.parameters[pi].find_value_index(old_value);
       if (new_index == model::kUnassigned && util::IsNumeric(old_value)) {
         const double numeric = util::ToDouble(old_value);
-        for (uint32_t vi = 0; vi < opts.parameters[pi].size(); ++vi) {
-          const auto& candidate = opts.parameters[pi].values[vi];
+        for (uint32_t vi = 0; vi < options.parameters[pi].size(); ++vi) {
+          const auto& candidate = options.parameters[pi].values[vi];
           if (util::IsNumeric(candidate) && util::ToDouble(candidate) == numeric) {
             new_index = vi;
             break;
@@ -347,28 +329,38 @@ void ApplyBoundaryExpansion(GenerateOptions& opts) {
   }
 }
 
+/// @brief The result of a call whose options never got past the gate.
+model::GenerateResult RejectedResult(const std::vector<model::Parameter>& parameters,
+                                     model::Error error) {
+  model::GenerateResult result;
+  result.parameters = parameters;
+  result.error = std::move(error);
+  result.warnings.push_back(model::SurfaceError(result.error).text());
+  return result;
+}
+
 }  // namespace
 
-model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preserved_seed_count) {
+AcceptedEngineInput AcceptEngineInput(GenerateOptions options, size_t preserved_seed_count) {
+  // The declared value list is only needed to remap seed rows, and only
+  // expansion can move a value's index, so it is copied for that case alone.
+  std::vector<model::Parameter> declared;
+  if (!options.seeds.empty() && !options.boundary_configs.empty()) {
+    declared = options.parameters;
+  }
+  auto accepted = model::AcceptOptions(std::move(options));
+  if (!accepted.ok()) return AcceptedEngineInput(accepted.error());
+  GenerateOptions engine_options = accepted->get();
+  if (!declared.empty()) RemapSeedValueIndices(declared, engine_options);
+  return AcceptedEngineInput(EngineInput(std::move(engine_options), preserved_seed_count));
+}
+
+model::GenerateResult GenerateImpl(const EngineInput& input) {
+  const GenerateOptions& opts = input.options();
+  const size_t preserved_seed_count = input.preserved_seed_count();
+
   model::GenerateResult result;
-  result.parameters = options.parameters;
-
-  result.error = model::ValidateGenerateOptions(options);
-  if (!result.error.ok()) {
-    result.warnings.push_back(model::SurfaceError(result.error).text());
-    return result;
-  }
-
-  // Apply boundary value expansion to parameters that have boundary configs.
-  GenerateOptions opts = options;
-  ApplyBoundaryExpansion(opts);
   result.parameters = opts.parameters;
-  auto expanded_param_error = model::ValidateParameters(opts.parameters);
-  if (!expanded_param_error.ok()) {
-    result.error = expanded_param_error;
-    result.warnings.push_back(model::SurfaceError(result.error).text());
-    return result;
-  }
 
   bool has_invalid = model::HasInvalidValues(opts.parameters);
 
@@ -408,10 +400,10 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
       result.error = sm_err;
       return result;
     }
-    if (eng.TotalTuples() > CoverageEngine::kMaxTuples - allocated_tuples) {
+    if (eng.TotalTuples() > model::kMaxTuples - allocated_tuples) {
       result.error = {model::Error::Code::kTupleExplosion,
                       "Combined global and sub-model tuple count exceeds safe limit",
-                      "limit=" + std::to_string(CoverageEngine::kMaxTuples)};
+                      "limit=" + std::to_string(model::kMaxTuples)};
       result.warnings.push_back(model::SurfaceError(result.error).text());
       return result;
     }
@@ -664,16 +656,19 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
         result.uncovered_count += shortfall;
         continue;
       }
-      for (const auto& ut : sub_engines[i].GetUncoveredTuples(opts.parameters, shortfall)) {
-        bool already_counted = false;
-        for (const CoverageEngine* eng : earlier) {
-          if (EngineNeedsTuple(*eng, ut.indices, opts.parameters.size())) {
-            already_counted = true;
-            break;
-          }
-        }
-        if (!already_counted) ++result.uncovered_count;
-      }
+      // The overlap is resolved on plain (parameter, value) indices. Building
+      // the human-readable form here would tie the cost of a count to the
+      // shortfall itself; that form belongs to the diagnostic list below, which
+      // is bounded by model::kMaxDiagnosticTuples.
+      const uint32_t sub_strength = sub_shapes[i].strength;
+      sub_engines[i].ForEachUncoveredTuple(
+          [&](const uint32_t* combo, const uint32_t* value_indices) {
+            for (const CoverageEngine* eng : earlier) {
+              if (eng->NeedsTuple(combo, value_indices, sub_strength)) return true;
+            }
+            ++result.uncovered_count;
+            return true;
+          });
     }
 
     // Fill the diagnostic budget with distinct tuples: each engine is asked for
@@ -682,16 +677,15 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
     std::set<std::vector<std::pair<uint32_t, uint32_t>>> listed;
     auto append_distinct = [&](std::vector<model::UncoveredTuple> tuples) {
       for (auto& ut : tuples) {
-        if (result.uncovered.size() >= CoverageEngine::kMaxDiagnosticTuples) return;
+        if (result.uncovered.size() >= model::kMaxDiagnosticTuples) return;
         if (!listed.insert(ut.indices).second) continue;
         result.uncovered.push_back(std::move(ut));
       }
     };
     append_distinct(coverage.GetUncoveredTuples(opts.parameters));
     for (const auto& eng : sub_engines) {
-      if (result.uncovered.size() >= CoverageEngine::kMaxDiagnosticTuples) break;
-      append_distinct(
-          eng.GetUncoveredTuples(opts.parameters, CoverageEngine::kMaxDiagnosticTuples));
+      if (result.uncovered.size() >= model::kMaxDiagnosticTuples) break;
+      append_distinct(eng.GetUncoveredTuples(opts.parameters, model::kMaxDiagnosticTuples));
     }
     result.omitted_uncovered = result.uncovered_count - result.uncovered.size();
 
@@ -762,7 +756,11 @@ model::GenerateResult GenerateImpl(const GenerateOptions& options, size_t preser
   return result;
 }
 
-model::GenerateResult Generate(const GenerateOptions& options) { return GenerateImpl(options, 0); }
+model::GenerateResult Generate(const GenerateOptions& options) {
+  auto accepted = AcceptEngineInput(options, 0);
+  if (!accepted.ok()) return RejectedResult(options.parameters, accepted.error());
+  return GenerateImpl(*accepted);
+}
 
 model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
                              const GenerateOptions& options, ExtendMode mode) {
@@ -770,33 +768,34 @@ model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
 
   // Only kStrict is supported today: existing tests are seeded verbatim and kept
   // as-is, with new tests appended to improve coverage. Switch explicitly so a
-  // future mode cannot be silently treated as strict.
+  // future mode cannot be silently treated as strict, and reject any other value
+  // rather than returning a suite the caller's rows never reached.
   switch (mode) {
     case ExtendMode::kStrict:
       if (opts.max_tests > 0 && existing.size() > static_cast<size_t>(opts.max_tests)) {
-        model::GenerateResult result;
-        result.error = {model::Error::Code::kInvalidInput,
-                        "maxTests cannot be smaller than the existing test count",
-                        "maxTests=" + std::to_string(opts.max_tests) +
-                            ", existing=" + std::to_string(existing.size())};
-        result.warnings.push_back(model::SurfaceError(result.error).text());
-        return result;
+        return RejectedResult(options.parameters,
+                              {model::Error::Code::kInvalidInput,
+                               "maxTests cannot be smaller than the existing test count",
+                               "maxTests=" + std::to_string(opts.max_tests) +
+                                   ", existing=" + std::to_string(existing.size())});
       }
       opts.seeds.insert(opts.seeds.begin(), existing.begin(), existing.end());
       break;
+    default:
+      return RejectedResult(options.parameters, {model::Error::Code::kInvalidInput,
+                                                 "Unsupported extend mode: " +
+                                                     std::to_string(static_cast<uint32_t>(mode)),
+                                                 "Supported modes: strict"});
   }
 
-  return GenerateImpl(opts, existing.size());
+  auto accepted = AcceptEngineInput(std::move(opts), existing.size());
+  if (!accepted.ok()) return RejectedResult(options.parameters, accepted.error());
+  return GenerateImpl(*accepted);
 }
 
-ModelStats EstimateModel(const GenerateOptions& options) {
+ModelStats EstimateModelImpl(const EngineInput& input) {
+  const GenerateOptions& opts = input.options();
   ModelStats stats;
-  stats.error = model::ValidateGenerateOptions(options);
-  if (!stats.error.ok()) return stats;
-
-  // Apply boundary expansion for estimation.
-  GenerateOptions opts = options;
-  ApplyBoundaryExpansion(opts);
 
   // Estimation intentionally remains a raw tuple estimate, but it is still a
   // model preflight API: syntax/reference errors must match generate.
@@ -848,10 +847,10 @@ ModelStats EstimateModel(const GenerateOptions& options) {
       stats.error = sub_error;
       return stats;
     }
-    if (sub_coverage.TotalTuples() > CoverageEngine::kMaxTuples - stats.total_tuples) {
+    if (sub_coverage.TotalTuples() > model::kMaxTuples - stats.total_tuples) {
       stats.error = {model::Error::Code::kTupleExplosion,
                      "Combined global and sub-model tuple count exceeds safe limit",
-                     "limit=" + std::to_string(CoverageEngine::kMaxTuples)};
+                     "limit=" + std::to_string(model::kMaxTuples)};
       return stats;
     }
     stats.total_tuples += sub_coverage.TotalTuples();
@@ -892,6 +891,16 @@ ModelStats EstimateModel(const GenerateOptions& options) {
   }
 
   return stats;
+}
+
+ModelStats EstimateModel(const GenerateOptions& options) {
+  auto accepted = AcceptEngineInput(options, 0);
+  if (!accepted.ok()) {
+    ModelStats stats;
+    stats.error = accepted.error();
+    return stats;
+  }
+  return EstimateModelImpl(*accepted);
 }
 
 }  // namespace core

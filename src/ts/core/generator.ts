@@ -7,22 +7,21 @@ import {
   greedyConstruct,
   type ScoreValuesFn,
 } from '../algo/greedy.js';
-import { expandBoundaryValues } from '../model/boundary.js';
 import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
 import { annotateConstraintError, parseConstraint } from '../model/constraint-parser.js';
-import { ErrorCode, type ErrorInfo, okError } from '../model/error.js';
+import { ErrorCode, type ErrorInfo, okError, surfaceErrorText } from '../model/error.js';
 import {
   createModelStats,
   ExtendMode,
+  expandBoundaries,
   type GenerateOptions,
-  getBoundaryConfig,
   hasBoundaryConfigs,
   isWeightConfigEmpty,
   type ModelStats,
   validateGenerateOptions,
   type WeightConfig,
 } from '../model/generate-options.js';
-import { hasInvalidValues, Parameter, validateParameters } from '../model/parameter.js';
+import { hasInvalidValues, Parameter } from '../model/parameter.js';
 import {
   createGenerateResult,
   type GenerateResult,
@@ -33,7 +32,9 @@ import {
   type UncoveredTuple,
   uncoveredTupleToString,
 } from '../model/test-case.js';
+import { MAX_DIAGNOSTIC_TUPLES, MAX_TUPLES } from '../model/tuning-limits.js';
 import { Rng } from '../util/rng.js';
+import { isNumeric, toDouble } from '../util/string_util.js';
 import { annotateClassCoverage } from '../validator/coverage-validator.js';
 import {
   buildAllowedSolveParameterOrder,
@@ -44,14 +45,6 @@ import {
   type SolveParameterOrder,
 } from './constraint-solver.js';
 import { CoverageEngine } from './coverage-engine.js';
-
-/// The one representation of a failure that reaches a caller as text.
-///
-/// Mirrors `model::SurfaceError` in the C++ core: the absent-detail case is
-/// decided in one place, so no call site can leave a dangling ": " behind.
-function surfaceErrorText(error: ErrorInfo): string {
-  return error.detail ? `${error.message}: ${error.detail}` : error.message;
-}
 
 /// Resolve parameter names to sorted indices.
 /// Returns indices array and error message (empty string on success).
@@ -114,30 +107,6 @@ function shapesOverlap(a: EngineShape, b: EngineShape): boolean {
     }
   }
   return shared >= a.strength;
-}
-
-/// Whether the engine still counts the tuple `indices` as uncovered.
-///
-/// Scoring one (parameter, value) pair against a partial assignment that fixes
-/// the tuple's remaining pairs isolates a single parameter combination: no other
-/// combination containing the scored parameter is fully assigned. The score is
-/// therefore 1 when that combination's value tuple is still uncovered here, and
-/// 0 when it is covered, excluded, or outside the engine's parameter subset.
-/// Only meaningful for an engine whose strength equals the tuple size, which
-/// shapesOverlap() establishes before this is called.
-function engineNeedsTuple(
-  engine: CoverageEngine,
-  indices: Array<[number, number]>,
-  paramCount: number,
-): boolean {
-  if (indices.length === 0) {
-    return false;
-  }
-  const partial = new Array<number>(paramCount).fill(UNASSIGNED);
-  for (let k = 1; k < indices.length; ++k) {
-    partial[indices[k][0]] = indices[k][1];
-  }
-  return engine.scoreValue({ values: partial }, indices[0][0], indices[0][1]) === 1;
 }
 
 /// Identity key of a tuple: (parameter index, value index) pairs in ascending
@@ -337,10 +306,16 @@ function generateNegativeTests(
 
       metrics.totalTuples += freshCov.totalTuples;
       metrics.coveredTuples += freshCov.coveredCount;
-      if (!freshCov.isComplete || noFeasibleTarget) {
-        warnings.push(
-          `Negative coverage incomplete for ${params[pi].name}=${params[pi].values[vi]}`,
-        );
+      // Two different facts, reported as two different warnings. A value with no
+      // feasible target contributes nothing to the metrics, so calling that
+      // "incomplete" contradicts the very numbers the caller is told to read it
+      // against: the metrics would show the whole universe covered while the
+      // warning claimed a shortfall.
+      const valueName = `${params[pi].name}=${params[pi].values[vi]}`;
+      if (!freshCov.isComplete) {
+        warnings.push(`Negative coverage incomplete for ${valueName}`);
+      } else if (noFeasibleTarget) {
+        warnings.push(`No feasible negative coverage target for ${valueName}`);
       }
     }
   }
@@ -395,17 +370,14 @@ function resolveWeights(params: Parameter[], config: WeightConfig): number[][] {
   return resolved;
 }
 
-/// Apply boundary value expansion to parameters with boundary configs.
+/// Rebuild the Parameter objects an options object describes.
 ///
-/// The aliases and equivalence classes carried on the options are restored on
-/// the rebuilt Parameter before expansion, not after the branch: expansion
-/// regenerates a value set but carries per-value metadata across by value
-/// identity, so a retained value keeps its aliases and its class. Mirrors the
-/// C++ ApplyBoundaryExpansion, which expands Parameters that already hold their
-/// own metadata.
-function applyBoundaryExpansion(opts: GenerateOptions): { params: Parameter[]; seeds: TestCase[] } {
-  const params: Parameter[] = [];
-  for (const p of opts.parameters) {
+/// The aliases and equivalence classes carried on the options are restored here,
+/// before expansion: expansion regenerates a value set but carries per-value
+/// metadata across by value identity, so a retained value keeps its aliases and
+/// its class.
+function optionsParameters(opts: GenerateOptions): Parameter[] {
+  return opts.parameters.map((p) => {
     const param = p.invalid
       ? new Parameter(p.name, p.values, p.invalid)
       : new Parameter(p.name, p.values);
@@ -415,32 +387,54 @@ function applyBoundaryExpansion(opts: GenerateOptions): { params: Parameter[]; s
     if (p.equivalenceClasses?.some((c) => c.length > 0)) {
       param.setEquivalenceClasses(p.equivalenceClasses);
     }
-    const bc = getBoundaryConfig(opts, p.name);
-    params.push(bc ? expandBoundaryValues(param, bc) : param);
+    return param;
+  });
+}
+
+/// Describe a Parameter in the shape an options object carries.
+function toParameterSpec(param: Parameter): GenerateOptions['parameters'][number] {
+  const spec: GenerateOptions['parameters'][number] = { name: param.name, values: param.values };
+  if (param.invalid.length > 0) {
+    spec.invalid = param.invalid;
   }
-  // Only boundary expansion regenerates a value set, so without a single config
-  // the seed indices still address the same values and the remap below is a
-  // no-op. Mirrors the C++ early return in ApplyBoundaryExpansion.
-  if (!hasBoundaryConfigs(opts)) {
-    return {
-      params,
-      seeds: opts.seeds.map((seed) => ({ values: [...seed.values], unresolved: seed.unresolved })),
-    };
+  if (param.hasAliases) {
+    spec.aliases = param.allAliases;
   }
-  const seeds = opts.seeds.map((seed) => {
+  if (param.hasEquivalenceClasses) {
+    spec.equivalenceClasses = param.equivalenceClasses;
+  }
+  return spec;
+}
+
+/// Move recorded row value indices onto the expanded value space.
+///
+/// Rows address values by index into the value list the caller declared, while
+/// boundary expansion sorts and inserts values, so every index that still names
+/// a declared value is looked up again by value identity. An index that no
+/// longer names anything is left alone for seed validation to describe. Mirrors
+/// RemapSeedValueIndices in the C++ core.
+function remapSeedValueIndices(
+  declared: Parameter[],
+  expanded: Parameter[],
+  seeds: TestCase[],
+): TestCase[] {
+  return seeds.map((seed) => {
     const values = [...seed.values];
-    for (let pi = 0; pi < values.length && pi < opts.parameters.length; ++pi) {
+    for (let pi = 0; pi < values.length && pi < declared.length; ++pi) {
       const oldIndex = values[pi];
-      const oldParam = opts.parameters[pi];
-      if (!Number.isInteger(oldIndex) || oldIndex < 0 || oldIndex >= oldParam.values.length) {
+      if (!Number.isInteger(oldIndex) || oldIndex < 0 || oldIndex >= declared[pi].values.length) {
         continue;
       }
-      const oldValue = oldParam.values[oldIndex];
-      let newIndex = params[pi].findValueIndex(oldValue);
-      if (newIndex === UNASSIGNED && Number.isFinite(Number(oldValue))) {
-        newIndex = params[pi].values.findIndex(
-          (candidate) =>
-            Number.isFinite(Number(candidate)) && Number(candidate) === Number(oldValue),
+      const oldValue = declared[pi].values[oldIndex];
+      let newIndex = expanded[pi].findValueIndex(oldValue);
+      // Numeric identity is decided by the shared decimal grammar, never by
+      // Number()'s coercion: coercion also accepts leading whitespace, hex and
+      // the empty string, so a row would be remapped here that the C++ core,
+      // and every rule written against isNumeric, treats as plain text.
+      if (newIndex === UNASSIGNED && isNumeric(oldValue)) {
+        const numeric = toDouble(oldValue);
+        newIndex = expanded[pi].values.findIndex(
+          (candidate) => isNumeric(candidate) && toDouble(candidate) === numeric,
         );
       }
       if (newIndex !== UNASSIGNED && newIndex >= 0) {
@@ -451,35 +445,99 @@ function applyBoundaryExpansion(opts: GenerateOptions): { params: Parameter[]; s
     // value space, so it survives expansion unchanged.
     return { values, unresolved: seed.unresolved };
   });
-  return { params, seeds };
+}
+
+/// Options that reached the engine through the acceptance gate.
+///
+/// EngineInput.accept is the only thing that can produce one: the constructor is
+/// private, and the private field makes the class type nominal, so an object
+/// literal cannot stand in for it either. The engine implementation takes this
+/// type rather than a GenerateOptions, so an entry point that skips acceptance
+/// has nothing to pass it — the omission is a compile error instead of a check
+/// that silently does not run. Mirrors core::EngineInput in the C++ core.
+class EngineInput {
+  private constructor(
+    private readonly accepted: {
+      options: GenerateOptions;
+      params: Parameter[];
+      preservedSeedCount: number;
+    },
+  ) {}
+
+  /// The accepted options, with boundary parameters already expanded and the
+  /// recorded rows remapped onto that value space.
+  get options(): GenerateOptions {
+    return this.accepted.options;
+  }
+
+  /// The expanded parameter set the engine runs on.
+  get params(): Parameter[] {
+    return this.accepted.params;
+  }
+
+  /// How many leading `seeds` rows came from an extend call's `existing`.
+  ///
+  /// Those rows are reported back even when they no longer fit the model; a row
+  /// past this prefix is an ordinary seed and is dropped with a warning.
+  get preservedSeedCount(): number {
+    return this.accepted.preservedSeedCount;
+  }
+
+  /// Submit options to the acceptance gate and mint the engine's only input.
+  ///
+  /// Expansion runs first so every later rule is applied to the value space the
+  /// engine will use. Judging the declared values instead would, for instance,
+  /// reject a weight naming a value expansion is about to supply. Mirrors
+  /// model::AcceptOptions followed by core::AcceptEngineInput in the C++ core,
+  /// so both ports answer any given options with the same code.
+  static accept(
+    options: GenerateOptions,
+    preservedSeedCount: number,
+  ): { input: EngineInput | null; error: ErrorInfo } {
+    const declared = optionsParameters(options);
+    const expansion = expandBoundaries(declared, options.boundaryConfigs);
+    if (expansion.error.code !== ErrorCode.Ok) {
+      return { input: null, error: expansion.error };
+    }
+    const accepted: GenerateOptions = {
+      ...options,
+      parameters: expansion.params.map(toParameterSpec),
+      boundaryConfigs: {},
+    };
+    const validationError = validateGenerateOptions(accepted);
+    if (validationError.code !== ErrorCode.Ok) {
+      return { input: null, error: validationError };
+    }
+    // Only expansion can move a value's index, so the rows are rebuilt for that
+    // case alone; otherwise they already address the value space in hand.
+    accepted.seeds = hasBoundaryConfigs(options)
+      ? remapSeedValueIndices(declared, expansion.params, options.seeds)
+      : options.seeds.map((seed) => ({ values: [...seed.values], unresolved: seed.unresolved }));
+    return {
+      input: new EngineInput({ options: accepted, params: expansion.params, preservedSeedCount }),
+      error: okError(),
+    };
+  }
+}
+
+/// The result of a call whose options never got past the gate.
+function rejectedResult(options: GenerateOptions, error: ErrorInfo): GenerateResult {
+  const result = createGenerateResult();
+  result.parameters = optionsParameters(options);
+  result.error = error;
+  result.warnings.push(surfaceErrorText(error));
+  return result;
 }
 
 /// Generate a covering array for the given options.
 /// @returns The generated test suite with coverage metadata, stats, and suggestions.
-function generateImpl(options: GenerateOptions, preservedSeedCount: number): GenerateResult {
+function generateImpl(input: EngineInput): GenerateResult {
+  const options = input.options;
+  const params = input.params;
+  const preservedSeedCount = input.preservedSeedCount;
+
   const result = createGenerateResult();
-
-  result.error = validateGenerateOptions(options);
-  if (result.error.code !== ErrorCode.Ok) {
-    result.warnings.push(surfaceErrorText(result.error));
-    return result;
-  }
-
-  // Apply boundary value expansion to parameters that have boundary configs.
-  const expanded = applyBoundaryExpansion(options);
-  const params = expanded.params;
   result.parameters = params;
-
-  // Expansion regenerates a value set, so the collection is judged again on the
-  // values the engine will actually use: a generated boundary value can collide
-  // with a spelled-out value or with an alias that was unambiguous beforehand.
-  // Mirrors the re-validation in the C++ GenerateImpl.
-  const expandedParamError = validateParameters(params);
-  if (expandedParamError.length > 0) {
-    result.error = { code: ErrorCode.InvalidInput, message: expandedParamError, detail: '' };
-    result.warnings.push(surfaceErrorText(result.error));
-    return result;
-  }
 
   const hasInvalid = hasInvalidValues(params);
 
@@ -520,11 +578,11 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
       result.error = smResult.error;
       return result;
     }
-    if (smResult.engine.totalTuples > CoverageEngine.MAX_TUPLES - allocatedTuples) {
+    if (smResult.engine.totalTuples > MAX_TUPLES - allocatedTuples) {
       result.error = {
         code: ErrorCode.TupleExplosion,
         message: 'Combined global and sub-model tuple count exceeds safe limit',
-        detail: `limit=${CoverageEngine.MAX_TUPLES}`,
+        detail: `limit=${MAX_TUPLES}`,
       };
       result.warnings.push(surfaceErrorText(result.error));
       return result;
@@ -620,8 +678,8 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
   // prefix even when a row no longer matches the model, but such rows do not
   // contribute to coverage.
   let droppedForMaxTests = false;
-  for (let si = 0; si < expanded.seeds.length; ++si) {
-    const seedTest = expanded.seeds[si];
+  for (let si = 0; si < options.seeds.length; ++si) {
+    const seedTest = options.seeds[si];
     if (options.maxTests > 0 && result.tests.length >= options.maxTests) {
       droppedForMaxTests = true;
       break;
@@ -647,7 +705,7 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
 
   if (droppedForMaxTests) {
     result.warnings.push(
-      `Seed test count (${expanded.seeds.length}) exceeds maxTests (${options.maxTests}); some seeds were dropped`,
+      `Seed test count (${options.seeds.length}) exceeds maxTests (${options.maxTests}); some seeds were dropped`,
     );
   }
 
@@ -836,12 +894,16 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
         result.uncoveredCount += shortfall;
         continue;
       }
-      for (const ut of subEngines[i].getUncoveredTuples(params, shortfall)) {
-        const indices = ut.indices ?? [];
-        if (!earlier.some((eng) => engineNeedsTuple(eng, indices, params.length))) {
+      // The overlap is resolved on plain (parameter, value) indices. Building
+      // the human-readable form here would tie the cost of a count to the
+      // shortfall itself; that form belongs to the diagnostic list below, which
+      // is bounded by MAX_DIAGNOSTIC_TUPLES.
+      subEngines[i].forEachUncoveredTuple((combo, valueIndices) => {
+        if (!earlier.some((eng) => eng.needsTuple(combo, valueIndices))) {
           ++result.uncoveredCount;
         }
-      }
+        return true;
+      });
     }
 
     // Fill the diagnostic budget with distinct tuples: each engine is asked for
@@ -850,7 +912,7 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
     const listed = new Set<string>();
     const appendDistinct = (tuples: UncoveredTuple[]): void => {
       for (const ut of tuples) {
-        if (result.uncovered.length >= CoverageEngine.MAX_DIAGNOSTIC_TUPLES) {
+        if (result.uncovered.length >= MAX_DIAGNOSTIC_TUPLES) {
           return;
         }
         const key = tupleKey(ut.indices);
@@ -863,10 +925,10 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
     };
     appendDistinct(coverage.getUncoveredTuples(params));
     for (const eng of subEngines) {
-      if (result.uncovered.length >= CoverageEngine.MAX_DIAGNOSTIC_TUPLES) {
+      if (result.uncovered.length >= MAX_DIAGNOSTIC_TUPLES) {
         break;
       }
-      appendDistinct(eng.getUncoveredTuples(params, CoverageEngine.MAX_DIAGNOSTIC_TUPLES));
+      appendDistinct(eng.getUncoveredTuples(params, MAX_DIAGNOSTIC_TUPLES));
     }
     result.omittedUncovered = result.uncoveredCount - result.uncovered.length;
     for (const ut of result.uncovered) {
@@ -953,7 +1015,11 @@ function generateImpl(options: GenerateOptions, preservedSeedCount: number): Gen
 }
 
 export function generate(options: GenerateOptions): GenerateResult {
-  return generateImpl(options, 0);
+  const accepted = EngineInput.accept(options, 0);
+  if (accepted.input === null) {
+    return rejectedResult(options, accepted.error);
+  }
+  return generateImpl(accepted.input);
 }
 
 /// Extend an existing test suite to improve coverage.
@@ -963,44 +1029,47 @@ export function extend(
   mode: ExtendMode = ExtendMode.Strict,
 ): GenerateResult {
   if (mode !== ExtendMode.Strict) {
-    const result = createGenerateResult();
-    result.error = {
+    return rejectedResult(options, {
       code: ErrorCode.InvalidInput,
       message: `Unsupported extend mode: ${String(mode)}`,
       detail: 'Supported modes: strict',
-    };
-    result.warnings.push(surfaceErrorText(result.error));
-    return result;
+    });
   }
   if (options.maxTests > 0 && existing.length > options.maxTests) {
-    const result = createGenerateResult();
-    result.error = {
+    return rejectedResult(options, {
       code: ErrorCode.InvalidInput,
       message: 'maxTests cannot be smaller than the existing test count',
       detail: `maxTests=${options.maxTests}, existing=${existing.length}`,
-    };
-    result.warnings.push(surfaceErrorText(result.error));
-    return result;
+    });
   }
   const opts: GenerateOptions = {
     ...options,
     seeds: [...existing, ...options.seeds],
   };
-  return generateImpl(opts, existing.length);
+  const accepted = EngineInput.accept(opts, existing.length);
+  if (accepted.input === null) {
+    return rejectedResult(options, accepted.error);
+  }
+  return generateImpl(accepted.input);
 }
 
 /// Estimate model statistics without running generation.
 /// @param options The generation options to analyze.
 /// @returns Model statistics including estimated test count.
 export function estimateModel(options: GenerateOptions): ModelStats {
-  const stats = createModelStats();
-  stats.error = validateGenerateOptions(options);
-  if (stats.error.code !== ErrorCode.Ok) {
+  const accepted = EngineInput.accept(options, 0);
+  if (accepted.input === null) {
+    const stats = createModelStats();
+    stats.error = accepted.error;
     return stats;
   }
+  return estimateModelImpl(accepted.input);
+}
 
-  // Apply boundary expansion for estimation.
-  const params = applyBoundaryExpansion(options).params;
+function estimateModelImpl(input: EngineInput): ModelStats {
+  const options = input.options;
+  const stats = createModelStats();
+  const params = input.params;
 
   // Keep tuple counts raw, while matching generate's constraint syntax and
   // reference validation contract.
@@ -1049,11 +1118,11 @@ export function estimateModel(options: GenerateOptions): ModelStats {
       stats.error = subResult.error;
       return stats;
     }
-    if (subResult.engine.totalTuples > CoverageEngine.MAX_TUPLES - stats.totalTuples) {
+    if (subResult.engine.totalTuples > MAX_TUPLES - stats.totalTuples) {
       stats.error = {
         code: ErrorCode.TupleExplosion,
         message: 'Combined global and sub-model tuple count exceeds safe limit',
-        detail: `limit=${CoverageEngine.MAX_TUPLES}`,
+        detail: `limit=${MAX_TUPLES}`,
       };
       return stats;
     }

@@ -2,6 +2,7 @@ import { EqualsNode, ImpliesNode, NotEqualsNode } from '../model/constraint-ast.
 import { ErrorCode } from '../model/error.js';
 import { Parameter, UNASSIGNED } from '../model/parameter.js';
 import type { TestCase } from '../model/test-case.js';
+import { MAX_DIAGNOSTIC_TUPLES } from '../model/tuning-limits.js';
 import { CoverageEngine } from './coverage-engine.js';
 
 describe('CoverageEngine', () => {
@@ -284,6 +285,55 @@ describe('CoverageEngine', () => {
         expect(ut.reason).toBe('never covered');
         expect(ut.params).toEqual(['os', 'browser']);
       }
+    });
+
+    it('stops at the diagnostic budget however many tuples are missing', () => {
+      const params = Array.from(
+        { length: 10 },
+        (_, pi) =>
+          new Parameter(
+            `p${pi}`,
+            Array.from({ length: 16 }, (_, vi) => String(vi)),
+          ),
+      );
+      const engine = CoverageEngine.create(params, 2).engine;
+
+      // The readable list is bounded, while the walk sees every missing tuple.
+      expect(engine.totalTuples).toBeGreaterThan(MAX_DIAGNOSTIC_TUPLES);
+      expect(engine.getUncoveredTuples(params)).toHaveLength(MAX_DIAGNOSTIC_TUPLES);
+      let visited = 0;
+      engine.forEachUncoveredTuple(() => {
+        ++visited;
+        return true;
+      });
+      expect(visited).toBe(engine.totalTuples);
+    });
+  });
+
+  describe('needsTuple()', () => {
+    it('answers for a tuple another engine enumerated', () => {
+      const params = [
+        new Parameter('A', ['a0', 'a1']),
+        new Parameter('B', ['b0', 'b1']),
+        new Parameter('C', ['c0', 'c1']),
+      ];
+      const global = CoverageEngine.create(params, 2).engine;
+      const subAb = CoverageEngine.createFromSubset(params, [0, 1], 2).engine;
+
+      global.addTestCase({ values: [0, 0, 0] });
+
+      subAb.forEachUncoveredTuple((combo, valueIndices) => {
+        const coveredByTheTest = valueIndices[0] === 0 && valueIndices[1] === 0;
+        expect(global.needsTuple(combo, valueIndices)).toBe(!coveredByTheTest);
+        return true;
+      });
+
+      // A parameter combination outside the subset engine is not its tuple,
+      // even while the global engine still needs it.
+      expect(global.needsTuple([1, 2], [1, 1])).toBe(true);
+      expect(subAb.needsTuple([1, 2], [1, 1])).toBe(false);
+      // A tuple of a size the engine does not enumerate is never one of its own.
+      expect(global.needsTuple([0, 1, 2], [1, 1, 1])).toBe(false);
     });
   });
 
