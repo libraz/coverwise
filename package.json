@@ -37,11 +37,12 @@
     "build": "yarn build:wasm && yarn build:js",
     "build:wasm": "emcmake cmake -B build-wasm -DBUILD_WASM=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build-wasm -j",
     "build:js": "tsc && tsc -p tests/type/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json",
     "clean": "rm -rf dist build-wasm",
-    "lint": "biome check js/ tests/wasm/ src/ts/",
-    "lint:fix": "biome check --write js/ tests/wasm/ src/ts/",
-    "format": "biome format --write js/ tests/wasm/ src/ts/",
-    "format:check": "biome format js/ tests/wasm/ src/ts/",
+    "lint": "biome check js/ tests/ src/ts/",
+    "lint:fix": "biome check --write js/ tests/ src/ts/",
+    "format": "biome format --write js/ tests/ src/ts/",
+    "format:check": "biome format js/ tests/ src/ts/",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
@@ -74,6 +75,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",
+    "@types/node": "^22.20.1",
     "@vitest/coverage-v8": "4.1.11",
     "lint-staged": "^17.3.0",
     "simple-git-hooks": "^2.13.1",
@@ -84,7 +86,7 @@
     "pre-commit": "yarn lint-staged"
   },
   "lint-staged": {
-    "{js,tests/wasm,src/ts}/**/*.{ts,js}": [
+    "{js,tests,src/ts}/**/*.{ts,js}": [
       "biome check --write"
     ]
   }
