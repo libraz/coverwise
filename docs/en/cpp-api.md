@@ -8,6 +8,14 @@ All public APIs are in the `coverwise` namespace. Include `coverwise.h` for the 
 
 ## Generation
 
+`Generate`, `Extend` and `EstimateModel` put their options through the same
+acceptance gate the CLI and the WebAssembly binding use. A model the C++ entry
+points accept is one every other surface accepts, and a model any of them
+rejects is rejected here with the same error — including the boundary expansion
+that runs before acceptance, so a boundary parameter is judged by the values it
+expands to rather than by the range it was written as. Embedding the library
+does not put you on a looser contract than calling `coverwise` from a shell.
+
 ### `coverwise::core::Generate`
 
 Generate a covering test suite for the requested model.
@@ -58,6 +66,23 @@ namespace coverwise::validator {
   );
 }
 ```
+
+Read `error` before any count. On every non-ok exit `coverage_ratio` is left at
+its `0.0` default, so a zero ratio means "not measured" as often as it means
+"nothing covered"; the two are told apart only by `error`. The other fields
+depend on how far the call got:
+
+| Exit | `total_tuples`, `covered_tuples`, `uncovered`, `uncovered_count` | `invalid_tests` |
+|------|------------------------------------------------------------------|-----------------|
+| Strength outside `[1, parameter count]` | Zero | Empty |
+| Invalid parameters | Zero | Empty |
+| Unsatisfiable constraint model | Zero | Empty |
+| Enumeration limit exceeded | Zero | Empty |
+| Feasibility budget exhausted part-way through enumeration | Partial counts for the tuples already enumerated | Complete |
+
+The last row is the one to guard against: the call stops in the middle of the
+tuple loop, so the counts are real but describe a prefix of the universe rather
+than all of it.
 
 ### `coverwise::validator::ValidateConstraints`
 
@@ -355,8 +380,11 @@ to false. This lets interacting constraints correctly remove unreachable tuples.
 ## Example
 
 ```cpp
-#include "coverwise.h"
+#include <coverwise.h>
+
 #include <iostream>
+#include <utility>
+#include <vector>
 
 int main() {
   using namespace coverwise;
@@ -364,19 +392,18 @@ int main() {
   // Build parameters.
   model::GenerateOptions opts;
   opts.parameters = {
-    {"os",      {"Windows", "macOS", "Linux"}},
-    {"browser", {"Chrome", "Firefox", "Safari"}},
-    {"theme",   {"light", "dark"}},
+      {"os", {"Windows", "macOS", "Linux"}},
+      {"browser", {"Chrome", "Firefox", "Safari"}},
+      {"theme", {"light", "dark"}},
   };
   opts.constraint_expressions = {
-    "IF os = Windows THEN browser != Safari",
+      "IF os = Windows THEN browser != Safari",
   };
   opts.strength = 2;
   opts.seed = 42;
 
   // Generate.
   auto result = core::Generate(opts);
-
   if (!result.error.ok()) {
     std::cerr << result.error.message << "\n";
     return 1;
@@ -388,8 +415,8 @@ int main() {
   // Print test cases.
   for (const auto& tc : result.tests) {
     for (size_t i = 0; i < result.parameters.size(); ++i) {
-      std::cout << result.parameters[i].name << "="
-                << result.parameters[i].values[tc.values[i]] << " ";
+      std::cout << result.parameters[i].name << "=" << result.parameters[i].values[tc.values[i]]
+                << " ";
     }
     std::cout << "\n";
   }
@@ -401,13 +428,18 @@ int main() {
     if (!parsed.error.ok()) return 1;
     constraints.push_back(std::move(parsed.constraint));
   }
-  auto report = validator::ValidateCoverage(
-    result.parameters, result.tests, opts.strength, constraints);
+  auto report =
+      validator::ValidateCoverage(result.parameters, result.tests, opts.strength, constraints);
   std::cout << "Validated: " << report.coverage_ratio * 100 << "%\n";
-
   return report.error.ok() && report.coverage_ratio == 1.0 ? 0 : 1;
 }
 ```
+
+It prints `Tests:` with the suite size, `Coverage:` with the ratio generation
+reports, then one line per test case as `name=value` pairs, and finally
+`Validated:` with the ratio the independent validator measures for the same
+suite. This is the program a CMake fixture compiles against the installed
+package, so the text above is the text that builds.
 
 ## Build Integration
 
@@ -428,4 +460,12 @@ target_link_libraries(your_target PRIVATE coverwise::coverwise)
 ### Compiler Requirements
 
 - C++17 or later
-- Tested with GCC 9+, Clang 10+, AppleClang 14+
+- A standard library with floating-point `std::to_chars`, which is what sets the
+  floor: GCC 11+ (libstdc++ 11+), Clang 10+ built against libstdc++ 11+ or
+  libc++ 14+, AppleClang 14+ with a macOS 13.3 or newer deployment target
+
+Number formatting takes its shortest round-trip digits from
+`std::to_chars(double)`, and there is no fallback that reproduces them, so an
+older standard library fails to build rather than producing different output. An
+Apple toolchain aimed below macOS 13.3 is rejected with a diagnostic naming the
+deployment target.

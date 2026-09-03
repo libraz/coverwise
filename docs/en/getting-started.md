@@ -74,8 +74,8 @@ console.log(`Coverage: ${result.coverage * 100}%`);
 for (const test of result.tests) {
   console.log(test);
 }
-// { os: 'Windows', browser: 'Chrome', theme: 'light' }
 // { os: 'macOS', browser: 'Firefox', theme: 'dark' }
+// { os: 'Linux', browser: 'Firefox', theme: 'light' }
 // ...
 ```
 
@@ -97,8 +97,8 @@ print(f"Coverage: {result['coverage'] * 100}%")
 
 for test in result["tests"]:
     print(test)
-# {'os': 'Windows', 'browser': 'Chrome', 'theme': 'light'}
 # {'os': 'macOS', 'browser': 'Firefox', 'theme': 'dark'}
+# {'os': 'Linux', 'browser': 'Firefox', 'theme': 'light'}
 # ...
 ```
 

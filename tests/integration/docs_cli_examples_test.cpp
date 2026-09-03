@@ -7,6 +7,10 @@
 /// that invocation produces. The examples are therefore executable, and this
 /// test runs them rather than trusting that they were transcribed correctly.
 ///
+/// Which commands must carry such an example is read from the executable's own
+/// usage text, and which documents are read is found by walking the
+/// documentation tree, so neither set can drift behind what ships.
+///
 /// Comparison ignores whitespace outside string literals, because documentation
 /// wraps the output for readability while the CLI writes it as a single line.
 /// Everything else -- key order, numeric form, every value -- has to match.
@@ -15,9 +19,11 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -198,26 +204,35 @@ std::string TempPath(const std::string& suffix) {
   return ss.str();
 }
 
-/// @brief Run a shell command, returning its stdout.
-std::string RunCapturingStdout(const std::string& command) {
+/// @brief What running one documented invocation produced.
+struct RunResult {
+  std::string output;
+  int exit_code = -1;  ///< -1 when the command did not exit normally.
+};
+
+/// @brief Run a shell command, returning its stdout and how it ended.
+RunResult RunCapturingStdout(const std::string& command) {
   FILE* pipe = popen((command + " 2>/dev/null").c_str(), "r");
   EXPECT_NE(pipe, nullptr) << "popen failed for: " << command;
-  std::string output;
-  if (!pipe) return output;
+  RunResult result;
+  if (!pipe) return result;
   char buffer[4096];
-  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) output += buffer;
-  pclose(pipe);
-  return output;
+  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) result.output += buffer;
+
+  const int status = pclose(pipe);
+  if (status != -1 && WIFEXITED(status)) result.exit_code = WEXITSTATUS(status);
+  return result;
 }
 
 /// @brief Run the invocation a section documents against the inputs it shows.
-/// @return The CLI's stdout, or an empty string when the section is malformed.
-std::string RunDocumentedExample(const std::string& document, const DocSection& section) {
+/// @return The CLI's stdout and exit code; an empty result when the section is
+///         malformed.
+RunResult RunDocumentedExample(const std::string& document, const DocSection& section) {
   const auto bash_blocks = BlocksWithInfo(section, "bash");
   const auto json_blocks = BlocksWithInfo(section, "json");
   EXPECT_FALSE(bash_blocks.empty())
       << document << " section `" << section.command << "` shows JSON but no invocation";
-  if (bash_blocks.empty()) return "";
+  if (bash_blocks.empty()) return {};
 
   std::string invocation;
   for (const auto& line : SplitLines(bash_blocks.front()->body)) {
@@ -226,7 +241,7 @@ std::string RunDocumentedExample(const std::string& document, const DocSection& 
   }
   EXPECT_FALSE(invocation.empty())
       << document << " section `" << section.command << "` shows no coverwise invocation";
-  if (invocation.empty()) return "";
+  if (invocation.empty()) return {};
 
   invocation = WithoutOptionalArguments(invocation);
   const auto placeholders = Placeholders(invocation);
@@ -234,11 +249,13 @@ std::string RunDocumentedExample(const std::string& document, const DocSection& 
   EXPECT_EQ(placeholders.size(), input_count)
       << document << " section `" << section.command << "` shows " << input_count
       << " input blocks for " << placeholders.size() << " required arguments";
-  if (placeholders.size() != input_count) return "";
+  if (placeholders.size() != input_count) return {};
 
+  std::vector<std::string> inputs;
   for (size_t i = 0; i < placeholders.size(); ++i) {
     const std::string path = TempPath(section.command + "_" + std::to_string(i) + ".json");
     WriteFile(path, json_blocks[i]->body);
+    inputs.push_back(path);
     const size_t at = invocation.find(placeholders[i]);
     invocation.replace(at, placeholders[i].size(), path);
   }
@@ -246,7 +263,13 @@ std::string RunDocumentedExample(const std::string& document, const DocSection& 
   // The invocation names the installed command; run the binary under test.
   const std::string command = "'" + std::string(COVERWISE_CLI_PATH) + "'" +
                               invocation.substr(std::string("coverwise").size());
-  return RunCapturingStdout(command);
+  RunResult result = RunCapturingStdout(command);
+
+  // The inputs exist only for the length of the run, and every path through the
+  // test that writes one reaches here, so none is left in the temporary
+  // directory for the next run to find.
+  for (const auto& path : inputs) std::remove(path.c_str());
+  return result;
 }
 
 /// @brief Count the objects in the array that follows @p key in compact JSON.
@@ -301,13 +324,71 @@ long ReadNumber(const std::string& compact, const std::string& key) {
   return std::strtol(compact.c_str() + at + marker.size(), nullptr, 10);
 }
 
-const char* const kCliDocuments[] = {
-    "docs/en/cli.md",
-    "docs/ja/cli.md",
-};
+/// @brief Every translation of the CLI reference.
+///
+/// The documentation tree is walked rather than listed, so a translation added
+/// under `docs/` has its examples executed the day it lands.
+std::vector<std::string> CliDocuments() {
+  namespace fs = std::filesystem;
+  const fs::path root(COVERWISE_REPO_ROOT);
+  std::vector<std::string> documents;
+  std::error_code ec;
+  for (fs::directory_iterator it(root / "docs", ec), end; it != end; it.increment(ec)) {
+    if (ec) break;
+    if (!it->is_directory()) continue;
+    const fs::path reference = it->path() / "cli.md";
+    if (!fs::exists(reference)) continue;
+    documents.push_back(fs::relative(reference, root).generic_string());
+  }
+  std::sort(documents.begin(), documents.end());
+  return documents;
+}
 
-/// @brief The command sections whose examples must stay executable.
-const char* const kDocumentedCommands[] = {"generate", "analyze", "stats"};
+/// @brief The subcommands the binary itself names in its usage text.
+///
+/// Reading them from the executable rather than from a list here means a
+/// subcommand cannot be added without a worked example being added with it.
+std::vector<std::string> ShippedCommands() {
+  const RunResult usage = RunCapturingStdout("'" + std::string(COVERWISE_CLI_PATH) + "' --help");
+  const std::string marker = "coverwise ";
+  std::vector<std::string> commands;
+  for (const auto& line : SplitLines(usage.output)) {
+    const std::string trimmed = Trim(line);
+    if (trimmed.rfind(marker, 0) != 0) continue;
+    const std::string rest = Trim(trimmed.substr(marker.size()));
+    size_t end = 0;
+    while (end < rest.size() && (std::isalnum(static_cast<unsigned char>(rest[end])) != 0)) ++end;
+    if (end == 0 || end == rest.size()) continue;
+    const std::string command = rest.substr(0, end);
+    if (std::find(commands.begin(), commands.end(), command) == commands.end()) {
+      commands.push_back(command);
+    }
+  }
+  return commands;
+}
+
+/// @brief The exit codes the CLI reference publishes in its exit-code table.
+///
+/// The table is what a caller reads, so it is what the examples are held to: an
+/// example that ends any other way ends in a state the reference does not
+/// describe.
+std::vector<int> DocumentedExitCodes(const std::string& document) {
+  std::vector<int> codes;
+  for (const auto& line : SplitLines(ReadRepoFile(document))) {
+    const std::string trimmed = Trim(line);
+    if (trimmed.empty() || trimmed.front() != '|') continue;
+    const std::string token = BacktickedToken(trimmed);
+    if (token.empty()) continue;
+    bool numeric = true;
+    for (char c : token) {
+      if (!std::isdigit(static_cast<unsigned char>(c))) numeric = false;
+    }
+    if (!numeric) continue;
+    const int code = std::atoi(token.c_str());
+    if (std::find(codes.begin(), codes.end(), code) == codes.end()) codes.push_back(code);
+  }
+  return codes;
+}
 
 /// @brief The sections of a document that show an invocation and its output.
 std::vector<DocSection> ExecutableSections(const std::string& document) {
@@ -322,46 +403,70 @@ std::vector<DocSection> ExecutableSections(const std::string& document) {
 
 }  // namespace
 
-TEST(DocsCliExamplesTest, EveryDocumentedCommandShowsAnExecutableExample) {
-  for (const char* document : kCliDocuments) {
+TEST(DocsCliExamplesTest, EveryShippedCommandShowsAnExecutableExample) {
+  const auto commands = ShippedCommands();
+  ASSERT_FALSE(commands.empty()) << "The executable names no subcommand in its usage text";
+
+  const auto documents = CliDocuments();
+  ASSERT_FALSE(documents.empty()) << "No CLI reference was found under docs/";
+
+  for (const auto& document : documents) {
     const auto sections = ExecutableSections(document);
-    for (const char* command : kDocumentedCommands) {
+    for (const auto& command : commands) {
       bool found = false;
       for (const auto& section : sections) {
         if (section.command == command) found = true;
       }
-      EXPECT_TRUE(found) << document << " no longer shows an input and an output for `" << command
-                         << "`";
+      EXPECT_TRUE(found) << document << " shows no input and output for `" << command
+                         << "`, which the executable offers";
     }
   }
 }
 
 TEST(DocsCliExamplesTest, DocumentedOutputMatchesTheCli) {
-  for (const char* document : kCliDocuments) {
+  for (const auto& document : CliDocuments()) {
     for (const auto& section : ExecutableSections(document)) {
       const auto json_blocks = BlocksWithInfo(section, "json");
       const std::string documented = CompactJson(json_blocks.back()->body);
-      const std::string actual = CompactJson(RunDocumentedExample(document, section));
+      const std::string actual = CompactJson(RunDocumentedExample(document, section).output);
       EXPECT_EQ(actual, documented) << document << " section `" << section.command
                                     << "` does not show what the CLI writes for the input it shows";
     }
   }
 }
 
+TEST(DocsCliExamplesTest, EveryDocumentedExampleEndsAsTheReferenceSaysItCan) {
+  for (const auto& document : CliDocuments()) {
+    const auto codes = DocumentedExitCodes(document);
+    ASSERT_FALSE(codes.empty()) << document << " publishes no exit-code table";
+
+    for (const auto& section : ExecutableSections(document)) {
+      const int exit_code = RunDocumentedExample(document, section).exit_code;
+      ASSERT_NE(exit_code, -1) << document << " section `" << section.command
+                               << "` runs a command that did not exit normally";
+      EXPECT_NE(std::find(codes.begin(), codes.end(), exit_code), codes.end())
+          << document << " section `" << section.command << "` exits with " << exit_code
+          << ", which its exit-code table does not describe";
+    }
+  }
+}
+
 TEST(DocsCliExamplesTest, CliDocumentsShowTheSameExamplesInEveryLanguage) {
+  std::string reference_document;
   std::vector<std::string> reference;
-  for (const char* document : kCliDocuments) {
+  for (const auto& document : CliDocuments()) {
     std::vector<std::string> blocks;
     for (const auto& section : ExecutableSections(document)) {
       for (const auto& block : section.blocks) {
         if (block.info == "json") blocks.push_back(section.command + " " + CompactJson(block.body));
       }
     }
-    if (reference.empty()) {
+    if (reference_document.empty()) {
+      reference_document = document;
       reference = std::move(blocks);
       continue;
     }
-    EXPECT_EQ(blocks, reference) << document << " diverges from " << kCliDocuments[0];
+    EXPECT_EQ(blocks, reference) << document << " diverges from " << reference_document;
   }
 }
 
@@ -382,12 +487,12 @@ void ExpectUncoveredArrayIsComplete(const std::string& report, const std::string
 }
 
 TEST(DocsCliExamplesTest, TheCoverageReportAccountsForEveryUncoveredTuple) {
-  for (const char* document : kCliDocuments) {
+  for (const auto& document : CliDocuments()) {
     for (const auto& section : ExecutableSections(document)) {
       const std::string origin = std::string(document) + " section `" + section.command + "`";
       ExpectUncoveredArrayIsComplete(CompactJson(BlocksWithInfo(section, "json").back()->body),
                                      origin);
-      ExpectUncoveredArrayIsComplete(CompactJson(RunDocumentedExample(document, section)),
+      ExpectUncoveredArrayIsComplete(CompactJson(RunDocumentedExample(document, section).output),
                                      "The CLI, driven by " + origin);
     }
   }

@@ -4,9 +4,13 @@
 
 The `coverwise` PyPI package ships the native command-line tool plus a thin
 Python API that drives it. There is no separate Python implementation of the
-generator, so results and JSON shapes match the C++ CLI and the JavaScript API
-exactly. Error categories follow the CLI's exit-code contract, which is slightly
-coarser than the JavaScript one — see [Errors](#errors).
+generator, so results and JSON shapes match the C++ CLI exactly. The JavaScript
+API returns the same fields with the same names and the same values, minus one:
+`schemaVersion`, the version envelope the CLI wraps every document in, is a CLI
+field only and is absent from the JavaScript types. Feeding a stringified
+JavaScript result to a CLI command that expects a suite is therefore rejected as
+invalid input. Error categories follow the CLI's exit-code contract, which is
+slightly coarser than the JavaScript one — see [Errors](#errors).
 
 ```bash
 pip install coverwise
@@ -182,11 +186,35 @@ limits are the CLI's limits. Exceeding one raises `CoverwiseError` with
 | UTF-8 bytes in a model's strings, combined | 1,048,576 (1 MiB) |
 | Bytes of one serialized JSON document | 67,108,864 (64 MiB) |
 
-The combined-bytes budget covers the strings that describe the model —
-parameter names, values, aliases, class names, constraint expressions and
-sub-model parameter names. The parameter count is what keeps constraint
-feasibility search bounded: the search walks one parameter per level, so nothing
-else limits how deep it can go.
+The combined-bytes budget is one budget per call, and every string the call reads
+is charged against it once: parameter names, values, aliases, class names,
+constraint expressions, sub-model parameter names, and the names a `weights`
+mapping spells out.
+
+Test rows are charged for their values, never for their keys, and only string
+values are charged — a numeric or boolean row value costs nothing.
+
+**The byte budget binds before the row ceiling for most models.** 100,000 rows is
+a ceiling, not a promise that a suite of that size is accepted: 1 MiB over
+100,000 rows leaves about 10.5 bytes of row text per row. With 5-byte string
+values and one value per parameter per row, a 2-parameter model reaches the row
+ceiling at 100,000 rows, a 3-parameter model is rejected past 69,902, a
+10-parameter model past 20,969, and a 100-parameter model past 2,094 — the
+ceiling is a function of both dimensions, and these figures assume the model's
+own strings are small next to the rows. The rejection names the budget rather
+than the row count, so a failure well under 100,000 rows is this limit rather
+than a bug. Shorter value names buy rows directly; a suite the budget will not
+hold has to be analyzed in slices.
+
+The last row of the table is a memory guard on each document the API hands to the
+executable, not part of what the API accepts. It sits far outside the other
+limits for every model of ordinary width. The exception is a wide model, where
+JSON syntax rather than caller text dominates the document: 100 parameters at
+100,002 rows is about 133 MiB carrying far less than 1 MiB of row text, and it is
+refused for its size before either limit above is reached.
+
+The parameter count is what keeps constraint feasibility search bounded: the
+search walks one parameter per level, so nothing else limits how deep it can go.
 
 The last row bounds each document that reaches the executable — the one written
 to its standard input, and the temporary file a two-input call writes for the

@@ -190,7 +190,12 @@ coverwise generate input.json | coverwise analyze --params input.json --tests -
 
 ## パフォーマンス
 
-すべての構成で 100% t-wise カバレッジを達成。独立したカバレッジバリデータで検証済みです。生成テスト数はカバリングアレイ研究の既知の理論的境界内に収まっています。
+以下のベンチマーク構成は 100% t-wise カバレッジを達成し、
+[独立したネイティブバリデータ](tests/integration/generate_and_validate_test.cpp)で検証済みです。
+リソース予算内の有効かつ充足可能なモデルであれば、制限の強い `maxTests` を指定しない限り、
+生成は完全カバレッジを目標とします。有効な完全テストへ拡張できない制約付きタプルは、
+必要な対象集合から除外されます。エンジン間で出力が決定的であることは
+[WASM / Pure TS パリティスイート](js/compat.test.ts)で検証しています。
 
 ### ペアワイズ (2-wise)
 

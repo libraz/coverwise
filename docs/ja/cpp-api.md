@@ -8,6 +8,13 @@
 
 ## 生成
 
+`Generate`・`Extend`・`EstimateModel` は、CLI と WebAssembly バインディングが使うのと
+同一の受理ゲートに options を通します。C++ のエントリポイントが受理するモデルは他の全ての面
+でも受理され、どれか一つが拒否するモデルはここでも同じエラーで拒否されます。受理の前に走る
+境界展開も同じなので、境界パラメータは書かれた range ではなく展開後の値によって判定されます。
+ライブラリを組み込んだからといって、シェルから `coverwise` を呼ぶ場合より緩い契約になることは
+ありません。
+
 ### `coverwise::core::Generate`
 
 指定したモデルのカバリングテストスイートを生成します。
@@ -58,6 +65,22 @@ namespace coverwise::validator {
   );
 }
 ```
+
+どのカウントよりも先に `error` を読んでください。ok でない終了経路では `coverage_ratio` は
+既定値の `0.0` のままです。したがって比率 0 は「何もカバーされていない」ことも「そもそも
+測っていない」ことも意味し、両者を区別できるのは `error` だけです。他のフィールドは
+呼び出しがどこまで進んだかで変わります。
+
+| 終了経路 | `total_tuples`・`covered_tuples`・`uncovered`・`uncovered_count` | `invalid_tests` |
+|----------|------------------------------------------------------------------|-----------------|
+| strength が `[1, パラメータ数]` の外 | ゼロ | 空 |
+| パラメータが不正 | ゼロ | 空 |
+| 制約モデルが充足不能 | ゼロ | 空 |
+| 列挙上限を超過 | ゼロ | 空 |
+| 列挙の途中で実行可能性の予算が尽きた | そこまでに列挙したタプルぶんの部分カウント | 完全 |
+
+注意が要るのは最後の行です。タプルのループの途中で停止するため、カウントは実数ですが、
+対象範囲の全体ではなくその先頭部分だけを表しています。
 
 ### `coverwise::validator::ValidateConstraints`
 
@@ -350,8 +373,11 @@ ClassCoverageReport ComputeClassCoverage(
 ## 使用例
 
 ```cpp
-#include "coverwise.h"
+#include <coverwise.h>
+
 #include <iostream>
+#include <utility>
+#include <vector>
 
 int main() {
   using namespace coverwise;
@@ -359,32 +385,31 @@ int main() {
   // パラメータを構築。
   model::GenerateOptions opts;
   opts.parameters = {
-    {"os",      {"Windows", "macOS", "Linux"}},
-    {"browser", {"Chrome", "Firefox", "Safari"}},
-    {"theme",   {"light", "dark"}},
+      {"os", {"Windows", "macOS", "Linux"}},
+      {"browser", {"Chrome", "Firefox", "Safari"}},
+      {"theme", {"light", "dark"}},
   };
   opts.constraint_expressions = {
-    "IF os = Windows THEN browser != Safari",
+      "IF os = Windows THEN browser != Safari",
   };
   opts.strength = 2;
   opts.seed = 42;
 
   // 生成。
   auto result = core::Generate(opts);
-
   if (!result.error.ok()) {
     std::cerr << result.error.message << "\n";
     return 1;
   }
 
-  std::cout << "テスト数: " << result.tests.size() << "\n";
-  std::cout << "カバレッジ: " << result.coverage * 100 << "%\n";
+  std::cout << "Tests: " << result.tests.size() << "\n";
+  std::cout << "Coverage: " << result.coverage * 100 << "%\n";
 
   // テストケースを出力。
   for (const auto& tc : result.tests) {
     for (size_t i = 0; i < result.parameters.size(); ++i) {
-      std::cout << result.parameters[i].name << "="
-                << result.parameters[i].values[tc.values[i]] << " ";
+      std::cout << result.parameters[i].name << "=" << result.parameters[i].values[tc.values[i]]
+                << " ";
     }
     std::cout << "\n";
   }
@@ -396,13 +421,17 @@ int main() {
     if (!parsed.error.ok()) return 1;
     constraints.push_back(std::move(parsed.constraint));
   }
-  auto report = validator::ValidateCoverage(
-    result.parameters, result.tests, opts.strength, constraints);
-  std::cout << "検証結果: " << report.coverage_ratio * 100 << "%\n";
-
+  auto report =
+      validator::ValidateCoverage(result.parameters, result.tests, opts.strength, constraints);
+  std::cout << "Validated: " << report.coverage_ratio * 100 << "%\n";
   return report.error.ok() && report.coverage_ratio == 1.0 ? 0 : 1;
 }
 ```
+
+このプログラムは、`Tests:` にスイートの件数、`Coverage:` に生成が報告するカバレッジ比を出力し、
+続いて各テストケースを `名前=値` の組で 1 行ずつ、最後に `Validated:` として同じスイートを
+独立したバリデータが測ったカバレッジ比を出力します。これは CMake フィクスチャがインストール済み
+パッケージに対してコンパイルするプログラムであり、上記のテキストがそのままビルドできます。
 
 ## ビルド統合
 
@@ -423,4 +452,11 @@ target_link_libraries(your_target PRIVATE coverwise::coverwise)
 ### コンパイラ要件
 
 - C++17 以降
-- GCC 9+、Clang 10+、AppleClang 14+ で動作確認済み
+- 浮動小数点版 `std::to_chars` を持つ標準ライブラリ。これが下限を決めます。
+  GCC 11+（libstdc++ 11+）、libstdc++ 11+ または libc++ 14+ に対してビルドした
+  Clang 10+、macOS 13.3 以降をデプロイターゲットとする AppleClang 14+
+
+数値の書式化は往復可能な最短桁を `std::to_chars(double)` から得ており、それを再現できる
+代替手段はありません。したがって古い標準ライブラリでは、出力が変わるのではなくビルドが
+失敗します。macOS 13.3 より古いデプロイターゲットを指す Apple のツールチェインは、
+デプロイターゲットを名指しする診断とともに拒否されます。

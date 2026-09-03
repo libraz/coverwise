@@ -215,8 +215,22 @@ If constraints are contradictory (no valid combination exists), generation retur
 
 Build constraints programmatically with the fluent API. Builder objects produce valid constraint strings via `toString()`.
 
-String operands are always emitted quoted, so any value is safe to pass through
-the builder without escaping it yourself.
+Quoting is decided per method, because the position an operand lands in decides
+how the parser reads it. You never escape a value yourself; what changes is
+whether the value is read as a value at all.
+
+- `eq()` and `ne()` always quote a string operand. A bare token there would be
+  resolved as a parameter reference whenever a parameter bears that name, which
+  would silently turn a value comparison into a parameter-to-parameter one.
+- `in()` and `like()` quote only when the value cannot survive as one bare
+  token. `in('staging', 'prod')` emits `env IN {staging, prod}` and
+  `like('chrome*')` emits `browser LIKE chrome*`; the `*` and `?` wildcards keep
+  their meaning either way.
+- `gt()`, `gte()`, `lt()` and `lte()` take a number as the value to compare
+  against. A **string** operand there is a parameter name, emitted bare, and it
+  is refused outright when it cannot be written as one bare token — so
+  `when('status').lt('ok')` compares `status` against a parameter called `ok`
+  rather than against the value `ok`.
 
 ### Basic Comparisons
 

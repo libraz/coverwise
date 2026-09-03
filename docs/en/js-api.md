@@ -122,6 +122,12 @@ interface WeightConfig {
 }
 ```
 
+Every weight must be a finite number greater than `0`. `0`, a negative number,
+`Infinity` and `NaN` are rejected: weights are used as proportions of the
+largest weight in the group, which only has meaning on a positive scale. To keep
+a value out of the suite entirely, leave it out of `values` rather than weighting
+it `0`.
+
 ```typescript
 generate({
   parameters: [/* ... */],
@@ -236,6 +242,12 @@ interface CoverageReport {
 }
 ```
 
+A failure is thrown, never returned: a `CoverageReport` you hold is always a
+completed measurement, so `coverageRatio === 0` means nothing was covered rather
+than nothing was measured. Embedders of the C++ library read the same report as
+a return value and have to tell those two apart themselves; see the
+[C++ API](cpp-api.md) for which fields survive each error exit there.
+
 **Example:**
 
 ```typescript
@@ -332,7 +344,9 @@ See [Constraint Syntax](constraints.md) for the full builder API reference.
 
 ## Input Validation
 
-The Pure TypeScript API validates inputs and throws descriptive errors for:
+Both entry points run the same validation before any engine is reached, so
+`@libraz/coverwise` and `@libraz/coverwise/pure` accept and reject exactly the
+same inputs, with the same messages. It throws descriptive errors for:
 
 - `strength`: Must be a positive integer. Non-integer, negative, or zero values are rejected.
 - `seed`: Must be a uint32 integer in `[0, 4294967295]`.
@@ -340,9 +354,42 @@ The Pure TypeScript API validates inputs and throws descriptive errors for:
 - `parameters`: Must be a non-empty array.
 - Parameter names: Must be unique, and must stay unique once ASCII case is folded — `os` and `OS` cannot coexist.
 - Values and aliases: Within one parameter, the values and all of their aliases must remain distinct once ASCII case is folded. Both rules exist because value lookup is case-insensitive, so a case-only difference would leave `os = WINDOWS` without a single answer.
+- `weights`: Each weight must be a finite number greater than `0`.
 - Resource limits apply to public input: at most 1,024 parameters, 16,384 values per parameter, 100,000 test rows, 256 constraints, 64 KiB per string, and 1 MiB of aggregate string data.
 
-The WASM API performs equivalent validation at the C++ boundary.
+### The aggregate budget binds before the row ceiling
+
+The 1 MiB figure is one budget per call, and every string the call reads is
+charged against it once, where it is read: the model's names, values, aliases,
+class names and constraint expressions, and the **values** of every row you pass
+as `tests`, `seeds` or `existing`. Row keys are not charged — a key is a
+parameter name, already counted once as a model string. Only string values are
+charged; a numeric or boolean row value costs nothing.
+
+That makes the two numbers above interact, and the byte budget is almost always
+the one you meet first. 1 MiB spread over 100,000 rows leaves about 10.5 bytes of
+row text per row, which only a very narrow model fits. With 5-byte string values
+and one value per parameter per row, the two limits meet like this:
+
+| Parameters per row | Rows accepted |
+|--------------------|---------------|
+| 2 | 100,000 (the row ceiling binds) |
+| 3 | 69,902 |
+| 10 | 20,969 |
+| 100 | 2,094 |
+
+The ceiling is a function of both dimensions, so these figures assume the model's
+own strings are small next to the rows; a model with long names or many values
+spends part of the same budget and lowers them.
+
+**Read the 100,000-row figure as a ceiling, not as a promise that a suite of that
+size is accepted.** A rejection at 20,000 rows is the byte budget doing its job,
+not a bug, and the message names the budget rather than the row count. Every
+surface charges the same things against the same budget, so these figures hold
+for the CLI and for a C++ embedding as well as for both npm entry points.
+
+Shorter value names buy rows directly. If you need a suite the budget will not
+hold, analyze it in slices rather than in one call.
 
 ## Error Handling
 
