@@ -239,6 +239,55 @@ describe('CoverageEngine', () => {
     }, 3000);
   });
 
+  describe('excludeTuplesOutsideMask()', () => {
+    // 3 binary parameters at strength 2: C(3,2) = 3 combinations x 4 value pairs.
+    const binary3 = () => [
+      new Parameter('A', ['0', '1']),
+      new Parameter('B', ['0', '1']),
+      new Parameter('C', ['0', '1']),
+    ];
+
+    it('keeps only the values the mask allows', () => {
+      const engine = CoverageEngine.create(binary3(), 2).engine;
+      expect(engine.totalTuples).toBe(12);
+
+      engine.excludeTuplesOutsideMask([
+        [true, false],
+        [true, true],
+        [true, true],
+      ]);
+
+      // A=1 is disallowed, which removes half of the (A,B) and (A,C) tuples.
+      expect(engine.totalTuples).toBe(8);
+    });
+
+    it('excludes everything when the mask does not describe the model', () => {
+      // A mask the engine cannot read must not leave the caller holding a tuple
+      // set it believes was filtered. Both ways of failing to describe the model
+      // — a different number of rows than there are parameters, and a row whose
+      // length differs from its parameter's domain — have to refuse in the same
+      // direction.
+      const outer = CoverageEngine.create(binary3(), 2).engine;
+      expect(outer.totalTuples).toBe(12);
+      outer.excludeTuplesOutsideMask([
+        [true, true],
+        [true, true],
+      ]);
+      expect(outer.totalTuples).toBe(0);
+      expect(outer.isComplete).toBe(true);
+
+      const inner = CoverageEngine.create(binary3(), 2).engine;
+      expect(inner.totalTuples).toBe(12);
+      inner.excludeTuplesOutsideMask([
+        [true, true, true],
+        [true, true, true],
+        [true, true, true],
+      ]);
+      expect(inner.totalTuples).toBe(0);
+      expect(inner.isComplete).toBe(true);
+    });
+  });
+
   describe('excludeInvalidValues()', () => {
     it('excludes tuples containing values marked as invalid', () => {
       // browser has 'ie' marked as invalid.

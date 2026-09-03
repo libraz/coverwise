@@ -143,7 +143,12 @@ class CoverageEngine {
                             const std::vector<std::vector<bool>>& allowed_values = {},
                             bool* budget_exceeded = nullptr);
 
-  /// Exclude tuples containing any value disallowed by the mask.
+  /// @brief Exclude tuples containing any value disallowed by the mask.
+  ///
+  /// A mask that does not describe the model -- a different number of rows than
+  /// there are parameters, or a row whose length differs from its parameter's
+  /// domain -- allows nothing, so every tuple it fails to describe is excluded.
+  /// @param allowed_values Per-parameter allowed-value mask.
   void ExcludeTuplesOutsideMask(const std::vector<std::vector<bool>>& allowed_values);
 
   /// Exclude tuples that do not contain the fixed parameter/value pair.

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -17,6 +18,7 @@
 using coverwise::core::CompleteAssignment;
 using coverwise::core::CompleteValidAssignment;
 using coverwise::core::SolveBudget;
+using coverwise::core::SolveStack;
 using coverwise::model::Constraint;
 using coverwise::model::ConstraintResult;
 using coverwise::model::kUnassigned;
@@ -206,5 +208,155 @@ TEST(ConstraintSolverTest, ReportsAnExhaustedBudgetAndUnwindsTheAssignment) {
   EXPECT_EQ(budget.remaining, 0u);
   for (uint32_t value : witness.values) {
     EXPECT_EQ(value, kUnassigned);
+  }
+}
+
+namespace {
+
+/// @brief One search outcome, recorded in full so two runs can be compared.
+struct SearchOutcome {
+  bool satisfiable = false;
+  std::vector<uint32_t> witness;
+  uint64_t remaining = 0;
+  bool exceeded = false;
+
+  bool operator==(const SearchOutcome& other) const {
+    return satisfiable == other.satisfiable && witness == other.witness &&
+           remaining == other.remaining && exceeded == other.exceeded;
+  }
+};
+
+/// @brief Solve every pair of pinned values in the model, one search per pair.
+///
+/// This is the shape the coverage sweep drives: a long run of searches over one
+/// model, each starting from a different two-parameter partial assignment.
+/// @param stack Frame buffer shared across the run, or nullptr for a private
+///        one per search.
+std::vector<SearchOutcome> SolveEveryPair(const std::vector<Parameter>& params,
+                                          const std::vector<Constraint>& constraints,
+                                          SolveStack* stack) {
+  std::vector<SearchOutcome> outcomes;
+  for (uint32_t left = 0; left < params.size(); ++left) {
+    for (uint32_t right = left + 1; right < params.size(); ++right) {
+      for (uint32_t lv = 0; lv < params[left].size(); ++lv) {
+        for (uint32_t rv = 0; rv < params[right].size(); ++rv) {
+          TestCase witness;
+          witness.values.assign(params.size(), kUnassigned);
+          witness.values[left] = lv;
+          witness.values[right] = rv;
+          SolveBudget budget;
+          SearchOutcome outcome;
+          outcome.satisfiable =
+              CompleteValidAssignment(params, constraints, witness, &budget, nullptr, stack);
+          outcome.witness = witness.values;
+          outcome.remaining = budget.remaining;
+          outcome.exceeded = budget.exceeded;
+          outcomes.push_back(std::move(outcome));
+        }
+      }
+    }
+  }
+  return outcomes;
+}
+
+std::vector<Constraint> ParseConstraints(const std::vector<std::string>& expressions,
+                                         const std::vector<Parameter>& params) {
+  std::vector<Constraint> constraints;
+  for (const auto& expression : expressions) {
+    auto parse = coverwise::model::ParseConstraint(expression, params);
+    EXPECT_TRUE(parse.error.ok()) << parse.error.message << ": " << parse.error.detail;
+    constraints.push_back(std::move(parse.constraint));
+  }
+  return constraints;
+}
+
+}  // namespace
+
+// A frame buffer handed in by the caller is scratch and nothing else: every
+// search reports the same verdict, the same witness and the same budget
+// arithmetic whether it got a buffer of its own or one a previous search left
+// behind. Interacting implications make some of these pairs infeasible and
+// others reachable only after backtracking, so the run exercises both exits.
+TEST(ConstraintSolverTest, AReusedFrameBufferDoesNotChangeAnySearchOutcome) {
+  auto params = MakeBinaryParams(9);
+  auto expressions = std::vector<std::string>{
+      "IF P0=\"a\" THEN P1=\"b\"", "IF P1=\"b\" THEN P2=\"a\"",   "IF P2=\"a\" THEN P3=\"b\"",
+      "P3=\"a\" OR P4=\"a\"",      "NOT (P5=\"a\" AND P6=\"a\")", "IF P7=\"b\" THEN P8=\"b\"",
+  };
+  auto fresh_constraints = ParseConstraints(expressions, params);
+  auto reused_constraints = ParseConstraints(expressions, params);
+
+  const auto fresh = SolveEveryPair(params, fresh_constraints, nullptr);
+  SolveStack shared;
+  const auto reused = SolveEveryPair(params, reused_constraints, &shared);
+
+  ASSERT_EQ(fresh.size(), reused.size());
+  EXPECT_EQ(fresh, reused);
+
+  // The run has to contain both verdicts, or it fixes nothing.
+  EXPECT_TRUE(std::any_of(fresh.begin(), fresh.end(),
+                          [](const SearchOutcome& o) { return o.satisfiable; }));
+  EXPECT_TRUE(std::any_of(fresh.begin(), fresh.end(),
+                          [](const SearchOutcome& o) { return !o.satisfiable; }));
+}
+
+// The budget-exhausted exit leaves frames on the stack that no backtrack pops.
+// Reusing that buffer for the next search must still report an exhausted budget
+// and an untouched assignment rather than resuming from the leftovers.
+TEST(ConstraintSolverTest, AStackLeftBehindByAnExhaustedSearchIsNotResumed) {
+  constexpr uint32_t kParameters = 24;
+  auto params = MakeBinaryParams(kParameters);
+  std::vector<Constraint> constraints;
+  constraints.push_back(std::make_unique<CompleteAssignmentOnlyConstraint>());
+
+  SolveStack shared;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    TestCase witness;
+    witness.values.assign(kParameters, kUnassigned);
+    // A budget far below the default still runs out mid-descent, which is the
+    // exit under test, and keeps the run short enough to repeat.
+    SolveBudget budget{10'000, false};
+    ASSERT_FALSE(CompleteValidAssignment(params, constraints, witness, &budget, nullptr, &shared))
+        << "attempt " << attempt;
+    EXPECT_TRUE(budget.exceeded);
+    EXPECT_EQ(budget.remaining, 0u);
+    for (uint32_t value : witness.values) {
+      EXPECT_EQ(value, kUnassigned);
+    }
+  }
+}
+
+// The same holds for the masked entry point, which reaches the search through a
+// different argument path.
+TEST(ConstraintSolverTest, AReusedFrameBufferDoesNotChangeAMaskedSearch) {
+  auto params = MakeBinaryParams(6);
+  auto expressions = std::vector<std::string>{
+      "IF P0=\"a\" THEN P1=\"b\"",
+      "NOT (P2=\"a\" AND P3=\"a\")",
+  };
+  auto fresh_constraints = ParseConstraints(expressions, params);
+  auto reused_constraints = ParseConstraints(expressions, params);
+  auto mask = MakeAllowAllMask(params);
+
+  SolveStack shared;
+  for (uint32_t pi = 0; pi < params.size(); ++pi) {
+    for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
+      TestCase fresh_witness;
+      fresh_witness.values.assign(params.size(), kUnassigned);
+      fresh_witness.values[pi] = vi;
+      TestCase reused_witness = fresh_witness;
+
+      SolveBudget fresh_budget;
+      SolveBudget reused_budget;
+      const bool fresh_ok = CompleteAssignment(params, fresh_constraints, mask, fresh_witness,
+                                               &fresh_budget, nullptr, nullptr);
+      const bool reused_ok = CompleteAssignment(params, reused_constraints, mask, reused_witness,
+                                                &reused_budget, nullptr, &shared);
+
+      EXPECT_EQ(fresh_ok, reused_ok);
+      EXPECT_EQ(fresh_witness.values, reused_witness.values);
+      EXPECT_EQ(fresh_budget.remaining, reused_budget.remaining);
+      EXPECT_EQ(fresh_budget.exceeded, reused_budget.exceeded);
+    }
   }
 }

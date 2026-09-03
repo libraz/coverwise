@@ -43,16 +43,15 @@ uint32_t NextUsableValue(const std::vector<model::Parameter>& params,
 /// enumeration order, budget accounting and assignment side effects: on success
 /// @p assignment holds the witness, and on failure every parameter this search
 /// assigned is restored to model::kUnassigned.
+///
+/// @p stack is scratch owned by the caller. It is cleared here, so whatever a
+/// previous search left in it is discarded and only its capacity survives.
 bool Search(const std::vector<model::Parameter>& params,
             const std::vector<model::Constraint>& constraints, std::vector<uint32_t>& assignment,
             const SolveParameterOrder& parameter_order, uint32_t order_position,
-            const std::vector<std::vector<bool>>* allowed_values, SolveBudget& budget) {
-  struct Frame {
-    uint32_t param;          ///< Parameter assigned at this level.
-    uint32_t value;          ///< Value currently being tried.
-    uint32_t next_position;  ///< Order position the level below starts from.
-  };
-  std::vector<Frame> stack;
+            const std::vector<std::vector<bool>>* allowed_values, SolveBudget& budget,
+            SolveStack& stack) {
+  stack.clear();
   uint32_t position = order_position;
   bool expand = true;
 
@@ -88,7 +87,7 @@ bool Search(const std::vector<model::Parameter>& params,
     // Backtrack. An exhausted budget unwinds without trying further values, so
     // the caller sees an untouched assignment together with budget.exceeded.
     if (stack.empty()) return false;
-    Frame& top = stack.back();
+    SolveFrame& top = stack.back();
     uint32_t vi = budget.exceeded
                       ? static_cast<uint32_t>(params[top.param].size())
                       : NextUsableValue(params, allowed_values, top.param, top.value + 1);
@@ -143,7 +142,7 @@ bool CompleteAssignment(const std::vector<model::Parameter>& params,
                         const std::vector<model::Constraint>& constraints,
                         const std::vector<std::vector<bool>>& allowed_values,
                         model::TestCase& assignment, SolveBudget* budget,
-                        const SolveParameterOrder* parameter_order) {
+                        const SolveParameterOrder* parameter_order, SolveStack* stack) {
   if (allowed_values.size() != params.size()) return false;
   for (uint32_t pi = 0; pi < params.size(); ++pi) {
     if (allowed_values[pi].size() != params[pi].size()) return false;
@@ -164,13 +163,15 @@ bool CompleteAssignment(const std::vector<model::Parameter>& params,
     local_order = BuildAllowedSolveParameterOrder(params, allowed_values);
     parameter_order = &local_order;
   }
-  return Search(params, constraints, assignment.values, *parameter_order, 0, &allowed_values, b);
+  SolveStack local_stack;
+  SolveStack& s = stack ? *stack : local_stack;
+  return Search(params, constraints, assignment.values, *parameter_order, 0, &allowed_values, b, s);
 }
 
 bool CompleteValidAssignment(const std::vector<model::Parameter>& params,
                              const std::vector<model::Constraint>& constraints,
                              model::TestCase& assignment, SolveBudget* budget,
-                             const SolveParameterOrder* parameter_order) {
+                             const SolveParameterOrder* parameter_order, SolveStack* stack) {
   if (assignment.values.size() != params.size()) {
     assignment.values.resize(params.size(), model::kUnassigned);
   }
@@ -189,7 +190,9 @@ bool CompleteValidAssignment(const std::vector<model::Parameter>& params,
     local_order = BuildValidSolveParameterOrder(params);
     parameter_order = &local_order;
   }
-  return Search(params, constraints, assignment.values, *parameter_order, 0, nullptr, b);
+  SolveStack local_stack;
+  SolveStack& s = stack ? *stack : local_stack;
+  return Search(params, constraints, assignment.values, *parameter_order, 0, nullptr, b, s);
 }
 
 }  // namespace core

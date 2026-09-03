@@ -427,6 +427,11 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
   auto parameter_order = allowed_values.empty()
                              ? BuildValidSolveParameterOrder(Parameters())
                              : BuildAllowedSolveParameterOrder(Parameters(), allowed_values);
+  // One frame buffer for the whole sweep. Every search over this model has the
+  // same depth bound, so after the first tuple the buffer never grows again and
+  // the sweep costs no allocation per tuple.
+  SolveStack solve_stack;
+  solve_stack.reserve(num_params);
 
   ForEachTupleUntil([&](uint32_t global_index, const uint32_t* combo,
                         const std::vector<uint32_t>& value_indices) {
@@ -443,9 +448,9 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
     SolveBudget tuple_budget;
     bool invalid = allowed_values.empty()
                        ? !CompleteValidAssignment(Parameters(), constraints, witness, &tuple_budget,
-                                                  &parameter_order)
+                                                  &parameter_order, &solve_stack)
                        : !CompleteAssignment(Parameters(), constraints, allowed_values, witness,
-                                             &tuple_budget, &parameter_order);
+                                             &tuple_budget, &parameter_order, &solve_stack);
 
     // Reset assignment for reuse.
     std::fill(witness.values.begin(), witness.values.end(), model::kUnassigned);
@@ -488,16 +493,20 @@ void CoverageEngine::ExcludeInvalidValues() {
 
 void CoverageEngine::ExcludeTuplesOutsideMask(
     const std::vector<std::vector<bool>>& allowed_values) {
-  if (allowed_values.size() != Parameters().size()) return;
+  // A mask that does not describe every parameter cannot say which values are
+  // allowed, so it allows none of them -- the same direction the per-parameter
+  // size check below takes for a row that does not describe its parameter.
+  // Returning early instead would leave the caller holding a tuple set it
+  // believes was filtered but from which nothing was excluded.
+  const bool mask_describes_model = allowed_values.size() == Parameters().size();
   ForEachTuple([&](uint32_t global_index, const uint32_t* combo,
                    const std::vector<uint32_t>& value_indices) {
-    bool excluded = false;
-    for (size_t j = 0; j < strength_; ++j) {
+    bool excluded = !mask_describes_model;
+    for (size_t j = 0; !excluded && j < strength_; ++j) {
       uint32_t pi = combo[j];
       uint32_t vi = value_indices[j];
       if (allowed_values[pi].size() != Parameters()[pi].size() || !allowed_values[pi][vi]) {
         excluded = true;
-        break;
       }
     }
     if (excluded && !covered_.Test(global_index)) {

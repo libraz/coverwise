@@ -281,20 +281,22 @@ std::vector<std::vector<double>> ResolveWeights(const std::vector<model::Paramet
     resolved[pi].resize(params[pi].size(), 1.0);
     auto pit = config.entries.find(params[pi].name);
     if (pit == config.entries.end()) continue;
-    for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
-      // Resolve by key presence (not GetWeight's 1.0 sentinel) so an explicit
-      // weight of 1.0 is honored and a weight keyed by one of the value's
-      // aliases is not silently dropped to the default.
-      auto vit = pit->second.find(params[pi].values[vi]);
-      if (vit == pit->second.end()) {
-        for (const auto& alias : params[pi].aliases(vi)) {
-          vit = pit->second.find(alias);
-          if (vit != pit->second.end()) break;
-        }
-      }
-      if (vit != pit->second.end()) {
-        resolved[pi][vi] = vit->second;
-      }
+    // Resolve the caller's keys rather than probing the map with each declared
+    // spelling: a weights key is a value name the caller wrote, so it names its
+    // value through ResolveValueName -- by any ASCII case, and by an alias --
+    // which is the same reading the acceptance gate gave it. Keys are read by
+    // presence (not GetWeight's 1.0 sentinel) so an explicit weight of 1.0 is
+    // honored rather than mistaken for the default.
+    std::vector<bool> named(params[pi].size(), false);
+    for (const auto& [value_name, weight] : pit->second) {
+      const uint32_t vi = model::ResolveValueName(params[pi], value_name);
+      if (vi == model::kUnassigned) continue;
+      // A value named by more than one key keeps the weight written under the
+      // spelling the model declares, as it did when that spelling was probed
+      // ahead of the aliases.
+      if (named[vi] && params[pi].values[vi] != value_name) continue;
+      resolved[pi][vi] = weight;
+      named[vi] = true;
     }
   }
   return resolved;
@@ -313,7 +315,12 @@ void RemapSeedValueIndices(const std::vector<model::Parameter>& declared,
       const uint32_t old_index = test.values[pi];
       if (old_index >= declared[pi].size()) continue;
       const auto& old_value = declared[pi].values[old_index];
-      uint32_t new_index = options.parameters[pi].find_value_index(old_value);
+      // Byte equality, not ResolveValueName: the name being looked up is the
+      // declared value itself, carried across expansion, not text a caller
+      // wrote, so the only match that means "this is the same value" is the
+      // exact one.
+      uint32_t new_index =
+          options.parameters[pi].find_value_index(old_value, /*case_sensitive=*/true);
       if (new_index == model::kUnassigned && util::IsNumeric(old_value)) {
         const double numeric = util::ToDouble(old_value);
         for (uint32_t vi = 0; vi < options.parameters[pi].size(); ++vi) {
@@ -348,7 +355,7 @@ AcceptedEngineInput AcceptEngineInput(GenerateOptions options, size_t preserved_
   if (!options.seeds.empty() && !options.boundary_configs.empty()) {
     declared = options.parameters;
   }
-  auto accepted = model::AcceptOptions(std::move(options));
+  auto accepted = model::AcceptOptions(std::move(options), model::ChargedText::None());
   if (!accepted.ok()) return AcceptedEngineInput(accepted.error());
   GenerateOptions engine_options = accepted->get();
   if (!declared.empty()) RemapSeedValueIndices(declared, engine_options);

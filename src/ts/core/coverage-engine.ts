@@ -14,6 +14,7 @@ import {
   completeAssignment,
   completeValidAssignment,
   createSolveBudget,
+  createSolveStack,
 } from './constraint-solver.js';
 
 /// Result of CoverageEngine.create() factory method.
@@ -300,6 +301,10 @@ export class CoverageEngine {
         ? buildValidSolveParameterOrder(this.params_)
         : buildAllowedSolveParameterOrder(this.params_, allowedValues);
     const assignment = new Array<number>(numParams).fill(UNASSIGNED);
+    // One frame buffer for the whole sweep. Every search over this model has the
+    // same depth bound, so after the first tuple the buffer never grows again
+    // and the sweep costs no frame allocation per tuple.
+    const solveStack = createSolveStack();
 
     this.forEachTuple((ci, vi, combo, valueIndices) => {
       // Build partial assignment with only this tuple's parameters set.
@@ -320,6 +325,7 @@ export class CoverageEngine {
               { values: assignment },
               tupleBudget,
               parameterOrder,
+              solveStack,
             )
           : completeAssignment(
               this.params_,
@@ -328,6 +334,7 @@ export class CoverageEngine {
               { values: assignment },
               tupleBudget,
               parameterOrder,
+              solveStack,
             );
       assignment.fill(UNASSIGNED);
       if (tupleBudget.exceeded) {
@@ -371,15 +378,22 @@ export class CoverageEngine {
   }
 
   /// Exclude tuples containing any value disallowed by the mask.
+  ///
+  /// A mask that does not describe the model -- a different number of rows than
+  /// there are parameters, or a row whose length differs from its parameter's
+  /// domain -- allows nothing, so every tuple it fails to describe is excluded.
+  /// Returning early instead would leave the caller holding a tuple set it
+  /// believes was filtered but from which nothing was excluded.
   excludeTuplesOutsideMask(allowedValues: readonly (readonly boolean[])[]): void {
-    if (allowedValues.length !== this.params_.length) {
-      return;
-    }
+    const maskDescribesModel = allowedValues.length === this.params_.length;
     this.forEachTuple((ci, vi, combo, valueIndices) => {
-      const excluded = combo.some(
-        (pi, j) =>
-          allowedValues[pi].length !== this.params_[pi].size || !allowedValues[pi][valueIndices[j]],
-      );
+      const excluded =
+        !maskDescribesModel ||
+        combo.some(
+          (pi, j) =>
+            allowedValues[pi].length !== this.params_[pi].size ||
+            !allowedValues[pi][valueIndices[j]],
+        );
       const globalIndex = this.combinationOffsets_[ci] + vi;
       if (excluded && !this.covered_.test(globalIndex)) {
         this.covered_.set(globalIndex);

@@ -18,7 +18,7 @@ import {
   type SubModel as InternalSubModel,
   type WeightConfig as InternalWeightConfig,
 } from './model/generate-options.js';
-import { Parameter } from './model/parameter.js';
+import { Parameter, resolveValueName } from './model/parameter.js';
 import type { TestCase as InternalTestCase } from './model/test-case.js';
 import { type CoverageReport, validateCoverage } from './validator/coverage-validator.js';
 
@@ -138,7 +138,7 @@ function namedTestToInternal(namedTest: WasmTestCase, params: Parameter[]): Inte
   for (let i = 0; i < params.length; ++i) {
     const rawVal = namedTest[params[i].name];
     const strVal = toStringValue(rawVal);
-    const idx = params[i].findValueIndex(strVal);
+    const idx = resolveValueName(params[i], strVal);
     values[i] = idx;
   }
   return { values };

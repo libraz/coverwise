@@ -11,17 +11,17 @@ import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.j
 import { annotateConstraintError, parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode, type ErrorInfo, okError, surfaceErrorText } from '../model/error.js';
 import {
+  acceptOptions,
   createModelStats,
   ExtendMode,
-  expandBoundaries,
   type GenerateOptions,
   hasBoundaryConfigs,
   isWeightConfigEmpty,
   type ModelStats,
-  validateGenerateOptions,
+  optionsParameters,
   type WeightConfig,
 } from '../model/generate-options.js';
-import { hasInvalidValues, Parameter } from '../model/parameter.js';
+import { hasInvalidValues, type Parameter, resolveValueName } from '../model/parameter.js';
 import {
   createGenerateResult,
   type GenerateResult,
@@ -343,67 +343,35 @@ function resolveWeights(params: Parameter[], config: WeightConfig): number[][] {
     const paramWeights = Object.hasOwn(config.entries, params[pi].name)
       ? config.entries[params[pi].name]
       : undefined;
-    for (let vi = 0; vi < params[pi].size; ++vi) {
-      // Resolve by own-key presence (not getWeight's 1.0 sentinel) so an explicit
-      // weight of 1.0 is honored, a weight keyed by one of the value's aliases is
-      // not silently dropped to the default, and a parameter or value named after
-      // an Object.prototype member is not read as a configured weight.
-      let w = 1.0;
-      if (paramWeights !== undefined) {
-        const valueName = params[pi].values[vi];
-        let entry = Object.hasOwn(paramWeights, valueName) ? paramWeights[valueName] : undefined;
-        if (entry === undefined) {
-          for (const alias of params[pi].aliases(vi)) {
-            if (Object.hasOwn(paramWeights, alias)) {
-              entry = paramWeights[alias];
-              break;
-            }
-          }
-        }
-        if (entry !== undefined) {
-          w = entry;
-        }
+    resolved[pi].fill(1.0);
+    if (paramWeights === undefined) {
+      continue;
+    }
+    // Resolve the caller's keys rather than probing the map with each declared
+    // spelling: a weights key is a value name the caller wrote, so it names its
+    // value through resolveValueName -- by any ASCII case, and by an alias --
+    // which is the same reading the acceptance gate gave it. Object.entries
+    // yields own enumerable keys only, so a parameter or value named after an
+    // Object.prototype member is not read as a configured weight, and a key
+    // present with an explicit weight of 1.0 is honored rather than mistaken
+    // for the default.
+    const named = new Array<boolean>(params[pi].size).fill(false);
+    for (const [valueName, weight] of Object.entries(paramWeights)) {
+      const vi = resolveValueName(params[pi], valueName);
+      if (vi === UNASSIGNED) {
+        continue;
       }
-      resolved[pi][vi] = w;
+      // A value named by more than one key keeps the weight written under the
+      // spelling the model declares, as it did when that spelling was probed
+      // ahead of the aliases.
+      if (named[vi] && params[pi].values[vi] !== valueName) {
+        continue;
+      }
+      resolved[pi][vi] = weight;
+      named[vi] = true;
     }
   }
   return resolved;
-}
-
-/// Rebuild the Parameter objects an options object describes.
-///
-/// The aliases and equivalence classes carried on the options are restored here,
-/// before expansion: expansion regenerates a value set but carries per-value
-/// metadata across by value identity, so a retained value keeps its aliases and
-/// its class.
-function optionsParameters(opts: GenerateOptions): Parameter[] {
-  return opts.parameters.map((p) => {
-    const param = p.invalid
-      ? new Parameter(p.name, p.values, p.invalid)
-      : new Parameter(p.name, p.values);
-    if (p.aliases?.some((a) => a.length > 0)) {
-      param.setAliases(p.aliases);
-    }
-    if (p.equivalenceClasses?.some((c) => c.length > 0)) {
-      param.setEquivalenceClasses(p.equivalenceClasses);
-    }
-    return param;
-  });
-}
-
-/// Describe a Parameter in the shape an options object carries.
-function toParameterSpec(param: Parameter): GenerateOptions['parameters'][number] {
-  const spec: GenerateOptions['parameters'][number] = { name: param.name, values: param.values };
-  if (param.invalid.length > 0) {
-    spec.invalid = param.invalid;
-  }
-  if (param.hasAliases) {
-    spec.aliases = param.allAliases;
-  }
-  if (param.hasEquivalenceClasses) {
-    spec.equivalenceClasses = param.equivalenceClasses;
-  }
-  return spec;
 }
 
 /// Move recorded row value indices onto the expanded value space.
@@ -426,7 +394,11 @@ function remapSeedValueIndices(
         continue;
       }
       const oldValue = declared[pi].values[oldIndex];
-      let newIndex = expanded[pi].findValueIndex(oldValue);
+      // Byte equality, not resolveValueName: the name being looked up is the
+      // declared value itself, carried across expansion, not text a caller
+      // wrote, so the only match that means "this is the same value" is the
+      // exact one.
+      let newIndex = expanded[pi].findValueIndex(oldValue, true);
       // Numeric identity is decided by the shared decimal grammar, never by
       // Number()'s coercion: coercion also accepts leading whitespace, hex and
       // the empty string, so a row would be remapped here that the C++ core,
@@ -485,36 +457,28 @@ class EngineInput {
 
   /// Submit options to the acceptance gate and mint the engine's only input.
   ///
-  /// Expansion runs first so every later rule is applied to the value space the
-  /// engine will use. Judging the declared values instead would, for instance,
-  /// reject a weight naming a value expansion is about to supply. Mirrors
-  /// model::AcceptOptions followed by core::AcceptEngineInput in the C++ core,
-  /// so both ports answer any given options with the same code.
+  /// The gate itself is model::acceptOptions, so every rule about what an
+  /// options object may contain is stated once and this path adds nothing to
+  /// it. Rows are addressed by index into the value list the caller declared, so
+  /// what is left here is moving them onto the value space the gate accepted.
+  /// Mirrors core::AcceptEngineInput in the C++ core, so both ports answer any
+  /// given options with the same code.
   static accept(
     options: GenerateOptions,
     preservedSeedCount: number,
   ): { input: EngineInput | null; error: ErrorInfo } {
-    const declared = optionsParameters(options);
-    const expansion = expandBoundaries(declared, options.boundaryConfigs);
-    if (expansion.error.code !== ErrorCode.Ok) {
-      return { input: null, error: expansion.error };
+    const gate = acceptOptions(options);
+    if (gate.error.code !== ErrorCode.Ok) {
+      return { input: null, error: gate.error };
     }
-    const accepted: GenerateOptions = {
-      ...options,
-      parameters: expansion.params.map(toParameterSpec),
-      boundaryConfigs: {},
-    };
-    const validationError = validateGenerateOptions(accepted);
-    if (validationError.code !== ErrorCode.Ok) {
-      return { input: null, error: validationError };
-    }
+    const accepted = gate.options;
     // Only expansion can move a value's index, so the rows are rebuilt for that
     // case alone; otherwise they already address the value space in hand.
     accepted.seeds = hasBoundaryConfigs(options)
-      ? remapSeedValueIndices(declared, expansion.params, options.seeds)
+      ? remapSeedValueIndices(optionsParameters(options), gate.params, options.seeds)
       : options.seeds.map((seed) => ({ values: [...seed.values], unresolved: seed.unresolved }));
     return {
-      input: new EngineInput({ options: accepted, params: expansion.params, preservedSeedCount }),
+      input: new EngineInput({ options: accepted, params: gate.params, preservedSeedCount }),
       error: okError(),
     };
   }

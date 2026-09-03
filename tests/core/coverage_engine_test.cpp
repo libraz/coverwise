@@ -4,9 +4,11 @@
 
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "model/constraint_ast.h"
+#include "model/constraint_parser.h"
 #include "model/parameter.h"
 #include "support/allocation_counter.h"
 
@@ -282,6 +284,49 @@ TEST(CoverageEngineTest, DuplicateTestCaseNoop) {
 
   engine.AddTestCase(TestCase{{0, 0}});
   EXPECT_EQ(engine.CoveredCount(), 1u);  // No change
+}
+
+TEST(CoverageEngineTest, ExcludeTuplesOutsideMaskKeepsOnlyTheAllowedValues) {
+  // 3 binary parameters at strength 2: C(3,2) = 3 combinations x 4 value pairs.
+  const std::vector<Parameter> params = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
+  };
+  auto [engine, err] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(err.ok());
+  ASSERT_EQ(engine.TotalTuples(), 12u);
+
+  engine.ExcludeTuplesOutsideMask({{true, false}, {true, true}, {true, true}});
+
+  // A=1 is disallowed, which removes half of the (A,B) and (A,C) tuples.
+  EXPECT_EQ(engine.TotalTuples(), 8u);
+}
+
+TEST(CoverageEngineTest, MaskThatDoesNotDescribeTheModelExcludesEverything) {
+  // A mask the engine cannot read must not leave the caller holding a tuple set
+  // it believes was filtered. Both ways of failing to describe the model — a
+  // different number of rows than there are parameters, and a row whose length
+  // differs from its parameter's domain — have to refuse in the same direction.
+  const std::vector<Parameter> params = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+      {"C", {"0", "1"}, {}},
+  };
+
+  auto [outer, outer_err] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(outer_err.ok());
+  ASSERT_EQ(outer.TotalTuples(), 12u);
+  outer.ExcludeTuplesOutsideMask({{true, true}, {true, true}});
+  EXPECT_EQ(outer.TotalTuples(), 0u);
+  EXPECT_TRUE(outer.IsComplete());
+
+  auto [inner, inner_err] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(inner_err.ok());
+  ASSERT_EQ(inner.TotalTuples(), 12u);
+  inner.ExcludeTuplesOutsideMask({{true, true, true}, {true, true, true}, {true, true, true}});
+  EXPECT_EQ(inner.TotalTuples(), 0u);
+  EXPECT_TRUE(inner.IsComplete());
 }
 
 TEST(CoverageEngineTest, TupleExplosionOverflowUint32) {
@@ -622,6 +667,69 @@ TEST(CoverageEngineDiagnosticTest, ReadingUncoveredTuplesCostsTheDiagnosticBudge
   EXPECT_EQ(smaller.listed, coverwise::model::kMaxDiagnosticTuples);
   EXPECT_EQ(larger.listed, smaller.listed);
   EXPECT_EQ(larger.list_allocations, smaller.list_allocations);
+}
+
+namespace {
+
+/// @brief What one constraint-exclusion sweep cost and what it decided.
+struct SweepCost {
+  uint64_t tuples = 0;       ///< Tuples the sweep classified.
+  uint64_t excluded = 0;     ///< Tuples the sweep found infeasible.
+  uint64_t allocations = 0;  ///< Allocations made by the sweep.
+};
+
+/// @brief Sweep a model of ten parameters with @p values_per_param values each.
+///
+/// The parameter count -- and with it the search depth and every buffer sized by
+/// it -- is fixed; only the number of tuples to classify changes.
+SweepCost MeasureSweepCost(uint32_t values_per_param) {
+  std::vector<Parameter> params;
+  for (uint32_t pi = 0; pi < 10; ++pi) {
+    std::vector<std::string> values;
+    for (uint32_t vi = 0; vi < values_per_param; ++vi) {
+      values.push_back(std::to_string(vi));
+    }
+    params.push_back({"p" + std::to_string(pi), values, {}});
+  }
+  auto created = CoverageEngine::Create(params, 2);
+  EXPECT_TRUE(created.second.ok());
+  CoverageEngine& engine = created.first;
+
+  std::vector<coverwise::model::Constraint> constraints;
+  auto parse = coverwise::model::ParseConstraint("IF p0=\"0\" THEN p1=\"0\"", params);
+  EXPECT_TRUE(parse.error.ok()) << parse.error.message << ": " << parse.error.detail;
+  constraints.push_back(std::move(parse.constraint));
+
+  SweepCost cost;
+  cost.tuples = engine.TotalTuples();
+  bool budget_exceeded = false;
+  {
+    AllocationCounter counter;
+    engine.ExcludeInvalidTuples(constraints, {}, &budget_exceeded);
+    cost.allocations = counter.Stop();
+  }
+  EXPECT_FALSE(budget_exceeded);
+  // Excluded tuples leave the universe, so the drop in the enumerable total is
+  // how many the sweep decided were infeasible.
+  cost.excluded = cost.tuples - engine.TotalTuples();
+  return cost;
+}
+
+}  // namespace
+
+// One sweep completes one feasibility search per tuple, and every buffer those
+// searches need is sized by the model rather than by the tuple it is deciding.
+// So the sweep's cost in allocations is a property of the model: the wider model
+// below classifies four times as many tuples for the same price.
+TEST(CoverageEngineConstraintTest, TheExclusionSweepDoesNotAllocatePerTuple) {
+  const SweepCost narrower = MeasureSweepCost(4);
+  const SweepCost wider = MeasureSweepCost(8);
+
+  ASSERT_GT(wider.tuples, narrower.tuples * 3);
+  ASSERT_GT(narrower.excluded, 0u);
+  ASSERT_GT(wider.excluded, narrower.excluded);
+
+  EXPECT_EQ(wider.allocations, narrower.allocations);
 }
 
 // The overlap decision between two engines is answered on plain indices, and it

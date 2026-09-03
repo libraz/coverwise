@@ -30,6 +30,23 @@ export function createSolveBudget(): SolveBudget {
 
 export type SolveParameterOrder = readonly number[];
 
+/**
+ * Reusable frame storage for a feasibility search.
+ *
+ * Levels are kept flat -- three numbers per level, `[param, value,
+ * nextPosition]` -- so descending a level costs no frame object. The search
+ * depth is bounded by the parameter count, so one buffer sized for the model
+ * serves every search over it: a caller that solves many partial assignments,
+ * one per tuple for instance, owns a single stack and passes it in. A search
+ * only ever reads back what it wrote during that same search, so whatever a
+ * previous one left behind cannot change any result.
+ */
+export type SolveStack = number[];
+
+export function createSolveStack(): SolveStack {
+  return [];
+}
+
 function buildSolveParameterOrder(
   params: readonly Parameter[],
   allowedValues: readonly (readonly boolean[])[] | null,
@@ -93,6 +110,8 @@ function nextUsableValue(
  * enumeration order, budget accounting and assignment side effects: on success
  * `assignment` holds the witness, and on failure every parameter this search
  * assigned is restored to UNASSIGNED.
+ *
+ * `stack` is scratch owned by the caller; see SolveStack for its layout.
  */
 function search(
   params: readonly Parameter[],
@@ -102,9 +121,10 @@ function search(
   orderPosition: number,
   allowedValues: readonly (readonly boolean[])[] | null,
   budget: SolveBudget,
+  stack: SolveStack,
 ): boolean {
-  /** param: parameter assigned at this level; value: value currently tried. */
-  const stack: Array<{ param: number; value: number; nextPosition: number }> = [];
+  /** Levels in use; the slots beyond them hold whatever an earlier search left. */
+  let depth = 0;
   let position = orderPosition;
   let expand = true;
 
@@ -134,7 +154,11 @@ function search(
         if (vi < params[next].size) {
           assignment[next] = vi;
           ++position;
-          stack.push({ param: next, value: vi, nextPosition: position });
+          const base = depth * 3;
+          stack[base] = next;
+          stack[base + 1] = vi;
+          stack[base + 2] = position;
+          ++depth;
           expand = true;
           continue;
         }
@@ -143,22 +167,23 @@ function search(
 
     // Backtrack. An exhausted budget unwinds without trying further values, so
     // the caller sees an untouched assignment together with budget.exceeded.
-    const top = stack[stack.length - 1];
-    if (top === undefined) {
+    if (depth === 0) {
       return false;
     }
+    const base = (depth - 1) * 3;
+    const topParam = stack[base];
     const vi = budget.exceeded
-      ? params[top.param].size
-      : nextUsableValue(params, allowedValues, top.param, top.value + 1);
-    if (vi < params[top.param].size) {
-      top.value = vi;
-      assignment[top.param] = vi;
-      position = top.nextPosition;
+      ? params[topParam].size
+      : nextUsableValue(params, allowedValues, topParam, stack[base + 1] + 1);
+    if (vi < params[topParam].size) {
+      stack[base + 1] = vi;
+      assignment[topParam] = vi;
+      position = stack[base + 2];
       expand = true;
       continue;
     }
-    assignment[top.param] = UNASSIGNED;
-    stack.pop();
+    assignment[topParam] = UNASSIGNED;
+    --depth;
   }
 }
 
@@ -167,7 +192,9 @@ function search(
  *
  * The search is node-bounded (see SolveBudget). If `budget` is provided and the
  * budget is exhausted, `budget.exceeded` is set and the function returns null;
- * pass none to use a private default budget and ignore the signal.
+ * pass none to use a private default budget and ignore the signal. Pass `stack`
+ * to reuse one frame buffer across searches; leaving it out allocates a private
+ * one. The choice affects allocation only, never the outcome.
  */
 export function completeAssignment(
   params: readonly Parameter[],
@@ -176,6 +203,7 @@ export function completeAssignment(
   partial: TestCase,
   budget?: SolveBudget,
   parameterOrder?: SolveParameterOrder,
+  stack?: SolveStack,
 ): TestCase | null {
   if (
     allowedValues.length !== params.length ||
@@ -196,7 +224,7 @@ export function completeAssignment(
   }
   const b = budget ?? createSolveBudget();
   const order = parameterOrder ?? buildAllowedSolveParameterOrder(params, allowedValues);
-  return search(params, constraints, assignment, order, 0, allowedValues, b)
+  return search(params, constraints, assignment, order, 0, allowedValues, b, stack ?? [])
     ? { values: assignment }
     : null;
 }
@@ -211,6 +239,7 @@ export function completeValidAssignment(
   partial: TestCase,
   budget?: SolveBudget,
   parameterOrder?: SolveParameterOrder,
+  stack?: SolveStack,
 ): TestCase | null {
   const assignment = new Array<number>(params.length).fill(UNASSIGNED);
   for (let pi = 0; pi < params.length; ++pi) {
@@ -225,5 +254,7 @@ export function completeValidAssignment(
   }
   const b = budget ?? createSolveBudget();
   const order = parameterOrder ?? buildValidSolveParameterOrder(params);
-  return search(params, constraints, assignment, order, 0, null, b) ? { values: assignment } : null;
+  return search(params, constraints, assignment, order, 0, null, b, stack ?? [])
+    ? { values: assignment }
+    : null;
 }

@@ -2,8 +2,8 @@ import { BoundaryType } from '../model/boundary.js';
 import { parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode } from '../model/error.js';
 import type { GenerateOptions } from '../model/generate-options.js';
-import { createGenerateOptions } from '../model/generate-options.js';
-import { Parameter } from '../model/parameter.js';
+import { acceptOptions, createGenerateOptions } from '../model/generate-options.js';
+import { Parameter, resolveValueName } from '../model/parameter.js';
 import { type GenerateResult, UNASSIGNED } from '../model/test-case.js';
 import { MAX_DIAGNOSTIC_TUPLES } from '../model/tuning-limits.js';
 import { validateConstraintReport } from '../validator/constraint-validator.js';
@@ -399,20 +399,10 @@ describe('generate', () => {
       seed: 42,
     });
 
-    // Mark the third value of os as invalid.
-    // We need to create Parameter objects with invalid flags for the generator.
-    // The generator creates Parameters from opts.parameters, so we use boundary
-    // or rely on the Parameter constructor. Actually, the generator uses
-    // new Parameter(p.name, p.values) which doesn't set invalid flags.
-    // We need to look at how invalid values are set...
-    // Invalid values are set via the Parameter constructor's third argument.
-    // The generate function creates Parameters from opts.parameters which are
-    // plain objects, not Parameter instances. Let's check if there's another way.
-
-    // Actually, looking at applyBoundaryExpansion, the generator creates
-    // Parameter(p.name, p.values) with no invalid flag. Invalid values must
-    // come from boundary expansion. Let's test with a simpler approach:
-    // just verify that when no params have invalid values, negativeTests is empty.
+    // A value is invalid only when the option carries an `invalid` array: the
+    // generator passes those flags to the Parameter it builds and leaves every
+    // value valid otherwise. `INVALID_OS` is a name, not a flag, so the
+    // negative phase has nothing to generate from.
     const result = generate(opts);
     expect(result.negativeTests).toHaveLength(0); // No invalid values set via plain options.
     expect(result.coverage).toBe(1.0);
@@ -802,7 +792,7 @@ describe('boundary expansion', () => {
     );
 
     expect(result.error.code).toBe(ErrorCode.Ok);
-    const remapped = result.parameters[0].findValueIndex('50');
+    const remapped = resolveValueName(result.parameters[0], '50');
     expect(result.tests[0].values[0]).toBe(remapped);
     expect(result.parameters[0].values[result.tests[0].values[0]]).toBe('50');
   });
@@ -890,14 +880,14 @@ describe('boundary expansion', () => {
     // Expansion regenerates the value set around the range, and the spelled-out
     // value survives it carrying the metadata it was declared with.
     expect(n.values).toEqual(['3', '4', '5', '6', '7']);
-    const five = n.findValueIndex('5');
+    const five = resolveValueName(n, '5');
     expect(n.aliases(five)).toEqual(['five']);
     expect(n.equivalenceClass(five)).toBe('mid');
     // Values the range generated have no metadata of their own.
-    expect(n.aliases(n.findValueIndex('3'))).toEqual([]);
-    expect(n.equivalenceClass(n.findValueIndex('3'))).toBe('');
+    expect(n.aliases(resolveValueName(n, '3'))).toEqual([]);
+    expect(n.equivalenceClass(resolveValueName(n, '3'))).toBe('');
     // The alias still resolves, so a constraint written against it parses.
-    expect(n.findValueIndex('five')).toBe(five);
+    expect(resolveValueName(n, 'five')).toBe(five);
     expect(result.classCoverage).toBeDefined();
     expect(result.classCoverage?.totalClassTuples).toBeGreaterThan(0);
   });
@@ -1389,11 +1379,43 @@ describe('acceptance at the engine entry', () => {
     },
   ];
 
-  it('answers every entry point with the same code the C++ gate answers with', () => {
+  /// Every entry point's answer for one model, in a fixed order.
+  ///
+  /// All three reach the engine through one acceptance path, so what they say
+  /// about a model is one fact asked three ways. Collected before any of them is
+  /// judged, so a failure reports what every entry point answered rather than
+  /// stopping at the first one that differs.
+  function entryPointCodes(options: () => GenerateOptions): Record<string, ErrorCode> {
+    return {
+      generate: generate(options()).error.code,
+      estimateModel: estimateModel(options()).error.code,
+      extend: extend([], options()).error.code,
+    };
+  }
+
+  // Two assertions, because two different things can go wrong and the table is
+  // useless for deciding which if it cannot tell them apart.
+  //
+  // The derived one compares each entry point against an independent second
+  // call to the gate. Nothing here says what that call should return, so a rule
+  // that legitimately moves does not make it red; an entry point that stops
+  // routing through the gate does, and so does a second description of the
+  // composition drifting from the model's own.
+  //
+  // The stated one anchors the gate itself to the code each case is an example
+  // of. Without it a rule can move in the gate and in every entry point at once
+  // and the comparison above stays green — including a move that stops charging
+  // something, which is the fail-open direction. That is not hypothetical here:
+  // this table went green through a change that left one path accepting
+  // unbounded row text, and the row it caught it on is still here.
+  it('answers every entry point with the same code the model gate answers with', () => {
     for (const testCase of cases) {
-      expect(generate(testCase.options()).error.code, testCase.name).toBe(testCase.expected);
-      expect(estimateModel(testCase.options()).error.code, testCase.name).toBe(testCase.expected);
-      expect(extend([], testCase.options()).error.code, testCase.name).toBe(testCase.expected);
+      const gate = acceptOptions(testCase.options()).error.code;
+      expect(gate, testCase.name).toBe(testCase.expected);
+      const codes = entryPointCodes(testCase.options);
+      for (const [entryPoint, code] of Object.entries(codes)) {
+        expect(code, `${testCase.name}: ${entryPoint}: ${JSON.stringify(codes)}`).toBe(gate);
+      }
     }
   });
 });

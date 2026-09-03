@@ -469,17 +469,17 @@ TEST(GeneratorTest, BoundaryExpansionKeepsPerValueMetadata) {
   ASSERT_TRUE(result.error.ok()) << result.error.message;
   const auto& expanded = result.parameters[0];
   EXPECT_EQ(expanded.values, (std::vector<std::string>{"3", "4", "5", "6", "7"}));
-  const uint32_t five = expanded.find_value_index("5");
+  const uint32_t five = coverwise::model::ResolveValueName(expanded, "5");
   ASSERT_NE(five, coverwise::model::kUnassigned);
   EXPECT_EQ(expanded.aliases(five), (std::vector<std::string>{"five"}));
   EXPECT_EQ(expanded.equivalence_class(five), "mid");
   // Values the range generated have no metadata of their own.
-  const uint32_t three = expanded.find_value_index("3");
+  const uint32_t three = coverwise::model::ResolveValueName(expanded, "3");
   ASSERT_NE(three, coverwise::model::kUnassigned);
   EXPECT_TRUE(expanded.aliases(three).empty());
   EXPECT_TRUE(expanded.equivalence_class(three).empty());
   // The alias still resolves, so a constraint written against it parses.
-  EXPECT_EQ(expanded.find_value_index("five"), five);
+  EXPECT_EQ(coverwise::model::ResolveValueName(expanded, "five"), five);
   ASSERT_TRUE(result.class_coverage.has_value());
   EXPECT_GT(result.class_coverage->total_class_tuples, 0u);
 }
@@ -1596,7 +1596,8 @@ using coverwise::model::Error;
 
 /// @brief The code the model gate answers with for these options.
 Error::Code GateCode(GenerateOptions options) {
-  auto accepted = coverwise::model::AcceptOptions(std::move(options));
+  auto accepted =
+      coverwise::model::AcceptOptions(std::move(options), coverwise::model::ChargedText::None());
   return accepted.ok() ? Error::Code::kOk : accepted.error().code;
 }
 
@@ -1627,22 +1628,47 @@ TEST(GeneratorAcceptanceTest, WeightsMayNameAValueExpansionProduces) {
   EXPECT_FALSE(result.tests.empty());
 }
 
+/// @brief One model, and the code the gate is supposed to answer with for it.
+struct AcceptanceCase {
+  std::string name;
+  Error::Code expected;
+  GenerateOptions options;
+};
+
 // Every entry point of the engine answers with the code the model gate answers
 // with for the same options: acceptance is decided in one place, not once per
 // entry point.
+//
+// Two assertions per row, because two different things can go wrong and one
+// assertion cannot tell them apart.
+//
+// The derived one compares each entry point against an independent second call
+// to the gate. Nothing here says what that call should return, so a rule that
+// legitimately moves does not make it red, and an entry point that stops
+// routing through the gate does.
+//
+// The stated one anchors the gate itself to the code each row is an example of.
+// Without it a rule can move in both the gate and the entry points at once and
+// every comparison above stays green — including a move that stops charging
+// something, which is the fail-open direction. That is not hypothetical here:
+// this table went green through a change that left one path accepting unbounded
+// row text, and the anchor is what its TypeScript twin caught it with.
 TEST(GeneratorAcceptanceTest, EveryEntryPointReturnsTheModelGateCode) {
-  std::vector<std::pair<std::string, GenerateOptions>> cases;
-  cases.emplace_back("weights on a generated boundary value", BoundaryWeightModel());
+  std::vector<AcceptanceCase> cases;
+  cases.push_back(
+      {"weights on a generated boundary value", Error::Code::kOk, BoundaryWeightModel()});
 
   {
     auto opts = BoundaryWeightModel();
     opts.weights.entries["age"]["not a value"] = 2.0;
-    cases.emplace_back("weights on a value nothing produces", std::move(opts));
+    cases.push_back(
+        {"weights on a value nothing produces", Error::Code::kInvalidInput, std::move(opts)});
   }
   {
     auto opts = BoundaryWeightModel();
     opts.boundary_configs["age"].step = 5.0;
-    cases.emplace_back("integer boundary with a step other than one", std::move(opts));
+    cases.push_back({"integer boundary with a step other than one", Error::Code::kInvalidInput,
+                     std::move(opts)});
   }
   {
     // The declared value is an invalid sentinel and the range supplies the rest.
@@ -1650,7 +1676,8 @@ TEST(GeneratorAcceptanceTest, EveryEntryPointReturnsTheModelGateCode) {
     opts.parameters = {Parameter("age", {"999"}, {true}), Parameter("plan", {"free", "pro"})};
     opts.boundary_configs["age"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 0.0, 10.0, 1.0};
     opts.strength = 2;
-    cases.emplace_back("boundary parameter declaring only an invalid value", std::move(opts));
+    cases.push_back(
+        {"boundary parameter declaring only an invalid value", Error::Code::kOk, std::move(opts)});
   }
   {
     // The metadata length disagrees with the declared values, which expansion
@@ -1659,7 +1686,8 @@ TEST(GeneratorAcceptanceTest, EveryEntryPointReturnsTheModelGateCode) {
     opts.parameters = {Parameter("n", {"5"}, {true, false}), Parameter("plan", {"free", "pro"})};
     opts.boundary_configs["n"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
     opts.strength = 2;
-    cases.emplace_back("boundary parameter with mismatched metadata", std::move(opts));
+    cases.push_back({"boundary parameter with mismatched metadata", Error::Code::kInvalidInput,
+                     std::move(opts)});
   }
   {
     // '5' is unambiguous before expansion and collides with a generated value
@@ -1670,7 +1698,8 @@ TEST(GeneratorAcceptanceTest, EveryEntryPointReturnsTheModelGateCode) {
     opts.parameters = {n, Parameter("os", {"win", "mac"})};
     opts.boundary_configs["n"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
     opts.strength = 2;
-    cases.emplace_back("alias that only expansion makes ambiguous", std::move(opts));
+    cases.push_back(
+        {"alias that only expansion makes ambiguous", Error::Code::kInvalidInput, std::move(opts)});
   }
   {
     GenerateOptions opts;
@@ -1680,17 +1709,19 @@ TEST(GeneratorAcceptanceTest, EveryEntryPointReturnsTheModelGateCode) {
     }
     opts.parameters = {Parameter("wide", std::move(values)), Parameter("plan", {"free", "pro"})};
     opts.strength = 2;
-    cases.emplace_back("string data beyond the aggregate budget", std::move(opts));
+    cases.push_back(
+        {"string data beyond the aggregate budget", Error::Code::kInvalidInput, std::move(opts)});
   }
   {
     auto opts = BoundaryWeightModel();
     opts.strength = 0;
-    cases.emplace_back("strength below one", std::move(opts));
+    cases.push_back({"strength below one", Error::Code::kInvalidInput, std::move(opts)});
   }
   {
     auto opts = BoundaryWeightModel();
     opts.sub_models.push_back(SubModel{{"nonexistent"}, 1});
-    cases.emplace_back("sub-model naming an unknown parameter", std::move(opts));
+    cases.push_back(
+        {"sub-model naming an unknown parameter", Error::Code::kInvalidInput, std::move(opts)});
   }
   {
     // The range would supply the values, but per-value metadata has nothing to
@@ -1701,8 +1732,8 @@ TEST(GeneratorAcceptanceTest, EveryEntryPointReturnsTheModelGateCode) {
     opts.parameters = {n, Parameter("plan", {"free", "pro"})};
     opts.boundary_configs["n"] = BoundaryConfig{BoundaryConfig::Type::kInteger, 0.0, 10.0, 1.0};
     opts.strength = 2;
-    cases.emplace_back("boundary parameter carrying metadata but no declared values",
-                       std::move(opts));
+    cases.push_back({"boundary parameter carrying metadata but no declared values",
+                     Error::Code::kInvalidInput, std::move(opts)});
   }
   {
     // Within the maximum as declared, past it once expansion has run.
@@ -1713,8 +1744,8 @@ TEST(GeneratorAcceptanceTest, EveryEntryPointReturnsTheModelGateCode) {
     opts.boundary_configs["n"] =
         BoundaryConfig{BoundaryConfig::Type::kInteger, 100000.0, 100001.0, 1.0};
     opts.strength = 2;
-    cases.emplace_back("expansion pushing the value count past the per-parameter maximum",
-                       std::move(opts));
+    cases.push_back({"expansion pushing the value count past the per-parameter maximum",
+                     Error::Code::kInvalidInput, std::move(opts)});
   }
   {
     // A row's members reach the engine as indices, but a member that did not
@@ -1728,12 +1759,14 @@ TEST(GeneratorAcceptanceTest, EveryEntryPointReturnsTheModelGateCode) {
       recorded.unresolved = {std::string(60 * 1024, 'x'), std::string(60 * 1024, 'y')};
       opts.seeds.push_back(std::move(recorded));
     }
-    cases.emplace_back("recorded-row text beyond the aggregate budget", std::move(opts));
+    cases.push_back({"recorded-row text beyond the aggregate budget", Error::Code::kInvalidInput,
+                     std::move(opts)});
   }
 
   const std::vector<TestCase> no_existing;
-  for (const auto& [name, opts] : cases) {
+  for (const auto& [name, expected, opts] : cases) {
     const Error::Code gate = GateCode(opts);
+    EXPECT_EQ(gate, expected) << name;
     EXPECT_EQ(Generate(opts).error.code, gate) << name;
     EXPECT_EQ(EstimateModel(opts).error.code, gate) << name;
     EXPECT_EQ(Extend(no_existing, opts, ExtendMode::kStrict).error.code, gate) << name;
@@ -1770,7 +1803,7 @@ TEST(GeneratorAcceptanceTest, SeedRowsAddressTheDeclaredValueSpace) {
   auto result = Generate(opts);
 
   ASSERT_TRUE(result.error.ok()) << result.error.message;
-  const uint32_t five = result.parameters[0].find_value_index("5");
+  const uint32_t five = coverwise::model::ResolveValueName(result.parameters[0], "5");
   ASSERT_NE(five, coverwise::model::kUnassigned);
   ASSERT_FALSE(result.tests.empty());
   EXPECT_EQ(result.tests[0].values[0], five);
