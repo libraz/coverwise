@@ -385,6 +385,15 @@ name once ASCII case is folded. Listing `Chrome` as both a value and an alias of
 `3`, because case-insensitive lookup would have no single answer. The same rule
 applies across parameter names.
 
+Case-insensitive lookup is what resolves every value name you write: a value in
+a `seeds`, `tests` or `existing` row, a `weights` key, and a constraint operand
+all reach the same value whichever ASCII case they are spelled in, and whether
+they name the value or one of its aliases. Two `weights` keys of one parameter
+may not name the same value — only one of the two weights could apply — unless
+one of them is spelled exactly as the model declares that value, which settles
+it. `{"Windows": 5, "wINdows": 9}` is accepted and weights `Windows` by `5`;
+`{"wINdows": 5, "WINDOWS": 9}` is exit code `3`.
+
 ## Input Limits
 
 Every command applies the same limits to what it reads, and exceeding any of them is exit code `3`:

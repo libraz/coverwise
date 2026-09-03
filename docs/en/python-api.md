@@ -68,6 +68,25 @@ A mapping entry always holds a list, even for one value: `{"env": "prod"}` is
 rejected with a `TypeError` rather than read as the four values `p`, `r`, `o`,
 `d`. Write `{"env": ["prod"]}`.
 
+A `set` or `frozenset` is refused wherever a value list belongs, with a
+`TypeError` naming the fix. Iterating a set depends on `PYTHONHASHSEED` and on
+insertion history, so the same call would describe a different model on every
+run and break the determinism the rest of the API guarantees:
+
+```python
+coverwise.generate(parameters={"os": {"win", "mac"}})            # TypeError
+coverwise.generate(parameters={"os": sorted({"win", "mac"})})    # fine
+coverwise.generate(parameters={"os": list(some_set)})            # fine
+```
+
+Containers that iterate in insertion order are reproducible and are accepted, so
+`dict.keys()` and `dict.items()` can be passed as-is — what disqualifies a
+container is its order, not the protocol it satisfies. The rule applies to both
+`parameters` forms and to any other place a container reaches a model, including
+`constraints`, `seeds` and test rows, and it is the same rule in the same words
+for `generate`, `extend_tests`, `estimate_model`, `analyze_coverage` and
+`parametrize`.
+
 Model fields can be passed as keyword arguments, as a single mapping, or both —
 keyword arguments override the mapping, which makes a stored model easy to reuse:
 

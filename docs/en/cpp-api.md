@@ -16,6 +16,23 @@ that runs before acceptance, so a boundary parameter is judged by the values it
 expands to rather than by the range it was written as. Embedding the library
 does not put you on a looser contract than calling `coverwise` from a shell.
 
+One thing is charged rather than declared, and it is worth knowing before you
+compare a library run to a command-line one. The documented byte budgets count
+the text a caller supplied, once, wherever it was counted. The gate charges what
+a `GenerateOptions` carries as text — parameter names and values, aliases,
+equivalence classes, constraint expressions, sub-model parameter names, and the
+parameter and value names a weight is keyed by. It charges the text of a row
+position as well, unless a surface counted the rows before the options were
+built and said so; the command line and the WebAssembly binding do exactly that,
+which is why the same row is never charged twice.
+
+Building rows in C++ means supplying value indices rather than value names, and
+an index is not text. A suite of resolved rows therefore costs nothing here,
+while the same suite written as JSON is charged for every string value in every
+row — so a large suite can be accepted by the library and refused by `coverwise`
+on the command line. That is the only respect in which the two differ. Text you
+do put in a row's `unresolved` entries is charged like any other input string.
+
 ### `coverwise::core::Generate`
 
 Generate a covering test suite for the requested model.
@@ -183,23 +200,35 @@ struct Parameter {
   // Lookup.
   uint32_t find_value_index(
     const std::string& name,
-    bool case_sensitive = true
+    bool case_sensitive
   ) const;  // UINT32_MAX when not found.
 };
+
+uint32_t ResolveValueName(
+  const Parameter& parameter,
+  const std::string& name
+);  // UINT32_MAX when not found.
 
 bool HasInvalidValues(const std::vector<Parameter>& parameters);
 Error ValidateParameters(const std::vector<Parameter>& parameters);
 ```
 
 The `invalid`, alias, and equivalence-class vectors are per-value metadata:
-when present, each must have the same length as `values`. `find_value_index`
-also searches aliases. `ValidateParameters` rejects empty or duplicate parameter
-names, parameter names that differ only by ASCII case, parameters with no values,
-duplicate values within a parameter, values or aliases of one parameter that are
-ambiguous once ASCII case is folded, and malformed metadata. The two case-folding
-rules follow from case-insensitive lookup: `find_value_index` with
-`case_sensitive = false` and the constraint parser must each have a single answer
-for a given name.
+when present, each must have the same length as `values`. Both lookups also
+search aliases.
+
+`ResolveValueName` is the entry point for a value name a caller wrote — a seed,
+a `tests` or `existing` row, a weights key, a constraint operand. It folds ASCII
+case, so a name is resolved the same way whichever of those it arrived through.
+`find_value_index` is the primitive underneath it and takes no default match
+policy, so a caller that wants byte equality has to ask for it.
+
+`ValidateParameters` rejects empty or duplicate parameter names, parameter names
+that differ only by ASCII case, parameters with no values, duplicate values
+within a parameter, values or aliases of one parameter that are ambiguous once
+ASCII case is folded, and malformed metadata. The two case-folding rules follow
+from case-insensitive lookup: `ResolveValueName` and the constraint parser must
+each have a single answer for a given name.
 
 ### `model::BoundaryConfig`
 

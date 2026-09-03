@@ -51,6 +51,16 @@ coverwise.generate(
 
 mapping の値は、1 個であっても必ず list で書きます。`{"env": "prod"}` は `p`・`r`・`o`・`d` の 4 値としてではなく `TypeError` として拒否されるので、`{"env": ["prod"]}` と書いてください。
 
+値の list が来るべき場所に `set` や `frozenset` を渡すと、書き直し方を示す `TypeError` で拒否されます。set の反復順は `PYTHONHASHSEED` と挿入履歴に依存するため、同じ呼び出しが実行のたびに違うモデルを表すことになり、この API の他の部分が保証している決定性が崩れるからです。
+
+```python
+coverwise.generate(parameters={"os": {"win", "mac"}})            # TypeError
+coverwise.generate(parameters={"os": sorted({"win", "mac"})})    # OK
+coverwise.generate(parameters={"os": list(some_set)})            # OK
+```
+
+挿入順で反復するコンテナは再現可能なので受け付けます。`dict.keys()` や `dict.items()` はそのまま渡せます。失格の理由はコンテナが満たすプロトコルではなく、順序が定まらないことです。この規則は `parameters` の 2 形式の両方に適用され、`constraints`・`seeds`・テスト行など、コンテナがモデルに入り込む他の場所でも同じです。`generate`・`extend_tests`・`estimate_model`・`analyze_coverage`・`parametrize` のいずれでも、同じ規則が同じ文面で適用されます。
+
 モデルのフィールドは keyword 引数でも、1 つの mapping でも、両方の併用でも渡せます。keyword 引数が mapping を上書きするため、保存済みモデルの再利用が簡単になります。
 
 ```python

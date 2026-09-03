@@ -352,9 +352,9 @@ same inputs, with the same messages. It throws descriptive errors for:
 - `seed`: Must be a uint32 integer in `[0, 4294967295]`.
 - `maxTests`: Must be a uint32 integer in `[0, 4294967295]`; `0` means no limit.
 - `parameters`: Must be a non-empty array.
-- Parameter names: Must be unique, and must stay unique once ASCII case is folded — `os` and `OS` cannot coexist.
-- Values and aliases: Within one parameter, the values and all of their aliases must remain distinct once ASCII case is folded. Both rules exist because value lookup is case-insensitive, so a case-only difference would leave `os = WINDOWS` without a single answer.
-- `weights`: Each weight must be a finite number greater than `0`.
+- Parameter names: Must be unique, and must stay unique once ASCII case is folded — `os` and `OS` cannot coexist. The folding half of that rule exists because a constraint resolves the parameter it names case-insensitively, so a case-only difference would leave `OS = Windows` pointing at two parameters.
+- Values and aliases: Within one parameter, the values and all of their aliases must remain distinct once ASCII case is folded. This rule exists because value lookup is case-insensitive, so a case-only difference would leave `os = WINDOWS` without a single answer.
+- `weights`: Each weight must be a finite number greater than `0`. A weights key names its value the same way a row does, so any ASCII case of the value or of one of its aliases works. Two keys of one parameter may not name the same value, since only one of the two weights could apply — unless one of them is spelled exactly as the model declares that value, which settles it and is what lets a weight keyed by an alias sit beside one keyed by the value itself.
 - Resource limits apply to public input: at most 1,024 parameters, 16,384 values per parameter, 100,000 test rows, 256 constraints, 64 KiB per string, and 1 MiB of aggregate string data.
 
 ### The aggregate budget binds before the row ceiling
