@@ -1166,17 +1166,17 @@ TEST(IntegrationTest, AliasingNoEffect) {
 }
 
 TEST(IntegrationTest, AliasingFindValueIndex) {
-  // Test that find_value_index resolves both primary values and aliases.
+  // Test that value resolution reaches both primary values and aliases.
   Parameter browser("browser", {"chromium", "firefox", "safari"});
   browser.set_aliases({{"chrome", "edge", "brave"}, {}, {}});
 
-  EXPECT_EQ(browser.find_value_index("chromium"), 0u);
-  EXPECT_EQ(browser.find_value_index("chrome"), 0u);
-  EXPECT_EQ(browser.find_value_index("edge"), 0u);
-  EXPECT_EQ(browser.find_value_index("brave"), 0u);
-  EXPECT_EQ(browser.find_value_index("firefox"), 1u);
-  EXPECT_EQ(browser.find_value_index("safari"), 2u);
-  EXPECT_EQ(browser.find_value_index("opera"), UINT32_MAX);
+  EXPECT_EQ(ResolveValueName(browser, "chromium"), 0u);
+  EXPECT_EQ(ResolveValueName(browser, "chrome"), 0u);
+  EXPECT_EQ(ResolveValueName(browser, "edge"), 0u);
+  EXPECT_EQ(ResolveValueName(browser, "brave"), 0u);
+  EXPECT_EQ(ResolveValueName(browser, "firefox"), 1u);
+  EXPECT_EQ(ResolveValueName(browser, "safari"), 2u);
+  EXPECT_EQ(ResolveValueName(browser, "opera"), UINT32_MAX);
 }
 
 // ---------------------------------------------------------------------------

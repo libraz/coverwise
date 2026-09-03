@@ -16,6 +16,7 @@
 #include "model/options_validation.h"
 #include "model/parameter.h"
 #include "model/surface_error.h"
+#include "model/test_case.h"
 
 // Path to the built coverwise CLI binary, injected by CMake.
 #ifndef COVERWISE_CLI_PATH
@@ -884,7 +885,9 @@ TEST(CliStdinTest, EmptyStandardInputIsReportedAsEmpty) {
 }
 
 // A single string beyond the documented per-string budget is rejected, from a
-// file and from standard input alike.
+// file and from standard input alike — and it is named. A reader that knows
+// only that it is inside some string can say the limit but not which string met
+// it, which in a document with thousands of them is not an answer.
 TEST(CliInputBudgetTest, OversizedSingleStringIsRejectedFromEitherSource) {
   std::string oversized = R"({"parameters":[{"name":"a","values":[")";
   oversized.append(coverwise::model::kMaxStringBytes + 1, 'x');
@@ -892,15 +895,42 @@ TEST(CliInputBudgetTest, OversizedSingleStringIsRejectedFromEitherSource) {
   const std::string path = TempPath("oversized_string.json");
   WriteFile(path, oversized);
 
+  const std::string expected =
+      coverwise::model::StringBudgetExceededMessage(coverwise::model::ChargedStringContext(
+          coverwise::model::ChargedString::kParameterValue, {"a", 0}));
+
   const auto from_file = RunCliCaptureStderr("generate " + path);
   EXPECT_EQ(from_file.exit_code, 3) << from_file.stdout_text;
-  EXPECT_NE(from_file.stdout_text.find("string exceeds"), std::string::npos)
-      << from_file.stdout_text;
+  EXPECT_NE(from_file.stdout_text.find(expected), std::string::npos) << from_file.stdout_text;
 
   const auto from_stdin = RunCliCaptureStderr("generate - < " + path);
   EXPECT_EQ(from_stdin.exit_code, 3) << from_stdin.stdout_text;
-  EXPECT_NE(from_stdin.stdout_text.find("string exceeds"), std::string::npos)
-      << from_stdin.stdout_text;
+  EXPECT_NE(from_stdin.stdout_text.find(expected), std::string::npos) << from_stdin.stdout_text;
+}
+
+// A row value over the per-string limit names the array and the row it sits in,
+// in the same wording the gate uses for a model string. The reader is a
+// different layer, but the limit is the same limit and has one sentence.
+TEST(CliInputBudgetTest, OversizedRowValueNamesTheRowItCameFrom) {
+  const std::string params_path = TempPath("oversized_row_params.json");
+  WriteFile(params_path, R"({"parameters":[{"name":"a","values":["x","y"]},)"
+                         R"({"name":"b","values":["1","2"]}]})");
+
+  std::string suite = R"([{"a":"x","b":"1"},{"a":")";
+  suite.append(coverwise::model::kMaxStringBytes + 1, 'x');
+  suite += R"(","b":"1"}])";
+  const std::string rows_path = TempPath("oversized_row_rows.json");
+  WriteFile(rows_path, suite);
+
+  const std::string expected =
+      coverwise::model::StringBudgetExceededMessage(coverwise::model::ChargedStringContext(
+          coverwise::model::ChargedString::kRowValue, {"tests", 1}));
+
+  const auto result =
+      RunCliCaptureStderr("analyze --params " + params_path + " --tests " + rows_path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text.substr(0, 200);
+  EXPECT_NE(result.stdout_text.find(expected), std::string::npos)
+      << result.stdout_text.substr(0, 200);
 }
 
 // The budget that bounds a whole document is the aggregate string budget, the
@@ -968,6 +998,17 @@ coverwise::model::GenerateOptions WideModel(size_t count, size_t bytes) {
 /// surfaces compare against the same wording, so a change to it fails on both
 /// sides at once instead of separating them.
 std::string AggregateBudgetRefusal() { return coverwise::model::AggregateBudgetExceededMessage(); }
+
+/// @brief A surface's reading of @p bytes of caller text, as the gate takes it.
+///
+/// The gate takes a total rather than a number so that no call path can supply
+/// one without saying where it came from; a test standing in for a surface says
+/// so here rather than reaching past the reader.
+coverwise::model::ChargedText Charged(size_t bytes) {
+  coverwise::model::ChargedTextReader reader;
+  reader.Charge(bytes);
+  return reader.total();
+}
 
 }  // namespace
 
@@ -1061,9 +1102,11 @@ TEST(CliInputBudgetTest, ModelStringsAndRowTextShareOneBudgetOnEverySurface) {
 
   // The embedding surface: the gate itself, told how much row text the caller
   // read. A tiny model stands in for "no model text worth counting".
-  EXPECT_TRUE(coverwise::model::AcceptOptions(WideModel(cells, cell_bytes)).ok());
-  EXPECT_TRUE(coverwise::model::AcceptOptions(WideModel(2, 8), row_bytes).ok());
-  auto refused = coverwise::model::AcceptOptions(WideModel(cells, cell_bytes), row_bytes);
+  EXPECT_TRUE(coverwise::model::AcceptOptions(WideModel(cells, cell_bytes),
+                                              coverwise::model::ChargedText::None())
+                  .ok());
+  EXPECT_TRUE(coverwise::model::AcceptOptions(WideModel(2, 8), Charged(row_bytes)).ok());
+  auto refused = coverwise::model::AcceptOptions(WideModel(cells, cell_bytes), Charged(row_bytes));
   ASSERT_FALSE(refused.ok());
   const std::string sentence = coverwise::model::SurfaceError(refused.error()).text();
   EXPECT_EQ(sentence, AggregateBudgetRefusal());
@@ -1118,6 +1161,109 @@ TEST(CliInputBudgetTest, ModelStringsAndRowTextShareOneBudget) {
       RunCliStderrOnly("analyze --params " + wide_params_path + " --tests " + wide_rows_path);
   EXPECT_EQ(both.exit_code, 3) << both.stdout_text.substr(0, 200);
   EXPECT_EQ(both.stdout_text, "error: " + budget_message + "\n");
+}
+
+// The budgets charge the text a surface read from its input, and that is the
+// one respect in which embedding the library differs from running the command
+// line — as docs/en/cpp-api.md and docs/ja/cpp-api.md say. A row written as
+// JSON is text and is charged for every repeat of it; the same row built in C++
+// is a list of value indices, so its text was never handed over. This drives
+// both branches so the documented condition is the one that explains the
+// difference, rather than a difference nobody wrote down.
+TEST(CliInputBudgetTest, RowTextIsChargedToWhicheverSurfaceReadIt) {
+  const size_t field_bytes = 60 * 1024;
+  const std::string first(field_bytes, 'a');
+  const std::string second(field_bytes, 'b');
+  const size_t rows = coverwise::model::kMaxAggregateStringBytes / field_bytes + 2;
+  ASSERT_LT(rows, coverwise::model::kMaxTests);
+  // The model declares each wide value once, so the model's own strings are far
+  // inside the budget and only the repetition in the rows can cross it.
+  ASSERT_GT(rows * field_bytes, coverwise::model::kMaxAggregateStringBytes);
+
+  const std::string params_path = TempPath("read_by_params.json");
+  WriteFile(params_path, R"({"parameters":[{"name":"a","values":[")" + first + R"(",")" + second +
+                             R"("]},{"name":"b","values":["1","2"]}]})");
+  std::string suite = "[";
+  for (size_t row = 0; row < rows; ++row) {
+    if (row > 0) suite += ',';
+    suite += R"({"a":")" + first + R"(","b":"1"})";
+  }
+  suite += ']';
+  const std::string rows_path = TempPath("read_by_rows.json");
+  WriteFile(rows_path, suite);
+
+  // The command line read every one of those rows as text.
+  const auto analyzed =
+      RunCliCaptureStderr("analyze --params " + params_path + " --tests " + rows_path);
+  EXPECT_EQ(analyzed.exit_code, 3) << analyzed.stdout_text.substr(0, 200);
+  EXPECT_NE(analyzed.stdout_text.find(AggregateBudgetRefusal()), std::string::npos)
+      << analyzed.stdout_text.substr(0, 200);
+
+  // The same suite handed to the gate as value indices supplies no such text.
+  coverwise::model::GenerateOptions options;
+  options.parameters.emplace_back("a", std::vector<std::string>{first, second});
+  options.parameters.emplace_back("b", std::vector<std::string>{"1", "2"});
+  options.strength = 2;
+  for (size_t row = 0; row < rows; ++row) {
+    options.seeds.push_back(coverwise::model::TestCase{{0, 0}});
+  }
+  auto accepted =
+      coverwise::model::AcceptOptions(std::move(options), coverwise::model::ChargedText::None());
+  EXPECT_TRUE(accepted.ok()) << accepted.error().message;
+}
+
+// Row text that the options do carry is charged by exactly one of the two, and
+// which one is what the charged total says. A suite whose row text alone is
+// over the ceiling is refused by the embedding entry, which has no reader in
+// front of it, and left to the reader that already counted it — so the same
+// suite is refused once whichever way it arrives, and never twice.
+TEST(CliInputBudgetTest, EitherTheReaderOrTheGateChargesRowText) {
+  const size_t field_bytes = 60 * 1024;
+  const size_t rows = coverwise::model::kMaxAggregateStringBytes / (2 * field_bytes) + 2;
+  ASSERT_LT(rows, coverwise::model::kMaxTests);
+
+  auto suite_of = []() {
+    coverwise::model::GenerateOptions options;
+    options.parameters.emplace_back("a", std::vector<std::string>{"x", "y"});
+    options.parameters.emplace_back("b", std::vector<std::string>{"1", "2"});
+    options.strength = 2;
+    return options;
+  };
+  const size_t row_bytes = rows * 2 * field_bytes;
+  ASSERT_GT(row_bytes, coverwise::model::kMaxAggregateStringBytes);
+
+  // No reader: the caller's row text is here or it is charged nowhere.
+  coverwise::model::GenerateOptions unread = suite_of();
+  for (size_t row = 0; row < rows; ++row) {
+    coverwise::model::TestCase drifted;
+    drifted.values.assign(2, coverwise::model::kUnassigned);
+    drifted.unresolved.assign(2, std::string(field_bytes, 'x'));
+    unread.seeds.push_back(std::move(drifted));
+  }
+  auto refused =
+      coverwise::model::AcceptOptions(std::move(unread), coverwise::model::ChargedText::None());
+  ASSERT_FALSE(refused.ok());
+  EXPECT_EQ(coverwise::model::SurfaceError(refused.error()).text(), AggregateBudgetRefusal());
+
+  // A reader counted the same bytes: the verdict is the same, reached once.
+  coverwise::model::ChargedTextReader reader;
+  reader.Charge(row_bytes);
+  auto also_refused = coverwise::model::AcceptOptions(suite_of(), reader.total());
+  ASSERT_FALSE(also_refused.ok());
+  EXPECT_EQ(coverwise::model::SurfaceError(also_refused.error()).text(), AggregateBudgetRefusal());
+
+  // And the reader's count is not doubled by what the diagnostics kept: a suite
+  // the reader found to fit still fits once the gate has walked the model.
+  coverwise::model::GenerateOptions counted = suite_of();
+  for (size_t row = 0; row < rows; ++row) {
+    coverwise::model::TestCase drifted;
+    drifted.values.assign(2, coverwise::model::kUnassigned);
+    drifted.unresolved.assign(2, std::string(field_bytes, 'x'));
+    counted.seeds.push_back(std::move(drifted));
+  }
+  coverwise::model::ChargedTextReader half;
+  half.Charge(coverwise::model::kMaxAggregateStringBytes / 2);
+  EXPECT_TRUE(coverwise::model::AcceptOptions(std::move(counted), half.total()).ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -1197,9 +1343,11 @@ TEST(BudgetedKindsTest, TheGateChargesEveryKindOfModelString) {
 
   // The arithmetic first: the model fits, it fits with the slack exactly spent,
   // and one byte more than the slack is refused for the budget and nothing else.
-  EXPECT_TRUE(coverwise::model::AcceptOptions(BudgetedModel(kKindSlack)).ok());
-  EXPECT_TRUE(coverwise::model::AcceptOptions(BudgetedModel(kKindSlack), kKindSlack).ok());
-  auto over = coverwise::model::AcceptOptions(BudgetedModel(kKindSlack), kKindSlack + 1);
+  EXPECT_TRUE(coverwise::model::AcceptOptions(BudgetedModel(kKindSlack),
+                                              coverwise::model::ChargedText::None())
+                  .ok());
+  EXPECT_TRUE(coverwise::model::AcceptOptions(BudgetedModel(kKindSlack), Charged(kKindSlack)).ok());
+  auto over = coverwise::model::AcceptOptions(BudgetedModel(kKindSlack), Charged(kKindSlack + 1));
   ASSERT_FALSE(over.ok());
   EXPECT_EQ(coverwise::model::SurfaceError(over.error()).text(), budget_refusal);
 
@@ -1241,7 +1389,8 @@ TEST(BudgetedKindsTest, TheGateChargesEveryKindOfModelString) {
   by_kind.emplace_back("weight value name", std::move(weight_value));
 
   for (auto& [kind, options] : by_kind) {
-    auto refused = coverwise::model::AcceptOptions(std::move(options));
+    auto refused =
+        coverwise::model::AcceptOptions(std::move(options), coverwise::model::ChargedText::None());
     ASSERT_FALSE(refused.ok()) << kind;
     EXPECT_EQ(coverwise::model::SurfaceError(refused.error()).text(), budget_refusal) << kind;
   }
@@ -1280,6 +1429,16 @@ TEST(BudgetedKindsTest, TheReaderChargesRowValuesAndNothingElseInARow) {
   const auto keys = analyze(rows(4, '"' + wide_key + R"(":1)"), "kinds_keys.json");
   EXPECT_EQ(keys.stdout_text.find(budget_refusal), std::string::npos)
       << keys.stdout_text.substr(0, 200);
+
+  // A string under a key that names no parameter is still the caller's own
+  // text, handed over and held for as long as the row is read, so it is charged
+  // like any other row value. A surface that dropped it before counting would
+  // accept a suite another surface refuses, on the strength of nothing but
+  // whether the model happened to have somewhere to put it.
+  const auto undeclared =
+      analyze(rows(4, R"("undeclared":")" + wide_value + R"(")"), "kinds_undeclared.json");
+  EXPECT_NE(undeclared.stdout_text.find(budget_refusal), std::string::npos)
+      << undeclared.stdout_text.substr(0, 200);
 
   // Numbers and booleans are rendered by the engine rather than supplied as
   // text, so they cost nothing however many of them a suite carries.
@@ -1912,6 +2071,200 @@ TEST(CliExtendTest, HandsBackAnExistingRowExactlyAsItWasSupplied) {
 }
 
 // ---------------------------------------------------------------------------
+// Resolving a value name the caller wrote.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The parameters every case below resolves names against.
+///
+/// Every declared spelling is mixed case, so a name written in another case is
+/// something the command has to fold rather than something it matches by luck.
+constexpr const char* kMixedCaseParameters =
+    R"("parameters":[{"name":"os","values":["Windows","Linux"]},)"
+    R"({"name":"browser","values":["Chrome","Firefox"]}],"strength":2)";
+
+std::string MixedCaseParamsFile() {
+  const std::string path = TempPath("case_params.json");
+  WriteFile(path, std::string("{") + kMixedCaseParameters + "}");
+  return path;
+}
+
+/// @brief A model whose seeds, constraint and weights are spelled as declared.
+std::string DeclaredSpellingModel() {
+  return std::string("{") + kMixedCaseParameters +
+         R"(,"seed":3,"seeds":[{"os":"Windows","browser":"Chrome"}],)"
+         R"("constraints":["IF os = Linux THEN browser != Firefox"],)"
+         R"("weights":{"browser":{"Firefox":9}}})";
+}
+
+/// @brief The same model with every caller-written name in a different case.
+std::string OtherCaseModel() {
+  return std::string("{") + kMixedCaseParameters +
+         R"(,"seed":3,"seeds":[{"os":"wInDoWs","browser":"cHROME"}],)"
+         R"("constraints":["IF os = LINUX THEN browser != firefox"],)"
+         R"("weights":{"browser":{"fIREFOx":9}}})";
+}
+
+}  // namespace
+
+// A suite generated before a model's values were re-cased, or written by hand
+// against a runner that spells them differently, is the ordinary thing to feed
+// back in. Every name the caller writes -- a seed value, a constraint operand,
+// a weights key -- resolves by ASCII case folding, and to the same value the
+// declared spelling names: two models differing only in the case of those names
+// produce the same suite, byte for byte.
+TEST(CliValueResolutionTest, SeedsConstraintsAndWeightsResolveInAnyAsciiCase) {
+  const std::string declared_path = TempPath("case_declared_model.json");
+  WriteFile(declared_path, DeclaredSpellingModel());
+  const std::string other_path = TempPath("case_other_model.json");
+  WriteFile(other_path, OtherCaseModel());
+
+  const auto declared = RunCliCaptureStderr("generate " + declared_path);
+  ASSERT_EQ(declared.exit_code, 0) << declared.stdout_text;
+  const auto other = RunCliCaptureStderr("generate " + other_path);
+  ASSERT_EQ(other.exit_code, 0) << other.stdout_text;
+
+  EXPECT_EQ(other.stdout_text, declared.stdout_text);
+  EXPECT_NE(declared.stdout_text.find(R"("warnings":[])"), std::string::npos)
+      << declared.stdout_text;
+}
+
+// The weight has to reach the value, not merely be accepted alongside it: a
+// weights key the gate resolved but the engine dropped would leave the caller
+// with a silently unweighted run. The unweighted suite is the control.
+TEST(CliValueResolutionTest, AWeightKeyInAnotherCaseStillWeightsItsValue) {
+  const std::string base = std::string("{") + kMixedCaseParameters + R"(,"seed":7)";
+
+  const std::string unweighted_path = TempPath("case_weight_none.json");
+  WriteFile(unweighted_path, base + "}");
+  const std::string declared_path = TempPath("case_weight_declared.json");
+  WriteFile(declared_path, base + R"(,"weights":{"browser":{"Firefox":50}}})");
+  const std::string other_path = TempPath("case_weight_other.json");
+  WriteFile(other_path, base + R"(,"weights":{"browser":{"fIREFOx":50}}})");
+
+  const auto unweighted = RunCli("generate " + unweighted_path);
+  ASSERT_EQ(unweighted.exit_code, 0) << unweighted.stdout_text;
+  const auto declared = RunCli("generate " + declared_path);
+  ASSERT_EQ(declared.exit_code, 0) << declared.stdout_text;
+  const auto other = RunCli("generate " + other_path);
+  ASSERT_EQ(other.exit_code, 0) << other.stdout_text;
+
+  EXPECT_NE(declared.stdout_text, unweighted.stdout_text)
+      << "the weight has to change the suite for this case to measure anything";
+  EXPECT_EQ(other.stdout_text, declared.stdout_text);
+}
+
+// An analyzed row spelled in another case is a row about this model, so it is
+// credited for what it covers and is not one of the rows the report calls
+// invalid.
+TEST(CliValueResolutionTest, AnAnalyzedRowInAnotherCaseIsCreditedNotRejected) {
+  const std::string params_path = MixedCaseParamsFile();
+
+  const std::string declared_path = TempPath("case_analyze_declared.json");
+  WriteFile(declared_path, R"([{"os":"Windows","browser":"Chrome"},)"
+                           R"({"os":"Linux","browser":"Firefox"}])");
+  const std::string other_path = TempPath("case_analyze_other.json");
+  WriteFile(other_path, R"([{"os":"wINDOWS","browser":"chrome"},)"
+                        R"({"os":"LINUX","browser":"FireFOX"}])");
+
+  const auto declared = RunCli("analyze --params " + params_path + " --tests " + declared_path);
+  const auto other = RunCli("analyze --params " + params_path + " --tests " + other_path);
+
+  // Two of four pairs are covered either way, so the run ends on the documented
+  // insufficient-coverage code rather than on invalid input.
+  EXPECT_EQ(other.exit_code, declared.exit_code);
+  EXPECT_EQ(other.exit_code, 2) << other.stdout_text;
+  EXPECT_EQ(other.stdout_text, declared.stdout_text);
+  EXPECT_NE(other.stdout_text.find(R"("invalidTests":[])"), std::string::npos) << other.stdout_text;
+}
+
+// An existing suite spelled in another case keeps its coverage credit: extend
+// tops it up rather than regenerating the rows it already holds.
+TEST(CliValueResolutionTest, AnExistingRowInAnotherCaseKeepsItsCoverageCredit) {
+  const std::string params_path = MixedCaseParamsFile();
+
+  const std::string declared_path = TempPath("case_extend_declared.json");
+  WriteFile(declared_path, R"([{"os":"Windows","browser":"Chrome"},)"
+                           R"({"os":"Linux","browser":"Firefox"}])");
+  const std::string other_path = TempPath("case_extend_other.json");
+  WriteFile(other_path, R"([{"os":"wINDOWS","browser":"chrome"},)"
+                        R"({"os":"LINUX","browser":"FireFOX"}])");
+
+  const auto declared = RunCli("extend --existing " + declared_path + " " + params_path);
+  ASSERT_EQ(declared.exit_code, 0) << declared.stdout_text;
+  const auto other = RunCli("extend --existing " + other_path + " " + params_path);
+  ASSERT_EQ(other.exit_code, 0) << other.stdout_text;
+
+  // The rows are handed back in the spelling they were supplied in, so the two
+  // reports differ there and nowhere else: the same statistics, the same
+  // generated tail, and no warning about a row left out of the figure.
+  const std::string stats = R"("stats":{"totalTuples":4,"coveredTuples":4,"testCount":4})";
+  EXPECT_NE(declared.stdout_text.find(stats), std::string::npos) << declared.stdout_text;
+  EXPECT_NE(other.stdout_text.find(stats), std::string::npos) << other.stdout_text;
+  EXPECT_NE(other.stdout_text.find(R"("warnings":[])"), std::string::npos) << other.stdout_text;
+  EXPECT_NE(other.stdout_text.find(R"({"os":"Linux","browser":"Chrome"})"), std::string::npos)
+      << other.stdout_text;
+}
+
+// Two weights keys naming one value carry two weights for it, and only one can
+// apply. A key spelled the way the model declares the value settles that
+// outright; with no declared spelling among them the winner would come down to
+// the order the caller's map is walked in, which is not the same on every
+// surface, so the model is refused on the documented invalid-input code.
+TEST(CliValueResolutionTest, TwoWeightKeysNamingOneValueAreRefused) {
+  const std::string base = std::string("{") + kMixedCaseParameters;
+
+  const std::string ambiguous_path = TempPath("case_weight_ambiguous.json");
+  WriteFile(ambiguous_path, base + R"(,"weights":{"os":{"wINdows":5,"WINDOWS":9}}})");
+  const auto refused = RunCliStderrOnly("generate " + ambiguous_path);
+  EXPECT_EQ(refused.exit_code, 3);
+  EXPECT_EQ(refused.stdout_text,
+            "error: Ambiguous value in weights: os=WINDOWS and os=wINdows name the same value\n");
+
+  // The declared spelling settles it, so this stays a model the caller can run.
+  const std::string settled_path = TempPath("case_weight_settled.json");
+  WriteFile(settled_path, base + R"(,"weights":{"os":{"Windows":5,"wINdows":9}}})");
+  const auto accepted = RunCli("generate " + settled_path);
+  EXPECT_EQ(accepted.exit_code, 0) << accepted.stdout_text;
+}
+
+// The fold is ASCII, and widening it would make two names a model is entitled
+// to keep apart resolve to one value. A name differing only in the case of a
+// non-ASCII letter stays unknown on both exit paths: refused outright where the
+// row has to be a test case for this model, recorded as invalid where it does
+// not.
+TEST(CliValueResolutionTest, ANonAsciiCaseDifferenceIsStillAnUnknownValue) {
+  const std::string params = R"("parameters":[{"name":"city","values":["MÜNCHEN","OSAKA"]},)"
+                             R"({"name":"n","values":["1","2"]}])";
+
+  const std::string model_path = TempPath("case_nonascii_model.json");
+  WriteFile(model_path, "{" + params + R"(,"seeds":[{"city":"MüNCHEN","n":"1"}]})");
+  const auto seeded = RunCliStderrOnly("generate " + model_path);
+  EXPECT_EQ(seeded.exit_code, 3);
+  EXPECT_EQ(seeded.stdout_text, "error: seeds 0 parameter 'city' has unknown value 'MüNCHEN'\n");
+
+  const std::string params_path = TempPath("case_nonascii_params.json");
+  WriteFile(params_path, "{" + params + "}");
+  const std::string rows_path = TempPath("case_nonascii_rows.json");
+  WriteFile(rows_path, R"([{"city":"MüNCHEN","n":"1"}])");
+  const auto analyzed = RunCli("analyze --params " + params_path + " --tests " + rows_path);
+  EXPECT_EQ(analyzed.exit_code, 3) << analyzed.stdout_text;
+  EXPECT_NE(
+      analyzed.stdout_text.find(R"("reason":"value 'MüNCHEN' is not declared by parameter city")"),
+      std::string::npos)
+      << analyzed.stdout_text;
+
+  // The ASCII half of the same value still folds, so this is the fold's reach
+  // and not an absence of folding.
+  const std::string ascii_rows_path = TempPath("case_nonascii_ascii_rows.json");
+  WriteFile(ascii_rows_path, R"([{"city":"osaka","n":"1"}])");
+  const auto ascii = RunCli("analyze --params " + params_path + " --tests " + ascii_rows_path);
+  EXPECT_EQ(ascii.exit_code, 2) << ascii.stdout_text;
+  EXPECT_NE(ascii.stdout_text.find(R"("invalidTests":[])"), std::string::npos) << ascii.stdout_text;
+}
+
+// ---------------------------------------------------------------------------
 // Delivering output.
 // ---------------------------------------------------------------------------
 
@@ -1958,6 +2311,155 @@ TEST(CliOutputTest, AReportThatCouldNotBeWrittenIsNotReportedAsSuccess) {
     EXPECT_NE(undelivered.stdout_text.find("cannot write to standard output"), std::string::npos)
         << args << ": " << undelivered.stdout_text;
   }
+}
+
+namespace {
+
+/// @brief Report size this section treats as larger than any pipe will hold.
+///
+/// A reader that stops early only fails the writes the kernel could not absorb
+/// on its own, so the report has to outrun the pipe for the run to be about the
+/// stream at all. Mainstream kernels hand out at most 64 KiB; the models below
+/// are sized several times past that, and the test measures rather than trusts.
+constexpr size_t kBeyondPipeBuffer = 256 * 1024;
+
+/// @brief Shape of the model whose rendered rows outrun a pipe.
+///
+/// Width, value count and name length all multiply into every row, so a model
+/// this modest reaches hundreds of kilobytes without slowing the run down.
+constexpr int kLongReportParameters = 30;
+constexpr int kLongReportValues = 8;
+
+std::string LongReportName(int index) { return std::string(70, 'p') + std::to_string(index); }
+
+std::string LongReportValue(int index) { return std::string(70, 'v') + std::to_string(index); }
+
+/// @brief A model whose generated suite is far longer than a pipe will hold.
+std::string LongReportModel() {
+  std::ostringstream model;
+  model << R"({"parameters":[)";
+  for (int p = 0; p < kLongReportParameters; ++p) {
+    if (p > 0) model << ',';
+    model << R"({"name":")" << LongReportName(p) << R"(","values":[)";
+    for (int v = 0; v < kLongReportValues; ++v) {
+      if (v > 0) model << ',';
+      model << '"' << LongReportValue(v) << '"';
+    }
+    model << "]}";
+  }
+  model << "]}";
+  return model.str();
+}
+
+/// @brief One row of LongReportModel, as a suite for analyze and extend.
+///
+/// A single row leaves nearly every tuple uncovered, which is what makes the
+/// coverage report as long as the generated suite it is measured against.
+std::string LongReportRow() {
+  std::ostringstream row;
+  row << R"([{)";
+  for (int p = 0; p < kLongReportParameters; ++p) {
+    if (p > 0) row << ',';
+    row << '"' << LongReportName(p) << R"(":")" << LongReportValue(0) << '"';
+  }
+  row << "}]";
+  return row.str();
+}
+
+/// @brief A model whose statistics alone outrun a pipe.
+///
+/// `stats` prints one entry per parameter and nothing per test case, so the
+/// parameter list is the only thing that can carry it past the buffer.
+std::string WideStatsModel() {
+  const std::string padding(250, 'q');
+  std::ostringstream model;
+  model << R"({"parameters":[)";
+  for (int p = 0; p < 1000; ++p) {
+    if (p > 0) model << ',';
+    model << R"({"name":")" << padding << p << R"(","values":["a","b"]})";
+  }
+  model << "]}";
+  return model.str();
+}
+
+/// @brief Outcome of a run whose reader stopped before the report ended.
+struct EarlyCloseResult {
+  int exit_code = -1;
+  std::string stderr_text;
+};
+
+/// @brief Run the CLI into a reader that takes one byte and closes the pipe.
+///
+/// The shell's own status belongs to the reader, so the CLI's status is
+/// recorded from inside the pipeline and read back from a file. A run that
+/// ended on a signal rather than a return arrives here as 128 plus the signal
+/// number, which is outside the documented set and fails the assertion.
+EarlyCloseResult RunCliIntoReaderClosingEarly(const std::string& args) {
+  const std::string status_path = TempPath("early_close_status.txt");
+  const std::string stderr_path = TempPath("early_close_stderr.txt");
+  RunCommandLine("{ " + std::string(COVERWISE_CLI_PATH) + " " + args + " 2>" + stderr_path +
+                 "; echo $? >" + status_path + "; } | head -c 1 >/dev/null");
+
+  EarlyCloseResult result;
+  std::ifstream status(status_path);
+  status >> result.exit_code;
+  std::ifstream diagnostics(stderr_path);
+  std::ostringstream text;
+  text << diagnostics.rdbuf();
+  result.stderr_text = text.str();
+  return result;
+}
+
+}  // namespace
+
+// A reader that stops early — `coverwise generate model.json | head` — closes
+// the pipe while the report is still being written. That failed write is the
+// only way the run learns its report was cut short, and the caller has to be
+// able to tell it from a run that delivered everything, so it ends on a code
+// from the table usage prints with a diagnostic beside it, never on a signal.
+TEST(CliOutputTest, AReaderThatClosesEarlyEndsTheRunOnADocumentedCode) {
+  const std::string model_path = TempPath("early_close_model.json");
+  WriteFile(model_path, LongReportModel());
+  const std::string rows_path = TempPath("early_close_rows.json");
+  WriteFile(rows_path, LongReportRow());
+  const std::string wide_path = TempPath("early_close_wide_model.json");
+  WriteFile(wide_path, WideStatsModel());
+
+  const std::vector<std::string> commands = {
+      "generate " + model_path,
+      "stats " + wide_path,
+      "analyze --params " + model_path + " --tests " + rows_path,
+      "extend --existing " + rows_path + " " + model_path,
+  };
+
+  for (const auto& args : commands) {
+    // The premise of the run below: this report is longer than a pipe will
+    // absorb, so writes do outlive the reader.
+    const auto delivered = RunCli(args);
+    EXPECT_GT(delivered.stdout_text.size(), kBeyondPipeBuffer) << args;
+
+    const auto truncated = RunCliIntoReaderClosingEarly(args);
+    EXPECT_EQ(truncated.exit_code, 3) << args << ": " << truncated.stderr_text;
+    EXPECT_NE(truncated.stderr_text.find("cannot write to standard output"), std::string::npos)
+        << args << ": " << truncated.stderr_text;
+  }
+}
+
+// Usage is short enough for a pipe to hold all of it, so whether the write
+// outlives the reader is a matter of which side finishes first. Either outcome
+// is acceptable; what a caller may never see is a status outside the very table
+// usage prints, which is what an unhandled signal would produce.
+TEST(CliHelpTest, UsageEndsOnADocumentedCodeWhateverBecomesOfTheStream) {
+  const auto truncated = RunCliIntoReaderClosingEarly("--help");
+  EXPECT_GE(truncated.exit_code, 0) << truncated.stderr_text;
+  EXPECT_LE(truncated.exit_code, 3) << truncated.stderr_text;
+
+  // With no stream at all the outcome is not a race: the usage write fails, and
+  // --help accounts for it the way a report-writing subcommand does.
+  const auto closed = RunCliWithClosedStdout("--help");
+  EXPECT_EQ(closed.exit_code, 3) << closed.stdout_text;
+  EXPECT_NE(closed.stdout_text.find("cannot write to standard output"), std::string::npos)
+      << closed.stdout_text;
 }
 
 // Usage the caller asked for is output the command produced, so it goes to

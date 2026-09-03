@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -96,10 +97,13 @@ ExitStatus InvalidInput(std::string message) { return Fail(ReaderError(std::move
 /// @brief Flush standard output and turn a failed write into a failure status.
 ///
 /// A report is delivered only if its bytes reached the caller, and standard
-/// output fails late: a closed pipe or a filesystem with no room left surfaces
-/// at flush time, long after the last insertion returned. A command that ends
-/// without looking would exit 0 beside a truncated document, and a caller
-/// gating on the exit code reads that document as a complete result.
+/// output fails late: the writes that fail are the ones the standard library
+/// makes on its own schedule, so a reader that closed the pipe (EPIPE), a
+/// filesystem with no room left (ENOSPC) and a destination the caller never
+/// opened (EBADF) all surface here, long after the last insertion returned.
+/// A command that ends without looking would exit 0 beside a truncated
+/// document, and a caller gating on the exit code reads that document as a
+/// complete result.
 /// Both the C++ stream and the C stream underneath it are asked, because which
 /// of the two records the failed write depends on whether the two are still
 /// synchronized — a detail of the standard library, not of the report.
@@ -402,10 +406,12 @@ class JsonParser {
       return {};
     }
     ++pos_;  // skip closing "
-    if (val.string_val.size() > kMaxStringBytes) {
-      error_ = "string exceeds " + std::to_string(kMaxStringBytes) + " UTF-8 bytes";
-      return {};
-    }
+    // The per-string limit is not applied here. This reader knows only that it
+    // is inside some string, so it can say nothing about which one — and a
+    // caller reading "string exceeds 65536 UTF-8 bytes" about a document with
+    // thousands of them is told the limit without being told where they met it.
+    // The readers above name the field, and the acceptance gate names the model
+    // string, both in the model layer's own words.
     return val;
   }
 
@@ -1021,16 +1027,6 @@ enum class TestRowPolicy {
   kRecorded,
 };
 
-/// @brief Caller-supplied row text charged so far in one invocation.
-///
-/// The documented aggregate budget bounds the strings a single call hands the
-/// engine, so every row array a subcommand reads draws from one total: `extend`
-/// reads both `existing` and `seeds`, and two half-sized suites are the same
-/// input dimension as one full-sized one.
-struct RowStringBudget {
-  size_t charged = 0;
-};
-
 /// @brief Parse test cases from a JSON array of objects with scalar values.
 /// Each test object maps parameter names to values; the result carries value
 /// indices matching the parameter definitions, or model::kUnassigned where a
@@ -1038,11 +1034,12 @@ struct RowStringBudget {
 ///
 /// Row text is the largest dimension of an input, so it is charged against the
 /// documented aggregate budget here, where it is read and before any of it
-/// reaches the engine.
+/// reaches the engine. This is the only place a row value is charged: the gate
+/// walks the model's own strings and no row array reaches it as text.
 bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Parameter>& params,
                 TestRowPolicy policy, const char* field,
-                std::vector<coverwise::model::TestCase>& tests, RowStringBudget& budget,
-                std::string& error) {
+                std::vector<coverwise::model::TestCase>& tests,
+                coverwise::model::ChargedTextReader& budget, std::string& error) {
   if (json.type != JsonType::kArray) {
     error = std::string(field) + " must be a JSON array";
     return false;
@@ -1062,11 +1059,22 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
     // make the budget shrink with the parameter count rather than bound the text
     // the caller actually supplied.
     //
-    // Counting is all this does. Whether the total is too large is the
-    // acceptance gate's judgement, and it is told the count, so neither the
-    // limit nor the sentence that reports it exists a second time here.
+    // Every string member is charged, whether or not its key names a declared
+    // parameter: what the limit bounds is the text the caller handed over, not
+    // the part of it the model happens to have somewhere to put.
+    //
+    // The per-string limit is applied here for the same reason, and the sentence
+    // reporting it comes from the model layer. The aggregate total goes to the
+    // acceptance gate, so neither limit's verdict is composed twice.
     for (const auto& member : t.object_vals) {
-      if (member.type == JsonType::kString) budget.charged += member.string_val.size();
+      if (member.type != JsonType::kString) continue;
+      if (member.string_val.size() > kMaxStringBytes) {
+        error =
+            coverwise::model::StringBudgetExceededMessage(coverwise::model::ChargedStringContext(
+                coverwise::model::ChargedString::kRowValue, {field, i}));
+        return false;
+      }
+      budget.Charge(member.string_val.size());
     }
     if (policy == TestRowPolicy::kSeed) {
       for (const auto& key : t.object_keys) {
@@ -1120,7 +1128,7 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
       }
 
       // Find the value index (checking primary values and aliases).
-      uint32_t val_idx = params[pi].find_value_index(val_str);
+      uint32_t val_idx = coverwise::model::ResolveValueName(params[pi], val_str);
       if (val_idx == coverwise::model::kUnassigned) {
         if (policy == TestRowPolicy::kRecorded) {
           record_unresolved(pi, std::move(val_str));
@@ -1273,7 +1281,7 @@ bool ParseWeights(const JsonValue& json, coverwise::model::WeightConfig& weights
 /// @return an ok Error on success, otherwise the failure to surface.
 coverwise::model::Error ParseModelDocument(const JsonValue& json,
                                            coverwise::model::GenerateOptions& options,
-                                           RowStringBudget& budget) {
+                                           coverwise::model::ChargedTextReader& budget) {
   // Parameters are parsed and their boundary value space expanded first, so
   // that everything below resolves value names against the value space
   // generation actually uses.
@@ -1644,7 +1652,7 @@ ExitStatus RunGenerate(int argc, char* argv[]) {
     return InvalidInput("input must be a JSON object");
   }
 
-  RowStringBudget budget;
+  coverwise::model::ChargedTextReader budget;
   coverwise::model::GenerateOptions options;
   if (auto error = ParseModelDocument(json, options, budget); !error.ok()) {
     return Fail(error);
@@ -1653,7 +1661,7 @@ ExitStatus RunGenerate(int argc, char* argv[]) {
   const uint32_t strength = options.strength;
   // The row text read above and the model's own strings are one input, so the
   // gate judges them against one budget.
-  auto accepted = coverwise::model::AcceptOptions(std::move(options), budget.charged);
+  auto accepted = coverwise::model::AcceptOptions(std::move(options), budget.total());
   if (!accepted.ok()) {
     return Fail(accepted.error());
   }
@@ -1817,14 +1825,14 @@ ExitStatus RunAnalyze(int argc, char* argv[]) {
   // the first drifted row.
   std::vector<coverwise::model::TestCase> tests;
   const JsonValue* tests_array = nullptr;
-  RowStringBudget budget;
+  coverwise::model::ChargedTextReader budget;
   if (!ExtractTestsArray(tests_json, tests_array, error) ||
       !ParseTests(*tests_array, params, TestRowPolicy::kRecorded, "tests", tests, budget, error)) {
     return InvalidInput(error);
   }
 
   model_options.constraint_expressions = constraint_expressions;
-  auto accepted = coverwise::model::AcceptOptions(std::move(model_options), budget.charged);
+  auto accepted = coverwise::model::AcceptOptions(std::move(model_options), budget.total());
   if (!accepted.ok()) {
     return Fail(accepted.error());
   }
@@ -1906,7 +1914,7 @@ ExitStatus RunExtend(int argc, char* argv[]) {
   std::string error;
   // One budget for the whole invocation: the model document's `seeds` and the
   // `--existing` suite are both caller row text handed to the same run.
-  RowStringBudget budget;
+  coverwise::model::ChargedTextReader budget;
   coverwise::model::GenerateOptions options;
   if (auto document_error = ParseModelDocument(input_json, options, budget); !document_error.ok()) {
     return Fail(document_error);
@@ -1937,7 +1945,7 @@ ExitStatus RunExtend(int argc, char* argv[]) {
   }
 
   const uint32_t strength = options.strength;
-  auto accepted = coverwise::model::AcceptOptions(std::move(options), budget.charged);
+  auto accepted = coverwise::model::AcceptOptions(std::move(options), budget.total());
   if (!accepted.ok()) {
     return Fail(accepted.error());
   }
@@ -1979,13 +1987,13 @@ ExitStatus RunStats(int argc, char* argv[]) {
   // reader: a document generate would refuse must not be reported on as if it
   // were a model. None of the figures below is derived from the fields that only
   // generation uses.
-  RowStringBudget budget;
+  coverwise::model::ChargedTextReader budget;
   coverwise::model::GenerateOptions options;
   if (auto error = ParseModelDocument(json, options, budget); !error.ok()) {
     return Fail(error);
   }
 
-  auto accepted = coverwise::model::AcceptOptions(std::move(options), budget.charged);
+  auto accepted = coverwise::model::AcceptOptions(std::move(options), budget.total());
   if (!accepted.ok()) {
     return Fail(accepted.error());
   }
@@ -2063,6 +2071,17 @@ const char* UsageText() {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+  // `coverwise generate model.json | head` closes the pipe while the report is
+  // still being written. The default disposition of SIGPIPE would end the
+  // process on the signal, past every exit code this CLI documents and with
+  // nothing on stderr, so a caller could not tell a reader that stopped early
+  // from a real failure. Ignoring it turns the same event into an EPIPE the
+  // write path reports, which FinishOutput reads and converts into exit 3.
+  // The macro is POSIX; where it is absent there is no such signal to disarm.
+#ifdef SIGPIPE
+  std::signal(SIGPIPE, SIG_IGN);
+#endif
+
   try {
     if (argc < 2) {
       return UsageError(UsageText()).exit_code();
