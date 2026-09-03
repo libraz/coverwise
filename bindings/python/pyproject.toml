@@ -49,11 +49,11 @@ pytest = [
     "pytest>=8.0",
 ]
 dev = [
-    "build>=1.2",
-    "mypy>=1.11",
-    "pytest>=8.0",
-    "ruff>=0.8",
-    "wheel>=0.45",
+    "build>=1.6",
+    "mypy>=2.3",
+    "pytest>=9.0",
+    "ruff>=0.16",
+    "wheel>=0.48",
 ]
 
 [project.urls]
@@ -97,9 +97,9 @@ strict = true
 
 [tool.rye]
 dev-dependencies = [
-    "build>=1.2",
-    "mypy>=1.11",
-    "pytest>=8.0",
-    "ruff>=0.8",
-    "wheel>=0.45",
+    "build>=1.6",
+    "mypy>=2.3",
+    "pytest>=9.0",
+    "ruff>=0.16",
+    "wheel>=0.48",
 ]
