@@ -77,10 +77,16 @@ struct Parameter {
   const std::vector<std::vector<std::string>>& all_aliases() const { return aliases_; }
 
   /// @brief Find a value index by name, checking both primary values and aliases.
+  ///
+  /// The match policy is deliberately not defaulted. Resolving a name a caller
+  /// wrote is ResolveValueName's job and nothing else should be deciding the
+  /// policy for itself; a caller that genuinely wants byte equality has to say
+  /// so, and one that forgets to decide does not compile.
+  ///
   /// @param name The value name to search for.
-  /// @param case_sensitive If false, compare names case-insensitively.
+  /// @param case_sensitive If false, compare names by ASCII case folding.
   /// @return The value index, or UINT32_MAX if not found.
-  uint32_t find_value_index(const std::string& name, bool case_sensitive = true) const;
+  uint32_t find_value_index(const std::string& name, bool case_sensitive) const;
 
   /// @brief Returns the equivalence class for the value at the given index.
   /// Returns an empty string if no class is defined.
@@ -114,6 +120,28 @@ struct Parameter {
   /// Empty means no equivalence classes defined.
   std::vector<std::string> equivalence_classes_;
 };
+
+/// @brief Resolve a value name a caller wrote to the index it names.
+///
+/// This is the one entry point for turning caller-supplied text into a value
+/// index: seed rows, `analyze --tests` rows, `extend --existing` rows and
+/// weights keys all arrive here, on every surface. The matching policy lives
+/// here alone rather than being restated at each call site, so a path added
+/// later inherits it instead of choosing again.
+///
+/// Matching folds ASCII case, which is what the constraint parser does for the
+/// same text, so a value spelled one way in a row and another way in a
+/// constraint names the same index. The fold is ASCII-only: two names differing
+/// only in the case of a non-ASCII letter are distinct names, and one of them
+/// does not resolve to the other.
+///
+/// The answer is unique when it exists because ValidateParameters rejects a
+/// parameter whose values or aliases collide once folded.
+///
+/// @param param The parameter whose values and aliases are searched.
+/// @param name The value name as the caller wrote it.
+/// @return The value index, or UINT32_MAX if no value or alias names it.
+uint32_t ResolveValueName(const Parameter& param, const std::string& name);
 
 /// @brief Check if any parameter in the collection has invalid values.
 inline bool HasInvalidValues(const std::vector<Parameter>& params) {

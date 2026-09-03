@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { hasInvalidValues, Parameter, UNASSIGNED, validateParameters } from './parameter.js';
+import { EqualsNode } from './constraint-ast.js';
+import { parseConstraint } from './constraint-parser.js';
+import { ErrorCode } from './error.js';
+import {
+  hasInvalidValues,
+  Parameter,
+  resolveValueName,
+  UNASSIGNED,
+  validateParameters,
+} from './parameter.js';
 
 describe('Parameter', () => {
   describe('constructor', () => {
@@ -146,25 +155,25 @@ describe('Parameter', () => {
   describe('findValueIndex', () => {
     it('finds primary value by name', () => {
       const p = new Parameter('os', ['win', 'mac', 'linux']);
-      expect(p.findValueIndex('mac')).toBe(1);
+      expect(p.findValueIndex('mac', true)).toBe(1);
     });
 
     it('finds value via alias', () => {
       const p = new Parameter('browser', ['chrome', 'firefox']);
       p.setAliases([['chromium'], ['ff']]);
-      expect(p.findValueIndex('ff')).toBe(1);
-      expect(p.findValueIndex('chromium')).toBe(0);
+      expect(p.findValueIndex('ff', true)).toBe(1);
+      expect(p.findValueIndex('chromium', true)).toBe(0);
     });
 
     it('returns UNASSIGNED when not found', () => {
       const p = new Parameter('os', ['win', 'mac']);
-      expect(p.findValueIndex('linux')).toBe(UNASSIGNED);
+      expect(p.findValueIndex('linux', true)).toBe(UNASSIGNED);
     });
 
-    it('is case-sensitive by default', () => {
+    it('compares byte-for-byte when the caller asks for it', () => {
       const p = new Parameter('os', ['Win', 'Mac']);
-      expect(p.findValueIndex('win')).toBe(UNASSIGNED);
-      expect(p.findValueIndex('Win')).toBe(0);
+      expect(p.findValueIndex('win', true)).toBe(UNASSIGNED);
+      expect(p.findValueIndex('Win', true)).toBe(0);
     });
 
     it('supports case-insensitive search', () => {
@@ -177,6 +186,52 @@ describe('Parameter', () => {
       const p = new Parameter('browser', ['chrome']);
       p.setAliases([['Chromium']]);
       expect(p.findValueIndex('chromium', false)).toBe(0);
+    });
+  });
+
+  describe('resolveValueName', () => {
+    it('resolves any ASCII case of a value or alias to the declared index', () => {
+      const p = new Parameter('os', ['Windows', 'Linux']);
+      p.setAliases([['Win32'], []]);
+      for (const spelling of ['Windows', 'windows', 'WINDOWS', 'wInDoWs']) {
+        expect(resolveValueName(p, spelling)).toBe(0);
+      }
+      for (const spelling of ['Win32', 'win32', 'WIN32']) {
+        expect(resolveValueName(p, spelling)).toBe(0);
+      }
+      // Resolving by any spelling leaves the declared spelling alone.
+      expect(p.values[0]).toBe('Windows');
+    });
+
+    it('folds ASCII case only, so a non-ASCII case difference is a different name', () => {
+      const p = new Parameter('city', ['MÜNCHEN']);
+      expect(resolveValueName(p, 'MÜNCHEN')).toBe(0);
+      // Only the U-umlaut differs in case; the ASCII fold does not reach it.
+      expect(resolveValueName(p, 'MüNCHEN')).toBe(UNASSIGNED);
+    });
+
+    it('still reports a name no value or alias carries', () => {
+      const p = new Parameter('os', ['Windows']);
+      expect(resolveValueName(p, 'linux')).toBe(UNASSIGNED);
+    });
+
+    // A row and a constraint can name the same value, and the model is only
+    // coherent if they name the same one. This is what settles the policy: the
+    // constraint path has always folded, so a row that did not was reading the
+    // same text a second way.
+    it('agrees with the constraint parser on the index a name resolves to', () => {
+      const params = [
+        new Parameter('os', ['Windows', 'Linux']),
+        new Parameter('browser', ['Chrome', 'Firefox']),
+      ];
+
+      const parsed = parseConstraint('os = wInDoWs', params);
+      expect(parsed.error.code).toBe(ErrorCode.Ok);
+      const equals = parsed.constraint as EqualsNode;
+      expect(equals).toBeInstanceOf(EqualsNode);
+
+      expect(equals.valueIndex).toBe(resolveValueName(params[0], 'wInDoWs'));
+      expect(equals.valueIndex).toBe(resolveValueName(params[0], 'Windows'));
     });
   });
 

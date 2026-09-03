@@ -1,6 +1,6 @@
 /// Input/output data structures for test generation.
 
-import { isNumeric } from '../util/string_util.js';
+import { compareUtf8, isNumeric } from '../util/string_util.js';
 import type { BoundaryConfig } from './boundary.js';
 import { BoundaryType, expandBoundaryValues } from './boundary.js';
 import {
@@ -9,7 +9,7 @@ import {
   INTEGER_BOUNDARY_STEP,
   isSafeBoundaryInteger,
 } from './boundary-rules.js';
-import { aggregateBudgetExceeded } from './budget.js';
+import { aggregateBudgetExceeded, chargedStringContext, stringBudgetExceeded } from './budget.js';
 import { ErrorCode, type ErrorInfo, okError } from './error.js';
 import {
   MAX_AGGREGATE_STRING_BYTES,
@@ -17,7 +17,7 @@ import {
   MAX_STRING_BYTES,
   MAX_TESTS,
 } from './limits.js';
-import { Parameter, validateParameters } from './parameter.js';
+import { Parameter, resolveValueName, UNASSIGNED, validateParameters } from './parameter.js';
 import type { TestCase } from './test-case.js';
 import { utf8ByteLength } from './utf8.js';
 
@@ -136,18 +136,33 @@ function invalid(message: string, detail = ''): ErrorInfo {
 }
 
 /**
- * Charge every string in the model against the documented byte budgets.
+ * Charge the model's own strings against the documented byte budgets.
  *
  * Both the per-string and the aggregate bound are documented input limits, so
  * they belong to the acceptance contract rather than to any one surface's
- * reader. Mirrors validateStringBudget in the C++ model layer.
+ * reader. Mirrors ValidateStringBudget in the C++ model layer.
+ *
+ * The walk covers every kind of the charged set, row values included. This
+ * entry is the one no reader stands in front of — a caller reaching the engine
+ * directly hands over a `GenerateOptions` and nothing upstream has counted
+ * anything — which is the regime the C++ gate is in when it is given
+ * `ChargedText::None()`. A row enters the engine as value indices, so the only
+ * row text here is that of a position which did not resolve, kept so the
+ * diagnostics can quote it back; leaving it uncharged would put this path
+ * outside the published budget entirely.
+ *
+ * The package entry points charge the caller's rows themselves before the
+ * engine is reached. That is not a second charge against the same allowance:
+ * their total is a separate accumulator judged against the same limit, and the
+ * strings this walk sees are a subset of the ones they saw, so this check
+ * cannot refuse an input they let through.
  */
 function validateStringBudget(options: GenerateOptions, params: Parameter[]): ErrorInfo {
   let aggregate = 0;
-  const account = (value: string, context: string): ErrorInfo => {
+  const account = (value: string, context: () => string): ErrorInfo => {
     const bytes = utf8ByteLength(value);
     if (bytes > MAX_STRING_BYTES) {
-      return invalid(`${context} exceeds ${MAX_STRING_BYTES} UTF-8 bytes`);
+      return invalid(stringBudgetExceeded(context()));
     }
     aggregate += bytes;
     if (aggregate > MAX_AGGREGATE_STRING_BYTES) {
@@ -157,68 +172,70 @@ function validateStringBudget(options: GenerateOptions, params: Parameter[]): Er
   };
 
   for (const param of params) {
-    let error = account(param.name, `Parameter name '${param.name}'`);
+    let error = account(param.name, () => chargedStringContext.parameterName(param.name));
     if (error.code !== ErrorCode.Ok) {
       return error;
     }
     for (let index = 0; index < param.values.length; ++index) {
-      error = account(param.values[index], `${param.name}[${index}]`);
+      error = account(param.values[index], () =>
+        chargedStringContext.parameterValue(param.name, index),
+      );
       if (error.code !== ErrorCode.Ok) {
         return error;
       }
     }
-    for (const valueAliases of param.allAliases) {
-      for (const alias of valueAliases) {
-        error = account(alias, `Alias in parameter '${param.name}'`);
+    // Both metadata lists run parallel to the value list, so a position in them
+    // is the value index a refusal names.
+    for (let index = 0; index < param.allAliases.length; ++index) {
+      for (const alias of param.allAliases[index]) {
+        error = account(alias, () => chargedStringContext.valueAlias(param.name, index));
         if (error.code !== ErrorCode.Ok) {
           return error;
         }
       }
     }
-    for (const equivalenceClass of param.equivalenceClasses) {
-      error = account(equivalenceClass, `Class in parameter '${param.name}'`);
+    for (let index = 0; index < param.equivalenceClasses.length; ++index) {
+      error = account(param.equivalenceClasses[index], () =>
+        chargedStringContext.equivalenceClass(param.name, index),
+      );
       if (error.code !== ErrorCode.Ok) {
         return error;
       }
     }
   }
   for (const expression of options.constraintExpressions) {
-    const error = account(expression, 'Constraint expression');
+    const error = account(expression, chargedStringContext.constraintExpression);
     if (error.code !== ErrorCode.Ok) {
       return error;
     }
   }
   for (const subModel of options.subModels) {
     for (const name of subModel.parameterNames) {
-      const error = account(name, 'Sub-model parameter name');
+      const error = account(name, chargedStringContext.subModelParameterName);
       if (error.code !== ErrorCode.Ok) {
         return error;
       }
     }
   }
   for (const [paramName, valueWeights] of Object.entries(options.weights.entries)) {
-    let error = account(paramName, 'Weight parameter name');
+    let error = account(paramName, chargedStringContext.weightParameterName);
     if (error.code !== ErrorCode.Ok) {
       return error;
     }
     for (const valueName of Object.keys(valueWeights)) {
-      error = account(valueName, 'Weight value name');
+      error = account(valueName, chargedStringContext.weightValueName);
       if (error.code !== ErrorCode.Ok) {
         return error;
       }
     }
   }
-  // A row enters the engine as value indices and costs nothing, except where a
-  // position did not resolve: that text is the caller's own and is carried
-  // through to the diagnostics, so it is charged like any other input string.
   for (let row = 0; row < options.seeds.length; ++row) {
     const unresolved = options.seeds[row].unresolved;
     if (!unresolved) {
       continue;
     }
-    const context = `Value in seeds row ${row}`;
     for (const text of unresolved) {
-      const error = account(text, context);
+      const error = account(text, () => chargedStringContext.rowValue('seeds', row));
       if (error.code !== ErrorCode.Ok) {
         return error;
       }
@@ -241,7 +258,12 @@ function validateBoundaryConfigs(
   params: Parameter[],
 ): ErrorInfo {
   const byName = new Map(params.map((param) => [param.name, param]));
-  for (const [paramName, config] of Object.entries(boundaryConfigs)) {
+  // Walked in the core's own key order rather than the order the caller wrote
+  // the object in, so a model with more than one malformed boundary config is
+  // refused over the same parameter on every surface. The core holds these as
+  // std::map, and a JavaScript object holds them in insertion order.
+  for (const paramName of Object.keys(boundaryConfigs).sort(compareUtf8)) {
+    const config = boundaryConfigs[paramName];
     const param = byName.get(paramName);
     if (!param) {
       return invalid(boundaryAcceptanceError.unknownParameter(paramName));
@@ -393,7 +415,16 @@ export function expandBoundaries(
   return { params: expanded, error: okError() };
 }
 
-/** Validate generation options before expansion or resource allocation. */
+/**
+ * Validate generation options before expansion or resource allocation.
+ *
+ * This is the rule set alone, judging the value space it is handed — not the
+ * acceptance gate. The gate is acceptOptions, which runs expandBoundaries
+ * before this. Taking this on its own for the gate's answer gets a boundary
+ * model wrong in a specific way: a weight or a seed naming a value that
+ * expansion is about to supply is refused here, and accepted by every entry
+ * point.
+ */
 export function validateGenerateOptions(options: GenerateOptions): ErrorInfo {
   const params = options.parameters.map((input) => {
     const param = input.invalid
@@ -477,21 +508,139 @@ export function validateGenerateOptions(options: GenerateOptions): ErrorInfo {
     }
   }
 
-  for (const [paramName, valueWeights] of Object.entries(options.weights.entries)) {
+  // Walked in the core's own key order rather than the order the caller wrote
+  // the object in, so a map with more than one thing wrong with it is refused
+  // over the same key on every surface. The core holds these as std::map, and a
+  // JavaScript object holds them in insertion order.
+  for (const paramName of Object.keys(options.weights.entries).sort(compareUtf8)) {
+    const valueWeights = options.weights.entries[paramName];
     const param = byName.get(paramName);
     if (!param) {
       return invalid(`Unknown parameter in weights: ${paramName}`);
     }
-    for (const [valueName, weight] of Object.entries(valueWeights)) {
-      if (param.findValueIndex(valueName) === 0xffffffff) {
+    // Which key has claimed each value so far, so a second key naming the same
+    // value is caught here rather than resolved by whichever key the surface's
+    // map happened to hand over first.
+    const claimedBy = new Map<number, string>();
+    for (const valueName of Object.keys(valueWeights).sort(compareUtf8)) {
+      const weight = valueWeights[valueName];
+      const valueIndex = resolveValueName(param, valueName);
+      if (valueIndex === UNASSIGNED) {
         return invalid(`Unknown value in weights: ${paramName}=${valueName}`);
       }
       if (!Number.isFinite(weight) || weight <= 0) {
         return invalid(`Weight must be finite and positive: ${paramName}=${valueName}`);
       }
+      // Two keys naming one value carry two weights for it, and only one can
+      // apply. A key spelled the way the model declares the value settles that
+      // outright, which is how a weight keyed by an alias keeps working beside
+      // one keyed by the value itself. With no declared spelling among them the
+      // winner would come down to the order the caller's map is walked in, and
+      // that order is not the same on every surface — so the model is refused
+      // instead of weighted differently depending on where it was run.
+      const claimed = claimedBy.get(valueIndex);
+      const declared = param.values[valueIndex];
+      if (claimed !== undefined && claimed !== declared && valueName !== declared) {
+        return invalid(
+          `Ambiguous value in weights: ${paramName}=${claimed} and ${paramName}=${valueName} name the same value`,
+        );
+      }
+      if (claimed === undefined || valueName === declared) {
+        claimedBy.set(valueIndex, valueName);
+      }
     }
   }
   return okError();
+}
+
+/**
+ * Rebuild the Parameter objects an options object describes.
+ *
+ * The aliases and equivalence classes carried on the options are restored here,
+ * before expansion: expansion regenerates a value set but carries per-value
+ * metadata across by value identity, so a retained value keeps its aliases and
+ * its class.
+ */
+export function optionsParameters(options: GenerateOptions): Parameter[] {
+  return options.parameters.map((p) => {
+    const param = p.invalid
+      ? new Parameter(p.name, p.values, p.invalid)
+      : new Parameter(p.name, p.values);
+    if (p.aliases?.some((a) => a.length > 0)) {
+      param.setAliases(p.aliases);
+    }
+    if (p.equivalenceClasses?.some((c) => c.length > 0)) {
+      param.setEquivalenceClasses(p.equivalenceClasses);
+    }
+    return param;
+  });
+}
+
+/** Describe a Parameter in the shape an options object carries. */
+function toParameterSpec(param: Parameter): GenerateOptions['parameters'][number] {
+  const spec: GenerateOptions['parameters'][number] = { name: param.name, values: param.values };
+  if (param.invalid.length > 0) {
+    spec.invalid = param.invalid;
+  }
+  if (param.hasAliases) {
+    spec.aliases = param.allAliases;
+  }
+  if (param.hasEquivalenceClasses) {
+    spec.equivalenceClasses = param.equivalenceClasses;
+  }
+  return spec;
+}
+
+/**
+ * The outcome of submitting options to the acceptance gate.
+ *
+ * Exactly one side is meaningful: on an ok error the options and the parameters
+ * describe the value space the engine will run on, and on a rejection they are
+ * the caller's own input, returned unchanged so only `error` has to be read.
+ * Mirrors model::AcceptedOptions in the C++ core, which carries the parameters
+ * inside the options because a C++ GenerateOptions holds Parameter objects
+ * rather than the plain descriptions this port carries.
+ */
+export interface AcceptedOptions {
+  /** Boundary parameters already expanded, and no boundary configs left. */
+  options: GenerateOptions;
+  /** The expanded parameter set, in the form the engine takes. */
+  params: Parameter[];
+  error: ErrorInfo;
+}
+
+/**
+ * Run the acceptance gate: expand boundaries, then validate everything.
+ *
+ * This is the one description of what the engine accepts, so every surface asks
+ * it rather than composing the two halves for itself — and asking it a second
+ * time is how a caller checks that a surface really did. Mirrors
+ * model::AcceptOptions in the C++ core.
+ *
+ * Expansion runs first so every later rule is applied to the value space the
+ * engine will use. Judging the declared values instead would, for instance,
+ * reject a weight naming a value expansion is about to supply.
+ *
+ * This and the two halves it composes are one unit: expandBoundaries and
+ * validateGenerateOptions are not separately meaningful as an acceptance
+ * answer, and wherever they live this belongs beside them.
+ */
+export function acceptOptions(options: GenerateOptions): AcceptedOptions {
+  const declared = optionsParameters(options);
+  const expansion = expandBoundaries(declared, options.boundaryConfigs);
+  if (expansion.error.code !== ErrorCode.Ok) {
+    return { options, params: declared, error: expansion.error };
+  }
+  const accepted: GenerateOptions = {
+    ...options,
+    parameters: expansion.params.map(toParameterSpec),
+    boundaryConfigs: {},
+  };
+  const validationError = validateGenerateOptions(accepted);
+  if (validationError.code !== ErrorCode.Ok) {
+    return { options, params: declared, error: validationError };
+  }
+  return { options: accepted, params: expansion.params, error: okError() };
 }
 
 /** Mode for extendTests operation. */

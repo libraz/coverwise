@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { BoundaryType, expandBoundaryValues } from './boundary.js';
-import { Parameter } from './parameter.js';
+import { Parameter, resolveValueName } from './parameter.js';
 
 describe('expandBoundaryValues', () => {
   it('preserves spelling and metadata by numeric value identity', () => {
@@ -16,12 +16,12 @@ describe('expandBoundaryValues', () => {
       step: 1,
     });
 
-    const one = result.findValueIndex('1.0');
+    const one = resolveValueName(result, '1.0');
     expect(result.values[one]).toBe('1.0');
     expect(result.isInvalid(one)).toBe(true);
     expect(result.aliases(one)).toEqual(['one']);
     expect(result.equivalenceClass(one)).toBe('numeric');
-    const generated = result.findValueIndex('-1');
+    const generated = resolveValueName(result, '-1');
     expect(result.isInvalid(generated)).toBe(false);
     expect(result.aliases(generated)).toEqual([]);
     expect(result.equivalenceClass(generated)).toBe('');

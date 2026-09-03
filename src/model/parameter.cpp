@@ -88,6 +88,10 @@ uint32_t Parameter::find_value_index(const std::string& name, bool case_sensitiv
   return UINT32_MAX;
 }
 
+uint32_t ResolveValueName(const Parameter& param, const std::string& name) {
+  return param.find_value_index(name, /*case_sensitive=*/false);
+}
+
 const std::string& Parameter::equivalence_class(uint32_t index) const {
   static const std::string kEmpty;
   if (equivalence_classes_.empty() || index >= static_cast<uint32_t>(equivalence_classes_.size())) {

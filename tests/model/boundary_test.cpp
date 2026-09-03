@@ -116,13 +116,13 @@ TEST(BoundaryTest, PreservesOriginalSpellingAndMetadataByValueIdentity) {
 
   auto result = ExpandBoundaryValues(param, config);
 
-  const uint32_t one = result.find_value_index("1.0");
+  const uint32_t one = ResolveValueName(result, "1.0");
   ASSERT_NE(one, UINT32_MAX);
   EXPECT_EQ(result.values[one], "1.0");
   EXPECT_TRUE(result.is_invalid(one));
   EXPECT_EQ(result.aliases(one), (std::vector<std::string>{"one"}));
   EXPECT_EQ(result.equivalence_class(one), "numeric");
-  const uint32_t generated = result.find_value_index("-1");
+  const uint32_t generated = ResolveValueName(result, "-1");
   ASSERT_NE(generated, UINT32_MAX);
   EXPECT_FALSE(result.is_invalid(generated));
   EXPECT_TRUE(result.aliases(generated).empty());
@@ -240,7 +240,7 @@ TEST(BoundaryTest, SeedIndicesAreRemappedByValueIdentity) {
   ASSERT_TRUE(result.error.ok());
   ASSERT_FALSE(result.tests.empty());
   ASSERT_EQ(result.parameters.size(), 2u);
-  const uint32_t remapped = result.parameters[0].find_value_index("50");
+  const uint32_t remapped = ResolveValueName(result.parameters[0], "50");
   ASSERT_NE(remapped, UINT32_MAX);
   EXPECT_EQ(result.tests[0].values[0], remapped);
   EXPECT_EQ(result.parameters[0].values[result.tests[0].values[0]], "50");
@@ -267,7 +267,7 @@ TEST(BoundaryTest, ExpansionAndSeedRemapIgnoreNumericLocale) {
   EXPECT_NE(std::setlocale(LC_NUMERIC, saved_locale.c_str()), nullptr);
   ASSERT_TRUE(result.error.ok());
   ASSERT_FALSE(result.tests.empty());
-  const uint32_t remapped = result.parameters[0].find_value_index("1.5");
+  const uint32_t remapped = ResolveValueName(result.parameters[0], "1.5");
   ASSERT_NE(remapped, UINT32_MAX);
   EXPECT_EQ(result.tests[0].values[0], remapped);
 }

@@ -11,6 +11,8 @@ export {
   okError,
 } from './error.js';
 export {
+  type AcceptedOptions,
+  acceptOptions,
   createGenerateOptions,
   createModelStats,
   createWeightConfig,
@@ -26,6 +28,7 @@ export {
 export {
   hasInvalidValues,
   Parameter,
+  resolveValueName,
   UNASSIGNED,
 } from './parameter.js';
 export {

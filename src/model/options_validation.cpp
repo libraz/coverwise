@@ -7,6 +7,7 @@
 #include <limits>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "model/boundary.h"
 #include "model/limits.h"
@@ -27,29 +28,35 @@ const Parameter* FindParameter(const std::vector<Parameter>& params, const std::
   return nullptr;
 }
 
-/// @brief Charge every string in the options against the documented byte budgets.
+/// @brief Charge the caller's strings against the documented byte budgets.
 ///
 /// std::string already holds UTF-8, so size() is the byte length the JavaScript
 /// surfaces compute with TextEncoder. Both the per-string and the aggregate
 /// bound are documented input limits, so they belong to the acceptance contract
 /// rather than to any one surface's reader.
 ///
-/// Recorded rows are charged too. A row's members reach the engine as value
-/// indices, but a member that did not resolve keeps the caller's own text, and
-/// that text is the largest input dimension there is: rows are bounded in count
-/// and each row in width, so leaving them uncharged means no bound at all on
-/// what a caller can hand the engine to hold.
-Error ValidateStringBudget(const GenerateOptions& options, size_t charged_bytes) {
-  size_t aggregate = charged_bytes;
+/// The model's own strings — every kind but kRowValue — are charged whatever
+/// the caller says. Row values are charged here only when no reader counted
+/// them: a row reaches the engine as value indices, and the text of a position
+/// that did not resolve is kept so the diagnostics can quote it back. A surface
+/// that read the row already counted that text and charging it again would cost
+/// a caller twice for text they wrote once; a caller that read nothing has it
+/// counted nowhere else, and leaving it would put the one path with no reader
+/// outside the published budget entirely.
+Error ValidateStringBudget(const GenerateOptions& options, ChargedText charged) {
+  size_t aggregate = charged.bytes();
   // A caller's own total can exhaust the budget on its own, and a model always
   // has at least a parameter name to charge, but the verdict must not depend on
   // there being something left to walk.
   if (aggregate > kMaxAggregateStringBytes) {
     return Invalid(AggregateBudgetExceededMessage());
   }
-  auto account = [&aggregate](const std::string& value, const std::string& context) {
+  // The context is composed only for a string that is being refused: building
+  // one per charged string would cost more than the check it describes.
+  auto account = [&aggregate](const std::string& value, ChargedString kind,
+                              const ChargedStringLocation& location) {
     if (value.size() > kMaxStringBytes) {
-      return Invalid(context + " exceeds " + std::to_string(kMaxStringBytes) + " UTF-8 bytes");
+      return Invalid(StringBudgetExceededMessage(ChargedStringContext(kind, location)));
     }
     aggregate += value.size();
     if (aggregate > kMaxAggregateStringBytes) {
@@ -59,46 +66,67 @@ Error ValidateStringBudget(const GenerateOptions& options, size_t charged_bytes)
   };
 
   for (const auto& param : options.parameters) {
-    if (auto error = account(param.name, "Parameter name '" + param.name + "'"); !error.ok()) {
+    if (auto error = account(param.name, ChargedString::kParameterName, {param.name});
+        !error.ok()) {
       return error;
     }
     for (size_t index = 0; index < param.values.size(); ++index) {
-      const std::string context = param.name + "[" + std::to_string(index) + "]";
-      if (auto error = account(param.values[index], context); !error.ok()) return error;
+      if (auto error =
+              account(param.values[index], ChargedString::kParameterValue, {param.name, index});
+          !error.ok()) {
+        return error;
+      }
     }
-    for (const auto& value_aliases : param.all_aliases()) {
-      for (const auto& alias : value_aliases) {
-        if (auto error = account(alias, "Alias in parameter '" + param.name + "'"); !error.ok()) {
+    // Both metadata lists run parallel to the value list, so a position in them
+    // is the value index a refusal names.
+    const auto& all_aliases = param.all_aliases();
+    for (size_t index = 0; index < all_aliases.size(); ++index) {
+      for (const auto& alias : all_aliases[index]) {
+        if (auto error = account(alias, ChargedString::kValueAlias, {param.name, index});
+            !error.ok()) {
           return error;
         }
       }
     }
-    for (const auto& equivalence_class : param.equivalence_classes()) {
-      if (auto error = account(equivalence_class, "Class in parameter '" + param.name + "'");
+    const auto& equivalence_classes = param.equivalence_classes();
+    for (size_t index = 0; index < equivalence_classes.size(); ++index) {
+      if (auto error = account(equivalence_classes[index], ChargedString::kEquivalenceClass,
+                               {param.name, index});
           !error.ok()) {
         return error;
       }
     }
   }
   for (const auto& expression : options.constraint_expressions) {
-    if (auto error = account(expression, "Constraint expression"); !error.ok()) return error;
+    if (auto error = account(expression, ChargedString::kConstraintExpression, {}); !error.ok()) {
+      return error;
+    }
   }
   for (const auto& sub_model : options.sub_models) {
     for (const auto& name : sub_model.parameter_names) {
-      if (auto error = account(name, "Sub-model parameter name"); !error.ok()) return error;
+      if (auto error = account(name, ChargedString::kSubModelParameterName, {}); !error.ok()) {
+        return error;
+      }
     }
   }
   for (const auto& [param_name, value_weights] : options.weights.entries) {
-    if (auto error = account(param_name, "Weight parameter name"); !error.ok()) return error;
+    if (auto error = account(param_name, ChargedString::kWeightParameterName, {}); !error.ok()) {
+      return error;
+    }
     for (const auto& [value_name, weight] : value_weights) {
       (void)weight;
-      if (auto error = account(value_name, "Weight value name"); !error.ok()) return error;
+      if (auto error = account(value_name, ChargedString::kWeightValueName, {}); !error.ok()) {
+        return error;
+      }
     }
   }
-  for (size_t row = 0; row < options.seeds.size(); ++row) {
-    const std::string context = "Value in seeds row " + std::to_string(row);
-    for (const auto& text : options.seeds[row].unresolved) {
-      if (auto error = account(text, context); !error.ok()) return error;
+  if (!charged.rows_counted()) {
+    for (size_t row = 0; row < options.seeds.size(); ++row) {
+      for (const auto& text : options.seeds[row].unresolved) {
+        if (auto error = account(text, ChargedString::kRowValue, {"seeds", row}); !error.ok()) {
+          return error;
+        }
+      }
     }
   }
   return {};
@@ -185,9 +213,9 @@ Error ValidateBoundaryConfigs(const GenerateOptions& options) {
   return {};
 }
 
-/// @brief The whole rule set, judged with @p charged_bytes already spent.
-Error ValidateOptions(const GenerateOptions& options, size_t charged_bytes) {
-  if (auto budget_error = ValidateStringBudget(options, charged_bytes); !budget_error.ok()) {
+/// @brief The whole rule set, judged with @p charged already spent.
+Error ValidateOptions(const GenerateOptions& options, ChargedText charged) {
+  if (auto budget_error = ValidateStringBudget(options, charged); !budget_error.ok()) {
     return budget_error;
   }
   auto boundary_error = ValidateBoundaryConfigs(options);
@@ -243,12 +271,33 @@ Error ValidateOptions(const GenerateOptions& options, size_t charged_bytes) {
   for (const auto& [param_name, value_weights] : options.weights.entries) {
     const auto* param = FindParameter(options.parameters, param_name);
     if (param == nullptr) return Invalid("Unknown parameter in weights: " + param_name);
+    // Which key has claimed each value so far, so a second key naming the same
+    // value is caught here rather than resolved by whichever key the surface's
+    // map happened to hand over first.
+    std::vector<const std::string*> claimed_by(param->values.size(), nullptr);
     for (const auto& [value_name, weight] : value_weights) {
-      if (param->find_value_index(value_name) == UINT32_MAX) {
+      const uint32_t value_index = ResolveValueName(*param, value_name);
+      if (value_index == UINT32_MAX) {
         return Invalid("Unknown value in weights: " + param_name + "=" + value_name);
       }
       if (!std::isfinite(weight) || weight <= 0.0) {
         return Invalid("Weight must be finite and positive: " + param_name + "=" + value_name);
+      }
+      // Two keys naming one value carry two weights for it, and only one can
+      // apply. A key spelled the way the model declares the value settles that
+      // outright, which is how a weight keyed by an alias keeps working beside
+      // one keyed by the value itself. With no declared spelling among them the
+      // winner would come down to the order the caller's map is walked in, and
+      // that order is not the same on every surface — so the model is refused
+      // instead of weighted differently depending on where it was run.
+      const std::string* claimed = claimed_by[value_index];
+      const std::string& declared = param->values[value_index];
+      if (claimed != nullptr && *claimed != declared && value_name != declared) {
+        return Invalid("Ambiguous value in weights: " + param_name + "=" + *claimed + " and " +
+                       param_name + "=" + value_name + " name the same value");
+      }
+      if (claimed == nullptr || value_name == declared) {
+        claimed_by[value_index] = &value_name;
       }
     }
   }
@@ -257,12 +306,43 @@ Error ValidateOptions(const GenerateOptions& options, size_t charged_bytes) {
 
 }  // namespace
 
+std::string ChargedStringContext(ChargedString kind, const ChargedStringLocation& location) {
+  const std::string subject(location.subject);
+  switch (kind) {
+    case ChargedString::kParameterName:
+      return "Parameter name '" + subject + "'";
+    case ChargedString::kParameterValue:
+      return subject + "[" + std::to_string(location.index) + "]";
+    case ChargedString::kValueAlias:
+      return "Alias at " + subject + "[" + std::to_string(location.index) + "]";
+    case ChargedString::kEquivalenceClass:
+      return "Class at " + subject + "[" + std::to_string(location.index) + "]";
+    case ChargedString::kConstraintExpression:
+      return "Constraint expression";
+    case ChargedString::kSubModelParameterName:
+      return "Sub-model parameter name";
+    case ChargedString::kWeightParameterName:
+      return "Weight parameter name";
+    case ChargedString::kWeightValueName:
+      return "Weight value name";
+    case ChargedString::kRowValue:
+      return "Value in " + subject + " row " + std::to_string(location.index);
+  }
+  // Every kind is answered above, which -Wswitch holds to; this satisfies the
+  // return-type check for a value outside the enumeration.
+  return subject;
+}
+
+std::string StringBudgetExceededMessage(const std::string& context) {
+  return context + " exceeds " + std::to_string(kMaxStringBytes) + " UTF-8 bytes";
+}
+
 std::string AggregateBudgetExceededMessage() {
   return "Input strings exceed " + std::to_string(kMaxAggregateStringBytes) + " UTF-8 bytes";
 }
 
 Error ValidateGenerateOptions(const GenerateOptions& options) {
-  return ValidateOptions(options, 0);
+  return ValidateOptions(options, ChargedText::None());
 }
 
 Error ExpandBoundaries(GenerateOptions& options) {
@@ -280,18 +360,14 @@ Error ExpandBoundaries(GenerateOptions& options) {
   return {};
 }
 
-AcceptedOptions AcceptOptions(GenerateOptions options) {
-  return AcceptOptions(std::move(options), 0);
-}
-
-AcceptedOptions AcceptOptions(GenerateOptions options, size_t charged_bytes) {
+AcceptedOptions AcceptOptions(GenerateOptions options, ChargedText charged) {
   // Expansion runs first so every later rule is applied to the value space the
   // engine will use. Judging the declared values instead would, for instance,
   // reject a boundary parameter whose only spelled-out value is an invalid
   // sentinel, even though expansion is about to supply six valid ones.
   auto expansion_error = ExpandBoundaries(options);
   if (!expansion_error.ok()) return AcceptedOptions(std::move(expansion_error));
-  auto validation_error = ValidateOptions(options, charged_bytes);
+  auto validation_error = ValidateOptions(options, charged);
   if (!validation_error.ok()) return AcceptedOptions(std::move(validation_error));
   return AcceptedOptions(ValidatedOptions(std::move(options)));
 }

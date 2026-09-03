@@ -4,10 +4,15 @@
 
 #include <vector>
 
+#include "model/constraint_ast.h"
+#include "model/constraint_parser.h"
 #include "model/error.h"
 
+using coverwise::model::EqualsNode;
 using coverwise::model::Error;
 using coverwise::model::Parameter;
+using coverwise::model::ParseConstraint;
+using coverwise::model::ResolveValueName;
 using coverwise::model::ValidateParameters;
 
 TEST(ParameterTest, SizeReturnsValueCount) {
@@ -127,4 +132,59 @@ TEST(ParameterTest, ResolvingAValueByEitherCaseLeavesTheStoredSpellingAlone) {
   EXPECT_EQ(p.values[0], "Chrome");
   EXPECT_EQ(p.values[1], "FireFox");
   EXPECT_EQ(p.display_name(1, 0), "FireFox");
+}
+
+// The entry point every surface resolves caller text through carries the policy
+// itself: no argument decides it, so no call site can pick a different one.
+TEST(ResolveValueNameTest, AnyAsciiCaseOfAValueOrAliasNamesTheDeclaredIndex) {
+  Parameter p{"os", {"Windows", "Linux"}};
+  p.set_aliases({{"Win32"}, {}});
+
+  for (const char* spelling : {"Windows", "windows", "WINDOWS", "wInDoWs"}) {
+    EXPECT_EQ(ResolveValueName(p, spelling), 0u) << spelling;
+  }
+  for (const char* spelling : {"Win32", "win32", "WIN32"}) {
+    EXPECT_EQ(ResolveValueName(p, spelling), 0u) << spelling;
+  }
+  EXPECT_EQ(ResolveValueName(p, "LINUX"), 1u);
+  EXPECT_EQ(ResolveValueName(p, "Windows"), ResolveValueName(p, "windows"));
+}
+
+// Widening the fold past ASCII would be its own defect: it would make two names
+// the model is entitled to treat as distinct resolve to one value.
+TEST(ResolveValueNameTest, TheFoldReachesAsciiLettersOnly) {
+  const Parameter p{"city", {"MÜNCHEN", "OSAKA"}};
+
+  EXPECT_EQ(ResolveValueName(p, "MÜNCHEN"), 0u);
+  // Every ASCII letter matches; only the U-umlaut differs in case, and that
+  // difference is preserved, so the name does not resolve.
+  EXPECT_EQ(ResolveValueName(p, "MüNCHEN"), UINT32_MAX);
+  // The ASCII half of the same value still folds.
+  EXPECT_EQ(ResolveValueName(p, "osaka"), 1u);
+}
+
+TEST(ResolveValueNameTest, ANameNoValueOrAliasCarriesIsStillUnknown) {
+  Parameter p{"os", {"Windows"}};
+  p.set_aliases({{"Win32"}});
+
+  EXPECT_EQ(ResolveValueName(p, "Linux"), UINT32_MAX);
+  EXPECT_EQ(ResolveValueName(p, "win"), UINT32_MAX);
+  EXPECT_EQ(ResolveValueName(p, ""), UINT32_MAX);
+}
+
+// A row and a constraint can name the same value, and the model is only
+// coherent if they name the same one. This is what settles the policy: the
+// constraint path has always folded, so a row that did not was reading the same
+// text a second way.
+TEST(ResolveValueNameTest, AConstraintOperandResolvesToTheSameIndex) {
+  const std::vector<Parameter> params{Parameter{"os", {"Windows", "Linux"}},
+                                      Parameter{"browser", {"Chrome", "Firefox"}}};
+
+  const auto parsed = ParseConstraint("os = wInDoWs", params, {});
+  ASSERT_TRUE(parsed.error.ok()) << parsed.error.message;
+  const auto* equals = dynamic_cast<const EqualsNode*>(parsed.constraint.get());
+  ASSERT_NE(equals, nullptr);
+
+  EXPECT_EQ(equals->value_index(), ResolveValueName(params[0], "wInDoWs"));
+  EXPECT_EQ(equals->value_index(), ResolveValueName(params[0], "Windows"));
 }

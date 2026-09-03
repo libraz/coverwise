@@ -607,38 +607,52 @@ describe('atom construction and evaluation cost', () => {
     expect(longMs).toBeLessThan(shortMs * 3.0);
   });
 
-  it('tests IN membership without walking the set', { timeout: MEASUREMENT_TIMEOUT_MS }, () => {
+  it('does not touch the member list once membership is precomputed', () => {
     // A large IN set must not cost more per evaluation than a small one: an IN
     // clause is the plain way to write a long disjunction, so it must not be
-    // the slow way. Precomputing membership at construction is what makes these
-    // two runs cost the same.
-    const evaluations = 2000000;
+    // the slow way. Membership is precomputed into a table indexed by value, so
+    // evaluation reads the table and never the set — and while the cost of
+    // reading it is a property of the machine, how often the set is read is a
+    // function of the input alone.
+    //
+    // The set is handed to the node behind a proxy that counts element reads,
+    // so what the constructor spends is visible and what evaluation spends has
+    // to be nothing. Walking the set instead would read up to one element per
+    // member on every evaluation.
+    const setSize = 2000;
     const domain = 4096;
-    const evaluate = (setSize: number): (() => void) => {
-      const node = new InNode(
-        0,
-        Array.from({ length: setSize }, (_, i) => i),
-      );
-      const assignment = [0];
-      return () => {
-        // Sweeping the whole domain keeps both runs on the same mix of members
-        // and non-members, so neither is handed the cheaper answer more often.
-        for (let i = 0; i < evaluations; i++) {
-          assignment[0] = i % domain;
-          node.evaluate(assignment);
-        }
-      };
-    };
+    const evaluations = 5000;
+    let reads = 0;
+    const members = new Proxy(
+      Array.from({ length: setSize }, (_, i) => i),
+      {
+        get(target, key, receiver) {
+          if (typeof key === 'string' && /^\d+$/.test(key)) {
+            reads += 1;
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    );
 
-    const [smallMs, largeMs] = fastestEach(TIMING_RUNS, evaluate(10), evaluate(2000));
+    const node = new InNode(0, members);
+    const readsWhenBuilt = reads;
 
-    // A membership lookup is one indexed read whatever the set holds, so the
-    // honest ratio is 1.0 and anything above it is contention. The bound
-    // separates that from walking the set, which costs 136x here, measured by
-    // scanning the member list on every evaluation. Two orders of magnitude
-    // apart leaves the bound room to sit far above contention and still give
-    // the regression nowhere to hide.
-    expect(largeMs).toBeLessThan(smallMs * 5.0);
+    // Sweeping the whole domain keeps the run on the same mix of members and
+    // non-members, so no branch of evaluate is left untaken.
+    const assignment = [0];
+    for (let i = 0; i < evaluations; i++) {
+      assignment[0] = i % domain;
+      node.evaluate(assignment);
+    }
+
+    expect(reads).toBe(readsWhenBuilt);
+    // And what the constructor spent is a fixed number of passes over the set —
+    // two, as it is written — with nothing per evaluation on top. A walk of the
+    // set would read up to evaluations x setSize elements, three orders of
+    // magnitude past this bound, so the bound has room without losing the
+    // regression.
+    expect(readsWhenBuilt).toBeLessThanOrEqual(4 * setSize);
   });
 
   it('keeps the case-folding policy in the interned values', () => {

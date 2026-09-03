@@ -125,9 +125,17 @@ export class Parameter {
 
   /**
    * Find a value index by name, checking both primary values and aliases.
+   *
+   * The match policy is deliberately not defaulted. Resolving a name a caller
+   * wrote is resolveValueName's job and nothing else should be deciding the
+   * policy for itself; a caller that genuinely wants byte equality has to say
+   * so, and one that forgets to decide does not type-check.
+   *
+   * @param name - The value name to search for.
+   * @param caseSensitive - If false, compare names by ASCII case folding.
    * @returns The value index, or UNASSIGNED if not found.
    */
-  findValueIndex(name: string, caseSensitive = true): number {
+  findValueIndex(name: string, caseSensitive: boolean): number {
     // Case-insensitive value resolution is ASCII-only, matching the C++ core.
     const eq = caseSensitive ? (a: string, b: string) => a === b : asciiCaseInsensitiveEqual;
 
@@ -181,6 +189,32 @@ export class Parameter {
   get equivalenceClasses(): string[] {
     return this.equivalenceClasses_;
   }
+}
+
+/**
+ * Resolve a value name a caller wrote to the index it names.
+ *
+ * This is the one entry point for turning caller-supplied text into a value
+ * index: seed rows, `tests` rows, `existing` rows and weights keys all arrive
+ * here, on every surface. The matching policy lives here alone rather than
+ * being restated at each call site, so a path added later inherits it instead
+ * of choosing again.
+ *
+ * Matching folds ASCII case, which is what the constraint parser does for the
+ * same text, so a value spelled one way in a row and another way in a
+ * constraint names the same index. The fold is ASCII-only: two names differing
+ * only in the case of a non-ASCII letter are distinct names, and one of them
+ * does not resolve to the other.
+ *
+ * The answer is unique when it exists because validateParameters rejects a
+ * parameter whose values or aliases collide once folded.
+ *
+ * @param param - The parameter whose values and aliases are searched.
+ * @param name - The value name as the caller wrote it.
+ * @returns The value index, or UNASSIGNED if no value or alias names it.
+ */
+export function resolveValueName(param: Parameter, name: string): number {
+  return param.findValueIndex(name, false);
 }
 
 /** Check if any parameter in the collection has invalid values. */

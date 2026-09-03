@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createBoundaryConfig } from './boundary.js';
 import { boundaryAcceptanceError } from './boundary-rules.js';
-import { aggregateBudgetExceeded } from './budget.js';
+import { aggregateBudgetExceeded, chargedStringContext, stringBudgetExceeded } from './budget.js';
 import { ErrorCode } from './error.js';
 import {
   createGenerateOptions,
@@ -323,19 +323,26 @@ describe('validateGenerateOptions acceptance limits', () => {
     expect(error.message).toBe(aggregateBudgetExceeded());
   });
 
-  // A row reaches the engine as value indices, so a suite of resolved rows is
-  // free. What a row does carry is the text of any position that did not
-  // resolve, which the diagnostics quote back, so that text is charged like any
-  // other caller string.
+  // A row reaches the engine as value indices, so a suite of rows costs the
+  // model layer nothing.
   it('spends nothing on rows whose every position resolved', () => {
     const seeds = Array.from({ length: 1000 }, () => ({ values: [0, 1] }));
     const options = createGenerateOptions({ parameters: twoBinary, seeds });
     expect(validateGenerateOptions(options).code).toBe(ErrorCode.Ok);
   });
 
+  // What a row does carry is the text of any position that did not resolve,
+  // which the diagnostics quote back. This entry is the one no reader stands in
+  // front of, so that text is charged here or nowhere.
+  // The same measurement the C++ gate is held to, on the same fixture: forty
+  // rows of two 60 KiB positions is 4.8 MiB of caller text against a 1 MiB
+  // ceiling. Written to mirror it row for row, because a bound enforced in one
+  // of a mirrored pair and not the other is the drift these two exist to stop.
   it('charges the text of a row position that did not resolve', () => {
     const text = 'x'.repeat(60 * 1024);
-    const rowCount = Math.ceil(MAX_AGGREGATE_STRING_BYTES / (2 * text.length)) + 1;
+    const rowCount = 40;
+    const fieldsPerRow = 2;
+    expect(rowCount * fieldsPerRow * text.length).toBeGreaterThan(MAX_AGGREGATE_STRING_BYTES);
     const seeds = Array.from({ length: rowCount }, () => ({
       values: [0xffffffff, 0xffffffff],
       unresolved: [text, text],
@@ -354,6 +361,6 @@ describe('validateGenerateOptions acceptance limits', () => {
     const options = createGenerateOptions({ parameters: twoBinary, seeds });
     const error = validateGenerateOptions(options);
     expect(error.code).toBe(ErrorCode.InvalidInput);
-    expect(error.message).toBe(`Value in seeds row 1 exceeds ${MAX_STRING_BYTES} UTF-8 bytes`);
+    expect(error.message).toBe(stringBudgetExceeded(chargedStringContext.rowValue('seeds', 1)));
   });
 });
