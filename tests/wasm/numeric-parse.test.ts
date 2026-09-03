@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { CoverwiseError, generate, init } from '../../js/index';
+import { CoverwiseError, generate, init } from '../../js/index.js';
 import { NUMERIC_PARSE_CORPUS } from '../util/numeric-parse-corpus.js';
 
 /// The corpus is shared with the C++ and pure-TypeScript tests, which read the

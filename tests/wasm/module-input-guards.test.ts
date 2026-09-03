@@ -367,8 +367,9 @@ describe('the compiled module reading input on its own', () => {
     /// declared value, each once. Rendered as the engine renders them, since
     /// that is the text it charges.
     const modelBytes = (parameters: unknown[]): number =>
-      (parameters as Array<{ name: string; values: unknown[] }>).reduce(
-        (total, p) => total + p.name.length + p.values.reduce((s, v) => s + String(v).length, 0),
+      (parameters as Array<{ name: string; values: unknown[] }>).reduce<number>(
+        (total, p) =>
+          total + p.name.length + p.values.reduce<number>((s, v) => s + String(v).length, 0),
         0,
       );
 

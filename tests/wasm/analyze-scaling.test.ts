@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { init, type Parameter, analyzeCoverage as wasmAnalyzeCoverage } from '../../js/index';
-import { analyzeCoverage as pureAnalyzeCoverage } from '../../js/pure/index';
+import { init, type Parameter, analyzeCoverage as wasmAnalyzeCoverage } from '../../js/index.js';
+import { analyzeCoverage as pureAnalyzeCoverage } from '../../js/pure/index.js';
 import { fastestEach } from '../util/timing.js';
 
 /// Argument conversion cost of the WASM surface on a large recorded suite.

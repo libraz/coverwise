@@ -16,13 +16,19 @@
 /// INVALID_INPUT result. Reaching a raw `emscripten::val` field is not a
 /// convention to follow but a compile error.
 ///
-/// Two rules hold across every accessor:
+/// Three rules hold across every accessor:
 ///   - `undefined` and `null` are absence. An optional field holding either is
 ///     reported as missing, so the documented default applies; a required field
 ///     holding either is rejected exactly as if the key were not there.
 ///   - Key presence never licenses a dereference. HasField answers whether a
 ///     key exists and nothing else; the value still has to come through an
 ///     accessor that establishes its shape.
+///   - A read runs the caller's JavaScript, and a read that throws is a
+///     rejection like any malformed shape. A getter, a Proxy trap or a computed
+///     member of a class instance may throw, and what it throws is a JavaScript
+///     exception rather than a C++ one — so nothing here reads a caller-supplied
+///     object from C++, and the throw never becomes an unwind through the
+///     WebAssembly frames. See the guarded reads in `detail`.
 ///
 /// Each shape comes in two forms. `Require`/`Optional` take the rejection text
 /// and are what a per-field parser wants; `Try` returns an empty optional and
@@ -34,6 +40,7 @@
 
 #ifdef __EMSCRIPTEN__
 
+#include <emscripten/em_js.h>
 #include <emscripten/val.h>
 
 #include <cstdint>
@@ -51,15 +58,247 @@ class JsScalar;
 
 namespace detail {
 
+/// The JS library symbols the reads below name, declared beside the code that
+/// names them rather than at the link line.
+EM_JS_DEPS(coverwise_js_value, "$Emval,$UTF8ToString");
+
+// Every read of a caller-supplied object happens inside JavaScript, in the
+// functions below, so that caller code which throws is contained where it runs.
+//
+// Such a read executes whatever the caller attached to the property: a getter,
+// a Proxy trap, a computed member of a class instance. What that code throws is
+// a JavaScript exception, not a C++ one, so the `catch (const std::exception&)`
+// at the export boundary never sees it. It unwinds out through the WebAssembly
+// frames instead — past every destructor on the stack, so the handles and
+// buffers the call was holding are never released — and reaches the caller as a
+// foreign throw from a function documented to return an error object. Reactive
+// stores and class instances with computed properties are ordinary input, so
+// this is a shape the binding has to survive rather than an exotic one.
+//
+// Each read answers with a value or with a null handle. Null is unambiguous:
+// emval reserves handle 0 and never hands it out, and a property that genuinely
+// holds `undefined` comes back as the handle for `undefined`.
+//
+// A read that failed also hands back what the caller threw, through the
+// `thrown` out-parameter, so the rejection can quote it the way the wrapper
+// package quotes a throw it caught itself. The value travels as a handle and is
+// described by coverwise_js_describe below: describing it is caller code again,
+// and doing that here — inside JavaScript, inside a catch — is what keeps the
+// reporting path from reopening the hole the read just closed.
+//
+// What is deliberately NOT routed through these, and why, since the alternative
+// reading is that the guards were applied unevenly. A guard is needed where a
+// read can reach caller code; the following cannot, and guarding them would add
+// a crossing per cell to buy nothing:
+//   - JsScalar's accessors — RequireString, RequireNumber, ToText — run against
+//     a value whose kind was established when the scalar was made. There is no
+//     getter, trap or valueOf left to reach: `String(n)` of a number the runtime
+//     already classified is the runtime's own conversion.
+//   - JsValue's classifiers — TryScalar's isString/isNumber/isTrue/isFalse,
+//     IsNullish, and the typeOf in TryObject — are `typeof` tests and handle
+//     comparisons. A Proxy has no trap for either.
+//   - The key list in ForEachEntry and FieldCount is read directly for its
+//     length and its elements, because it is the array Object.keys returned to
+//     this layer a moment earlier rather than anything the caller supplied.
+// Whatever comes back out of a read, on the other hand, is the caller's again,
+// and reaches its next question through these same guards.
+
+/// @brief `object[name]`, or a null handle if reading it threw.
+EM_JS(emscripten::EM_VAL, coverwise_js_read_name,
+      (emscripten::EM_VAL object, const char* name, emscripten::EM_VAL* thrown), {
+        try {
+          return Emval.toHandle(Emval.toValue(object)[UTF8ToString(name)]);
+        } catch (e) {
+          HEAPU32[thrown >> 2] = Emval.toHandle(e);
+          return 0;
+        }
+      });
+
+/// @brief `object[key]` for a key that is already a JS value, or a null handle
+///        if reading it threw.
+EM_JS(emscripten::EM_VAL, coverwise_js_read_key,
+      (emscripten::EM_VAL object, emscripten::EM_VAL key, emscripten::EM_VAL* thrown), {
+        try {
+          return Emval.toHandle(Emval.toValue(object)[Emval.toValue(key)]);
+        } catch (e) {
+          HEAPU32[thrown >> 2] = Emval.toHandle(e);
+          return 0;
+        }
+      });
+
+/// @brief `array[index]`, or a null handle if reading it threw.
+EM_JS(emscripten::EM_VAL, coverwise_js_read_index,
+      (emscripten::EM_VAL array, uint32_t index, emscripten::EM_VAL* thrown), {
+        try {
+          return Emval.toHandle(Emval.toValue(array)[index]);
+        } catch (e) {
+          HEAPU32[thrown >> 2] = Emval.toHandle(e);
+          return 0;
+        }
+      });
+
+/// @brief `Object.keys(object)` through the caller's resolved constructor, or a
+///        null handle if listing them threw.
+EM_JS(emscripten::EM_VAL, coverwise_js_own_keys,
+      (emscripten::EM_VAL object_ctor, emscripten::EM_VAL object, emscripten::EM_VAL* thrown), {
+        try {
+          return Emval.toHandle(Emval.toValue(object_ctor).keys(Emval.toValue(object)));
+        } catch (e) {
+          HEAPU32[thrown >> 2] = Emval.toHandle(e);
+          return 0;
+        }
+      });
+
+/// @brief Whether @p object carries @p name as an own key: 1 yes, 0 no, -1 if
+///        asking threw.
+///
+/// `val::hasOwnProperty` walks `Object.prototype.hasOwnProperty` and calls it,
+/// which is four crossings for one question and leaves a Proxy's
+/// `getOwnPropertyDescriptor` trap free to throw across them.
+EM_JS(int, coverwise_js_has_own,
+      (emscripten::EM_VAL object, const char* name, emscripten::EM_VAL* thrown), {
+        try {
+          return Object.prototype.hasOwnProperty.call(Emval.toValue(object), UTF8ToString(name))
+                     ? 1
+                     : 0;
+        } catch (e) {
+          HEAPU32[thrown >> 2] = Emval.toHandle(e);
+          return -1;
+        }
+      });
+
+/// @brief The text describing a value the caller threw.
+///
+/// A thrown value answers questions with caller code as readily as the property
+/// that produced it: `String(e)` reaches a `toString`, and a Proxy can throw
+/// from `get` and from `getPrototypeOf` alike. Asking here keeps that inside
+/// JavaScript, and a value that refuses every question is named as one rather
+/// than becoming a second escape out of the reporting path.
+///
+/// An Error is quoted by its message alone, matching what the wrapper package
+/// reports for a throw it caught before the module was reached, so one input
+/// produces one text whichever surface read it.
+EM_JS(emscripten::EM_VAL, coverwise_js_describe, (emscripten::EM_VAL thrown), {
+  try {
+    const value = Emval.toValue(thrown);
+    // Compared by length rather than against the empty string: the C++
+    // preprocessor carries this body through as a string, and the formatter
+    // that reflows it reads `!` `==` as two C++ tokens, which would split a
+    // strict inequality in half.
+    const said = value instanceof Error ? value.message : "";
+    return Emval.toHandle(said.length > 0 ? said : String(value));
+  } catch (e) {
+    return Emval.toHandle("a value that cannot be described");
+  }
+});
+
 /// @brief Whether a JS value is a genuine Array.
 ///
 /// A string is indexable and carries a `length`, so a caller who forgot to wrap
 /// a value in an array would otherwise be read character by character.
-inline bool IsArrayValue(const emscripten::val& value) {
-  return emscripten::val::global("Array").call<bool>("isArray", value);
-}
+///
+/// `Array.isArray` is resolved once and kept on the function object. Resolving
+/// it against the JS global on every call is a cost each row and each declared
+/// value would pay, which is the same reason the constructors the binding
+/// passes in are resolved once per parse rather than per cell. A revoked Proxy
+/// makes even this question throw; such a value is no Array, and whatever is
+/// read from it next is rejected by the read that reads it.
+EM_JS(bool, coverwise_js_is_array, (emscripten::EM_VAL value), {
+  // Assigned rather than coalesced: `?` `?` `=` is a trigraph to the C++
+  // preprocessor that carries this body through as a string.
+  const isArray = coverwise_js_is_array.isArray || (coverwise_js_is_array.isArray = Array.isArray);
+  try {
+    return isArray(Emval.toValue(value)) ? 1 : 0;
+  } catch (e) {
+    return 0;
+  }
+});
 
 [[noreturn]] inline void Reject(const std::string& message) { throw std::runtime_error(message); }
+
+/// @brief Reject a read that ran caller code and threw.
+///
+/// One wording for the whole family, so the surface says the same thing whether
+/// the read that threw was a named field, an element or a key listing, and the
+/// same thing the wrapper package says for a throw it caught before the module
+/// was reached. @p what names the field; the parenthesis carries the caller's
+/// own text, which is the part that says why.
+[[noreturn]] inline void RejectThrew(const std::string& what, emscripten::EM_VAL thrown) {
+  std::string described = "a value that cannot be described";
+  if (thrown != nullptr) {
+    const emscripten::val value = emscripten::val::take_ownership(thrown);
+    described =
+        emscripten::val::take_ownership(coverwise_js_describe(value.as_handle())).as<std::string>();
+  }
+  Reject("Invalid input: reading " + what + " threw (" + described + ").");
+}
+
+inline bool IsArrayValue(const emscripten::val& value) {
+  return coverwise_js_is_array(value.as_handle());
+}
+
+/// @brief `object[name]`, rejecting if the read threw.
+inline emscripten::val ReadName(const emscripten::val& object, const char* name) {
+  emscripten::EM_VAL thrown = nullptr;
+  const emscripten::EM_VAL read = coverwise_js_read_name(object.as_handle(), name, &thrown);
+  if (read == nullptr) RejectThrew(name, thrown);
+  return emscripten::val::take_ownership(read);
+}
+
+/// @brief `object[key]`, rejecting if the read threw. @p name describes @p key.
+inline emscripten::val ReadKey(const emscripten::val& object, const emscripten::val& key,
+                               const std::string& name) {
+  emscripten::EM_VAL thrown = nullptr;
+  const emscripten::EM_VAL read =
+      coverwise_js_read_key(object.as_handle(), key.as_handle(), &thrown);
+  if (read == nullptr) RejectThrew(name, thrown);
+  return emscripten::val::take_ownership(read);
+}
+
+/// @brief `array[index]`, rejecting if the read threw.
+inline emscripten::val ReadIndex(const emscripten::val& array, uint32_t index) {
+  emscripten::EM_VAL thrown = nullptr;
+  const emscripten::EM_VAL read = coverwise_js_read_index(array.as_handle(), index, &thrown);
+  if (read == nullptr) RejectThrew("index " + std::to_string(index) + " of an array", thrown);
+  return emscripten::val::take_ownership(read);
+}
+
+/// @brief The own enumerable keys of @p object, rejecting if listing them threw.
+inline emscripten::val ReadOwnKeys(const emscripten::val& object_ctor,
+                                   const emscripten::val& object) {
+  emscripten::EM_VAL thrown = nullptr;
+  const emscripten::EM_VAL keys =
+      coverwise_js_own_keys(object_ctor.as_handle(), object.as_handle(), &thrown);
+  if (keys == nullptr) RejectThrew("the keys of an object", thrown);
+  return emscripten::val::take_ownership(keys);
+}
+
+/// @brief Whether @p object carries @p name as an own key, rejecting if asking
+///        threw.
+inline bool HasOwnName(const emscripten::val& object, const char* name) {
+  emscripten::EM_VAL thrown = nullptr;
+  const int present = coverwise_js_has_own(object.as_handle(), name, &thrown);
+  if (present < 0) RejectThrew(name, thrown);
+  return present != 0;
+}
+
+/// @brief The `length` of an array, rejecting if reading it threw or produced
+///        something that is not a count.
+///
+/// The number is classified before it is taken: `val::as<uint32_t>()` runs the
+/// caller's `valueOf` on anything that is not already a number, which is the
+/// same hazard as the read that produced it. A genuine Array always answers
+/// with a count; a Proxy standing in for one need not.
+inline uint32_t ReadLength(const emscripten::val& array) {
+  const emscripten::val length = ReadName(array, "length");
+  const double count = length.isNumber() ? length.as<double>() : -1.0;
+  const uint32_t size = (count >= 0.0 && count <= 4294967295.0) ? static_cast<uint32_t>(count) : 0u;
+  // Round-tripping rejects a negative, a fraction and a NaN in one comparison.
+  if (static_cast<double>(size) != count) {
+    Reject("Invalid input: an array reported a length that is not a count.");
+  }
+  return size;
+}
 
 }  // namespace detail
 
@@ -186,10 +425,10 @@ class JsScalar {
 /// @brief A value already known to be an Array.
 class JsArray {
  public:
-  uint32_t size() const { return value_["length"].as<uint32_t>(); }
+  uint32_t size() const { return detail::ReadLength(value_); }
 
   /// @brief The element at @p index, whose own shape is still unestablished.
-  JsValue At(uint32_t index) const { return JsValue(value_[index]); }
+  JsValue At(uint32_t index) const { return JsValue(detail::ReadIndex(value_, index)); }
 
   /// @brief The element at @p index as a non-empty string.
   std::string RequireNonEmptyStringAt(uint32_t index, const std::string& message) const {
@@ -213,7 +452,7 @@ class JsObject {
   /// Presence only. It says nothing about the value, which still has to be read
   /// through one of the accessors below — a key present with an `undefined`
   /// value is not a readable field.
-  bool HasField(const char* field) const { return value_.hasOwnProperty(field); }
+  bool HasField(const char* field) const { return detail::HasOwnName(value_, field); }
 
   JsScalar RequireScalar(const char* field, const std::string& message = {}) const {
     return Field(field).RequireScalar(Or(message, ScalarText(field)));
@@ -246,24 +485,28 @@ class JsObject {
   ///        caller for the same reason JsScalar::ToText takes `String`.
   template <typename Fn>
   void ForEachEntry(const emscripten::val& object_ctor, Fn&& visit) const {
-    const emscripten::val keys = object_ctor.call<emscripten::val>("keys", value_);
+    // The key list comes from Object.keys, so it is an array this layer made
+    // and its own length and elements are read directly.
+    const emscripten::val keys = detail::ReadOwnKeys(object_ctor, value_);
     const uint32_t count = keys["length"].as<uint32_t>();
     for (uint32_t i = 0; i < count; ++i) {
       const emscripten::val key = keys[i];
-      visit(key.as<std::string>(), JsValue(value_[key]));
+      std::string name = key.as<std::string>();
+      emscripten::val value = detail::ReadKey(value_, key, name);
+      visit(std::move(name), JsValue(std::move(value)));
     }
   }
 
   /// @brief Number of own enumerable keys.
   uint32_t FieldCount(const emscripten::val& object_ctor) const {
-    return object_ctor.call<emscripten::val>("keys", value_)["length"].as<uint32_t>();
+    return detail::ReadOwnKeys(object_ctor, value_)["length"].as<uint32_t>();
   }
 
  private:
   friend class JsValue;
   explicit JsObject(emscripten::val value) : value_(std::move(value)) {}
 
-  JsValue Field(const char* field) const { return JsValue(value_[field]); }
+  JsValue Field(const char* field) const { return JsValue(detail::ReadName(value_, field)); }
 
   static const std::string& Or(const std::string& message, const std::string& fallback) {
     return message.empty() ? fallback : message;

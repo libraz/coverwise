@@ -8,7 +8,7 @@ import {
   init,
   type Parameter,
   type TestCase,
-} from '../../js/index';
+} from '../../js/index.js';
 
 describe('coverwise WASM', () => {
   beforeAll(async () => {

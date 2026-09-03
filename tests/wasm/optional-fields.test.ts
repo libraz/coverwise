@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { type GenerateInput, init, generate as wasmGenerate } from '../../js/index';
-import { generate as pureGenerate } from '../../js/pure/index';
+import { type GenerateInput, init, generate as wasmGenerate } from '../../js/index.js';
+import { generate as pureGenerate } from '../../js/pure/index.js';
 
 /// An optional field the caller did not fill in is `undefined` in JavaScript,
 /// and `null` once the same input has been through a JSON round trip. Neither

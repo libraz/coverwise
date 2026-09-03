@@ -44,8 +44,9 @@ using coverwise::binding::JsValue;
 //
 // Nothing below reads a field out of a caller-supplied object directly. Input
 // arrives as one of the wrappers in js_value.h, which establishes a value's
-// shape before it can be used and rejects everything else as a
-// std::runtime_error — caught at the boundary and reported as INVALID_INPUT.
+// shape before it can be used and rejects everything else — a read that ran the
+// caller's own code and threw included — as a std::runtime_error, caught at the
+// boundary and reported as INVALID_INPUT.
 // Under DISABLE_EXCEPTION_CATCHING a raw emscripten type error would instead
 // abort the module and poison the singleton, so no JS exception may escape.
 // ---------------------------------------------------------------------------
@@ -74,11 +75,11 @@ struct InputError : std::exception {
   coverwise::model::Error error;
 };
 
-/// @brief Caller-supplied row text charged so far in one call.
+/// @brief Charge one row value against the documented byte budgets.
 ///
-/// The documented aggregate limit bounds the strings a single call hands the
-/// engine, and a row array is the largest of them: a row arrives as value names
-/// and reaches the engine as value indices, so nothing downstream can charge it.
+/// A row array is the largest thing a caller hands over and the only one the
+/// acceptance gate cannot charge: a row arrives as value names and reaches the
+/// engine as value indices, so this is where its text is counted.
 ///
 /// What counts is the caller's own text. A row's keys are parameter names,
 /// which the model charges once each already — charging them again per row
@@ -86,13 +87,18 @@ struct InputError : std::exception {
 /// the caller supplied. Numbers and booleans are rendered by the engine rather
 /// than supplied as text, so they cost nothing.
 ///
-/// One accumulator per call: extend reads both `existing` and `seeds`, and two
-/// half-sized suites are the same dimension of input as one full-sized one. The
-/// total goes to the acceptance gate, which owns the limit and its wording —
-/// this layer counts, it does not judge.
-struct RowStringBudget {
-  size_t charged = 0;
-};
+/// The per-string limit is applied here, in the model layer's own words, and
+/// the running total goes to the gate: this layer counts and quotes, it does
+/// not word a limit of its own.
+void ChargeRowValue(const std::string& text, const char* field, uint32_t row_index,
+                    coverwise::model::ChargedTextReader& budget) {
+  if (text.size() > coverwise::model::kMaxStringBytes) {
+    throw std::runtime_error(
+        coverwise::model::StringBudgetExceededMessage(coverwise::model::ChargedStringContext(
+            coverwise::model::ChargedString::kRowValue, {field, row_index})));
+  }
+  budget.Charge(text.size());
+}
 
 /// @brief Rejection text for a field that has to be a number.
 std::string NumberMessage(const char* field) {
@@ -353,8 +359,10 @@ struct RowConversionContext {
 /// @brief Parse a JS test case object into a C++ TestCase using parameter definitions.
 ///
 /// The JS test case is a map of param_name -> value_string. We resolve each
-/// value to its index using find_value_index. A key naming no parameter is
-/// skipped, as it was when the parameter vector was scanned for it.
+/// value to its index through ResolveValueName, so a row spelled in a different
+/// ASCII case than the model declares still names the value it means. A key
+/// naming no parameter is skipped, as it was when the parameter vector was
+/// scanned for it.
 ///
 /// @param field The caller's own name for the array this row came from, so a
 ///        rejected cell names the field the caller wrote.
@@ -362,17 +370,29 @@ coverwise::model::TestCase ParseTestCase(const JsObject& js_test,
                                          const std::vector<coverwise::model::Parameter>& params,
                                          const RowConversionContext& ctx, bool allow_unknown,
                                          const char* field, uint32_t row_index,
-                                         RowStringBudget& budget) {
+                                         coverwise::model::ChargedTextReader& budget) {
   coverwise::model::TestCase tc;
   tc.values.resize(params.size(), coverwise::model::kUnassigned);
 
   js_test.ForEachEntry(ctx.object_ctor, [&](const std::string& key, const JsValue& cell) {
     auto it = ctx.param_index.find(key);
-    if (it == ctx.param_index.end()) return;
-    const uint32_t i = it->second;
     // The message is composed only for a cell that is being rejected: building
     // one per cell would cost more than the check it describes.
     auto scalar = cell.TryScalar();
+    if (it == ctx.param_index.end()) {
+      // A key naming no parameter is skipped, as it was when the parameter
+      // vector was scanned for it — but the text under it was still handed over
+      // and is still charged. What the limit bounds is what the caller wrote,
+      // not the part of it the model happens to have somewhere to put; a
+      // surface that dropped it first would accept a suite the command line
+      // refuses. A non-scalar under such a key carries no caller text and, as
+      // no parameter reads it, is no more malformed than the key itself.
+      if (scalar && scalar->IsString()) {
+        ChargeRowValue(scalar->ToText(ctx.string_ctor), field, row_index, budget);
+      }
+      return;
+    }
+    const uint32_t i = it->second;
     if (!scalar) {
       throw std::runtime_error("Invalid " + std::string(field) + "[" + std::to_string(row_index) +
                                "]." + key + ": expected string, number, or boolean.");
@@ -380,8 +400,8 @@ coverwise::model::TestCase ParseTestCase(const JsObject& js_test,
     std::string val_str = scalar->ToText(ctx.string_ctor);
     // Charged before it is resolved: what the limit bounds is the text the
     // caller handed over, whether or not the model has a value to match it to.
-    if (scalar->IsString()) budget.charged += val_str.size();
-    uint32_t idx = params[i].find_value_index(val_str);
+    if (scalar->IsString()) ChargeRowValue(val_str, field, row_index, budget);
+    uint32_t idx = coverwise::model::ResolveValueName(params[i], val_str);
     if (idx == UINT32_MAX) {
       if (allow_unknown) {
         // Filled on first drift only: a row that matches the model costs
@@ -406,7 +426,7 @@ coverwise::model::TestCase ParseTestCase(const JsObject& js_test,
 /// directly must meet the same bound.
 std::vector<coverwise::model::TestCase> ParseTestCases(
     const JsArray& js_tests, const std::vector<coverwise::model::Parameter>& params,
-    const char* field, RowStringBudget& budget, bool allow_unknown = false) {
+    const char* field, coverwise::model::ChargedTextReader& budget, bool allow_unknown = false) {
   const uint32_t count = js_tests.size();
   if (count > coverwise::model::kMaxTests) {
     throw std::runtime_error("Invalid " + std::string(field) + ": maximum is " +
@@ -486,7 +506,7 @@ std::vector<coverwise::model::SubModel> ParseSubModels(const JsArray& js_sub_mod
 /// budget. The caller reads, charges what it read into @p budget, and then
 /// submits the result to the gate.
 coverwise::model::GenerateOptions ReadGenerateOptions(const JsObject& input,
-                                                      RowStringBudget& budget) {
+                                                      coverwise::model::ChargedTextReader& budget) {
   coverwise::model::GenerateOptions opts;
 
   // Parameters (required)
@@ -568,13 +588,20 @@ val TestCaseToJS(const coverwise::model::TestCase& tc,
 val TestCasesToJS(const std::vector<coverwise::model::TestCase>& tests,
                   const std::vector<coverwise::model::Parameter>& params,
                   val preserved_rows = val::undefined()) {
-  const uint32_t preserved_count = val::global("Array").call<bool>("isArray", preserved_rows)
-                                       ? preserved_rows["length"].as<uint32_t>()
-                                       : 0;
+  // The echoed rows are the caller's own array, read here a second time: the
+  // parse pass already read it, and a property that answered once may answer
+  // the next read by running code that throws. So this reads it through the
+  // same guards the parse pass used, rather than through `val::operator[]`,
+  // which would let that throw unwind out through the WebAssembly frames. The
+  // array question goes to the shared helper for the same reason it does
+  // everywhere else: there is one answer to it in this binding.
+  namespace detail = coverwise::binding::detail;
+  const uint32_t preserved_count =
+      detail::IsArrayValue(preserved_rows) ? detail::ReadLength(preserved_rows) : 0;
   val arr = val::array();
   for (uint32_t i = 0; i < tests.size(); ++i) {
-    arr.call<void>("push",
-                   i < preserved_count ? preserved_rows[i] : TestCaseToJS(tests[i], params, i));
+    arr.call<void>("push", i < preserved_count ? detail::ReadIndex(preserved_rows, i)
+                                               : TestCaseToJS(tests[i], params, i));
   }
   return arr;
 }
@@ -761,9 +788,9 @@ val MakeError(const coverwise::model::Error& error) {
 ///         suggestions, warnings. On error: { error: true, code, message }.
 val wasmGenerate(val input) {
   try {
-    RowStringBudget budget;
+    coverwise::model::ChargedTextReader budget;
     auto opts_read = ReadGenerateOptions(RequireObjectArgument(std::move(input), "input"), budget);
-    auto accepted = coverwise::model::AcceptOptions(std::move(opts_read), budget.charged);
+    auto accepted = coverwise::model::AcceptOptions(std::move(opts_read), budget.total());
     if (!accepted.ok()) {
       return MakeError(accepted.error());
     }
@@ -812,11 +839,11 @@ val wasmAnalyzeCoverage(val js_params, val js_tests, val js_strength, val js_con
     // A row that no longer matches the model keeps its mismatching positions
     // unassigned; ValidateCoverage classifies it into invalidTests so the report
     // covers the whole suite instead of stopping at the first drifted row.
-    RowStringBudget budget;
+    coverwise::model::ChargedTextReader budget;
     auto tests = ParseTestCases(RequireArrayArgument(std::move(js_tests), "tests"),
                                 model_options.parameters, "tests", budget, true);
 
-    auto accepted = coverwise::model::AcceptOptions(std::move(model_options), budget.charged);
+    auto accepted = coverwise::model::AcceptOptions(std::move(model_options), budget.total());
     if (!accepted.ok()) {
       return MakeError(accepted.error());
     }
@@ -853,7 +880,7 @@ val wasmExtendTests(val js_existing, val input) {
   try {
     // Both row arrays this call reads draw on one budget, so the suite is read
     // and charged before the gate runs rather than after it has already ruled.
-    RowStringBudget budget;
+    coverwise::model::ChargedTextReader budget;
     auto opts_read = ReadGenerateOptions(RequireObjectArgument(std::move(input), "input"), budget);
     // A recorded suite drifts from the model it was written against, and filling
     // the gap is the point of extend, so a drifted row is carried through with
@@ -861,7 +888,7 @@ val wasmExtendTests(val js_existing, val input) {
     auto existing = ParseTestCases(RequireArrayArgument(js_existing, "existing"),
                                    opts_read.parameters, "existing", budget, true);
 
-    auto accepted = coverwise::model::AcceptOptions(std::move(opts_read), budget.charged);
+    auto accepted = coverwise::model::AcceptOptions(std::move(opts_read), budget.total());
     if (!accepted.ok()) {
       return MakeError(accepted.error());
     }
@@ -886,9 +913,9 @@ val wasmExtendTests(val js_existing, val input) {
 ///         estimatedTests, subModelCount, constraintCount, parameters[].
 val wasmEstimateModel(val input) {
   try {
-    RowStringBudget budget;
+    coverwise::model::ChargedTextReader budget;
     auto opts_read = ReadGenerateOptions(RequireObjectArgument(std::move(input), "input"), budget);
-    auto accepted = coverwise::model::AcceptOptions(std::move(opts_read), budget.charged);
+    auto accepted = coverwise::model::AcceptOptions(std::move(opts_read), budget.total());
     if (!accepted.ok()) {
       return MakeError(accepted.error());
     }

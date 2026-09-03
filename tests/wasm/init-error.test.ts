@@ -23,7 +23,7 @@ const wasmModulePath = path.resolve(
 describe('uninitialized module error', () => {
   it('throws CoverwiseError(INVALID_INPUT) when used before init()', async () => {
     await vi.resetModules();
-    const mod = await import('../../js/index');
+    const mod = await import('../../js/index.js');
 
     let thrown: unknown;
     try {
@@ -74,7 +74,7 @@ describe('init() after a failed attempt', () => {
       },
     }));
 
-    const mod = await import('../../js/index');
+    const mod = await import('../../js/index.js');
 
     await expect(mod.init()).rejects.toBeInstanceOf(mod.CoverwiseError);
     expect(attempts).toBe(1);
@@ -99,7 +99,7 @@ describe('init() after a failed attempt', () => {
       },
     }));
 
-    const mod = await import('../../js/index');
+    const mod = await import('../../js/index.js');
 
     let thrown: unknown;
     try {
