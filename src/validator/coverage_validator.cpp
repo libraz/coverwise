@@ -9,6 +9,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "model/surface_error.h"
+#include "model/tuning_limits.h"
 #include "util/combinatorics.h"
 
 namespace coverwise {
@@ -16,14 +18,11 @@ namespace validator {
 
 namespace {
 
-constexpr uint64_t kMaxTuples = 16'000'000;
-constexpr uint32_t kMaxCombinations = 1'000'000;
-constexpr size_t kMaxDiagnosticTuples = 1'000;
-
-/// Recursion-node budget for a single feasibility search. Bounds the otherwise
-/// exponential backtracking so a hard model terminates; an exhausted budget is
-/// reported explicitly rather than being read as "infeasible".
-constexpr uint64_t kMaxSearchNodes = 2'000'000;
+using model::kMaxClassTupleSearchNodes;
+using model::kMaxCombinations;
+using model::kMaxDiagnosticTuples;
+using model::kMaxSearchNodes;
+using model::kMaxTuples;
 
 struct SearchBudget {
   uint64_t remaining = kMaxSearchNodes;
@@ -136,14 +135,15 @@ bool ValidatorSearch(const std::vector<model::Parameter>& params,
 
 /// @brief Whether @p partial extends to a full valid, constraint-satisfying
 ///        assignment. @p partial is scratch: it is restored before returning.
+///
+/// @p budget is spent by this search and carries back whether it ran out, so a
+/// caller deciding one question with several searches can hold them to one
+/// shared total instead of handing each a fresh budget.
 bool HasSatisfyingCompletion(const std::vector<model::Parameter>& params,
                              const std::vector<model::Constraint>& constraints,
                              std::vector<uint32_t>& partial, SearchStack& stack,
-                             bool* exceeded = nullptr) {
-  SearchBudget budget;
-  bool result = ValidatorSearch(params, constraints, partial, 0, budget, stack);
-  if (exceeded != nullptr) *exceeded = budget.exceeded;
-  return result;
+                             SearchBudget& budget) {
+  return ValidatorSearch(params, constraints, partial, 0, budget, stack);
 }
 
 model::Error ValidateSatisfiableModel(const std::vector<model::Parameter>& params,
@@ -151,9 +151,9 @@ model::Error ValidateSatisfiableModel(const std::vector<model::Parameter>& param
   if (constraints.empty()) return {};
   std::vector<uint32_t> assignment(params.size(), model::kUnassigned);
   SearchStack stack;
-  bool exceeded = false;
-  if (HasSatisfyingCompletion(params, constraints, assignment, stack, &exceeded)) return {};
-  if (exceeded) {
+  SearchBudget budget;
+  if (HasSatisfyingCompletion(params, constraints, assignment, stack, budget)) return {};
+  if (budget.exceeded) {
     return {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
             "The constraint model is too complex to solve within the search budget"};
   }
@@ -170,10 +170,18 @@ std::string ValidatePositiveTest(const model::TestCase& test,
   }
   for (uint32_t pi = 0; pi < params.size(); ++pi) {
     uint32_t vi = test.values[pi];
-    if (vi == model::kUnassigned) {
-      return "missing value for parameter " + params[pi].name;
-    }
     if (vi >= params[pi].size()) {
+      // A row the caller recorded is described back to them in their own terms.
+      // The index here is kUnassigned whenever the row drifted from the model,
+      // and printing that sentinel tells the caller nothing about which part of
+      // what they submitted no longer fits.
+      if (pi < test.unresolved.size() && !test.unresolved[pi].empty()) {
+        return "value '" + test.unresolved[pi] + "' is not declared by parameter " +
+               params[pi].name;
+      }
+      if (vi == model::kUnassigned) {
+        return "missing value for parameter " + params[pi].name;
+      }
       return "value index " + std::to_string(vi) + " is out of range for parameter " +
              params[pi].name;
     }
@@ -349,14 +357,14 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
         for (uint32_t j = 0; j < strength; ++j) {
           assignment[combo[j]] = value_indices[j];
         }
-        bool tuple_exceeded = false;
-        bool excluded = !HasSatisfyingCompletion(params, constraints, assignment, search_stack,
-                                                 &tuple_exceeded);
+        SearchBudget tuple_budget;
+        bool excluded =
+            !HasSatisfyingCompletion(params, constraints, assignment, search_stack, tuple_budget);
         // Reset assignment for reuse.
         for (uint32_t j = 0; j < strength; ++j) {
           assignment[combo[j]] = model::kUnassigned;
         }
-        if (tuple_exceeded) {
+        if (tuple_budget.exceeded) {
           report.error = {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
                           "Tuple feasibility could not be determined within the search budget"};
           return report;
@@ -494,23 +502,35 @@ ClassTupleFeasibility ClassTupleHasValidRepresentative(
     std::vector<uint32_t>& choice, SearchStack& stack) {
   uint32_t k = static_cast<uint32_t>(class_param_indices.size());
   choice.assign(k, 0);
-  // One representative exhausting its budget says nothing about the others, so
-  // it must not end the search: only a feasible representative, or the whole
-  // enumeration completing, decides the tuple. An exhausted budget is remembered
-  // and reported only when no representative proved feasible, which keeps the
-  // verdict independent of the order values appear in.
+  // One representative exhausting its own search says nothing about the others,
+  // so it must not end the enumeration: only a feasible representative, the
+  // enumeration completing, or the shared budget running out decides the tuple.
+  // A truncated search is remembered and reported only when no representative
+  // proved feasible, so "infeasible" is returned only when every representative
+  // was searched to the end.
+  //
+  // All the searches for this tuple draw from one budget, which is what bounds
+  // the enumeration: each spends at least one node, so the loop stops after at
+  // most that many representatives however large the cross product of class
+  // members is. Per search the draw is capped at a single search's budget, so
+  // the first representative cannot take the whole total.
+  uint64_t aggregate_remaining = kMaxClassTupleSearchNodes;
   bool any_exceeded = false;
   for (;;) {
     for (uint32_t i = 0; i < k; ++i) {
       assignment[class_param_indices[i]] = (*candidates[i])[choice[i]];
     }
-    bool exceeded = false;
-    bool violated = !HasSatisfyingCompletion(params, constraints, assignment, stack, &exceeded);
+    SearchBudget budget;
+    budget.remaining = std::min(kMaxSearchNodes, aggregate_remaining);
+    const uint64_t granted = budget.remaining;
+    bool violated = !HasSatisfyingCompletion(params, constraints, assignment, stack, budget);
+    aggregate_remaining -= granted - budget.remaining;
     for (uint32_t i = 0; i < k; ++i) {
       assignment[class_param_indices[i]] = model::kUnassigned;
     }
     if (!violated) return ClassTupleFeasibility::kFeasible;
-    if (exceeded) any_exceeded = true;
+    if (budget.exceeded) any_exceeded = true;
+    if (aggregate_remaining == 0) return ClassTupleFeasibility::kBudgetExceeded;
 
     // Advance the mixed-radix choice vector.
     int pos = static_cast<int>(k) - 1;
@@ -629,7 +649,14 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
         remainder /= radix;
       }
 
-      if (!constraints.empty()) {
+      // A covered class tuple needs no representative search: the valid test
+      // that covers it is itself a complete assignment of valid values
+      // satisfying every constraint, and its values in this combination are
+      // exactly a representative of this class tuple. Searching again can only
+      // reproduce that answer — or fail to reach it within the node budget and
+      // report a feasible tuple as undecidable.
+      const bool covered = covered_flags[static_cast<size_t>(flat)] != 0;
+      if (!covered && !constraints.empty()) {
         for (uint32_t k = 0; k < effective_strength; ++k) {
           required_candidates[k] = &class_domains[combo[k]].valid_value_indices[class_indices[k]];
         }
@@ -646,7 +673,7 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
       }
 
       ++report.total_class_tuples;
-      if (covered_flags[static_cast<size_t>(flat)]) ++report.covered_class_tuples;
+      if (covered) ++report.covered_class_tuples;
     }
   }
 
@@ -677,7 +704,7 @@ void AnnotateClassCoverage(model::GenerateResult& result,
   auto class_report = ComputeClassCoverage(params, result.tests, strength, constraints);
   if (!class_report.error.ok()) {
     if (result.error.ok()) result.error = class_report.error;
-    result.warnings.push_back(class_report.error.message + ": " + class_report.error.detail);
+    result.warnings.push_back(model::SurfaceError(class_report.error).text());
     return;
   }
   result.class_coverage = model::ClassCoverage{

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -46,6 +47,33 @@ class LateClassWitnessConstraint final : public coverwise::model::ConstraintNode
     }
     return ConstraintResult::kTrue;
   }
+};
+
+/// @brief Rejects any assignment pinning both parameters inside their large
+///        class, and counts how often it is asked.
+///
+/// The escape value each parameter also carries keeps the model satisfiable, so
+/// the class tuple over the two large classes is the only infeasible one — and
+/// its representatives are the whole cross product of those classes.
+class WideClassRejectConstraint final : public coverwise::model::ConstraintNode {
+ public:
+  explicit WideClassRejectConstraint(uint32_t escape_index) : escape_index_(escape_index) {}
+
+  ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override {
+    ++evaluations;
+    if (assignment[0] == coverwise::model::kUnassigned ||
+        assignment[1] == coverwise::model::kUnassigned) {
+      return ConstraintResult::kUnknown;
+    }
+    return (assignment[0] < escape_index_ && assignment[1] < escape_index_)
+               ? ConstraintResult::kFalse
+               : ConstraintResult::kTrue;
+  }
+
+  mutable uint64_t evaluations = 0;
+
+ private:
+  uint32_t escape_index_;
 };
 
 /// @brief Expression whose only cheap witnesses are gate="open" and pick="cheap".
@@ -274,6 +302,98 @@ TEST(EquivalenceClassTest, SearchBudgetExhaustionPropagatesToGenerateResult) {
   EXPECT_FALSE(result.class_coverage.has_value());
 }
 
+TEST(EquivalenceClassTest, ClassTupleWitnessedByAValidTestIsNotSearched) {
+  // The model of the previous test, plus a valid row covering the "hard" class.
+  // That row is a complete assignment of valid values satisfying every
+  // constraint, and its value in this parameter is a representative of the
+  // class tuple, so the feasibility search has nothing left to establish.
+  // Running it anyway spends the whole node budget and reports a covered tuple
+  // as undecidable.
+  std::vector<Parameter> params;
+  params.reserve(22);
+  for (uint32_t index = 0; index < 22; ++index) {
+    Parameter parameter{"P" + std::to_string(index), {"0", "1"}};
+    if (index == 21) parameter.set_equivalence_classes({"", "hard"});
+    params.push_back(std::move(parameter));
+  }
+  std::vector<Constraint> constraints;
+  constraints.push_back(std::make_unique<LateClassWitnessConstraint>());
+  GenerateResult result;
+  // Every parameter at its second value satisfies the constraint, and it is the
+  // "hard" class that the last parameter then takes.
+  result.tests.push_back(TestCase{std::vector<uint32_t>(22, 1)});
+
+  AnnotateClassCoverage(result, params, 1, constraints);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message << ": " << result.error.detail;
+  ASSERT_TRUE(result.class_coverage.has_value());
+  EXPECT_EQ(result.class_coverage->total_class_tuples, 1u);
+  EXPECT_EQ(result.class_coverage->covered_class_tuples, 1u);
+  EXPECT_DOUBLE_EQ(result.class_coverage->class_coverage_ratio, 1.0);
+}
+
+TEST(EquivalenceClassTest, ClassCoverageWarningComesFromTheSingleErrorMapping) {
+  // ValidateParameters names the offending parameter and carries no detail, so
+  // a warning assembled as "message: detail" would end in a dangling separator.
+  Parameter os("os", {"win", "mac"}, {true, true});
+  os.set_equivalence_classes({"desktop", "apple"});
+  std::vector<Parameter> params = {std::move(os), Parameter{"browser", {"chrome"}}};
+  GenerateResult result;
+
+  AnnotateClassCoverage(result, params, 2);
+
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
+  ASSERT_TRUE(result.error.detail.empty());
+  ASSERT_EQ(result.warnings.size(), 1u);
+  EXPECT_EQ(result.warnings[0], result.error.message);
+}
+
+TEST(EquivalenceClassTest, RepresentativeEnumerationStopsOnASharedNodeBudget) {
+  // Both parameters carry one large class and one escape value. The model is
+  // satisfiable through the escape values, so validation reaches the class
+  // tuple over the two large classes — and that tuple's representatives are the
+  // whole cross product of the two classes, every one of them rejected. Without
+  // one budget shared across them, each cheap rejection starts a fresh budget
+  // that never runs out and the enumeration walks all of them.
+  constexpr uint32_t kClassValues = 4000;
+  constexpr uint64_t kRepresentatives =
+      static_cast<uint64_t>(kClassValues) * static_cast<uint64_t>(kClassValues);
+
+  std::vector<Parameter> params;
+  for (const char* name : {"left", "right"}) {
+    std::vector<std::string> values;
+    std::vector<std::string> classes;
+    values.reserve(kClassValues + 1);
+    classes.reserve(kClassValues + 1);
+    for (uint32_t index = 0; index < kClassValues; ++index) {
+      values.push_back(std::string(name) + std::to_string(index));
+      classes.emplace_back("many");
+    }
+    values.emplace_back(std::string(name) + "_escape");
+    classes.emplace_back("escape_class");
+    Parameter parameter{name, std::move(values)};
+    parameter.set_equivalence_classes(std::move(classes));
+    params.push_back(std::move(parameter));
+  }
+
+  auto counted = std::make_unique<WideClassRejectConstraint>(kClassValues);
+  const WideClassRejectConstraint* constraint = counted.get();
+  std::vector<Constraint> constraints;
+  constraints.push_back(std::move(counted));
+  GenerateResult result;
+
+  AnnotateClassCoverage(result, params, 2, constraints);
+
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_EQ(result.error.message, "Constraint search budget exceeded");
+  EXPECT_FALSE(result.class_coverage.has_value());
+
+  // Every representative costs at least one search node, so a bounded total of
+  // nodes is a bounded number of representatives: the enumeration has to stop
+  // short of the cross product rather than sweep it.
+  EXPECT_LT(constraint->evaluations, kRepresentatives) << "cross product=" << kRepresentatives;
+}
+
 TEST(EquivalenceClassTest, ClassTupleVerdictIgnoresRepresentativeOrder) {
   uint64_t cheap_first_total = 0;
   uint64_t costly_first_total = 0;
@@ -288,7 +408,12 @@ TEST(EquivalenceClassTest, ClassTupleVerdictIgnoresRepresentativeOrder) {
     // A representative whose search runs out of budget must not decide the
     // tuple: the "same" class also holds a representative that is trivially
     // satisfiable, which makes the tuple feasible from either value order.
-    ASSERT_TRUE(result.error.ok()) << result.error.message << ": " << result.error.detail;
+    ASSERT_TRUE(result.error.ok())
+        << result.error.message << ": " << result.error.detail
+        << " -- a budget-exceeded verdict on this model means one class tuple no "
+           "longer affords more than a single full search, so the costly "
+           "representative consumed the whole of kMaxClassTupleSearchNodes before "
+           "the feasible one was reached";
     ASSERT_TRUE(result.class_coverage.has_value());
     (cheap_first ? cheap_first_total : costly_first_total) =
         result.class_coverage->total_class_tuples;
@@ -524,11 +649,19 @@ TEST(EquivalenceClassTest, DeclaringClassesCoversEveryClassTupleWithoutChangingT
   EXPECT_EQ(classified.class_coverage->covered_class_tuples, kExpectedClassTuples);
   EXPECT_DOUBLE_EQ(classified.class_coverage->class_coverage_ratio, 1.0);
 
-  // Classes must not change the suite itself.
+  // Classes must not change the suite itself. Nothing on the generation or
+  // scoring path reads them — they are supplied only to the after-the-fact
+  // annotation — so the same parameters, strength and seed have to produce the
+  // same rows in the same order, not merely as many of them. Comparing counts
+  // alone would keep passing if generation started to branch on a declared
+  // class and returned a different suite of the same size.
   auto plain = Generate(without_classes);
   ASSERT_TRUE(plain.error.ok()) << plain.error.message;
   EXPECT_FALSE(plain.class_coverage.has_value());
-  EXPECT_EQ(classified.tests.size(), plain.tests.size());
+  ASSERT_EQ(classified.tests.size(), plain.tests.size());
+  for (size_t row = 0; row < plain.tests.size(); ++row) {
+    EXPECT_EQ(classified.tests[row].values, plain.tests[row].values) << "row " << row;
+  }
 
   // Nothing here bounds classified generation time against plain: annotation is
   // a small enough share of generation that the ratio's noise on a loaded

@@ -1,7 +1,7 @@
 /// Independent coverage validation (does NOT depend on generator/core).
 
 import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
-import { ErrorCode, type ErrorInfo, okError } from '../model/error.js';
+import { ErrorCode, type ErrorInfo, okError, surfaceErrorText } from '../model/error.js';
 import { type Parameter, validateParameters } from '../model/parameter.js';
 import {
   type GenerateResult,
@@ -9,11 +9,14 @@ import {
   UNASSIGNED,
   type UncoveredTuple,
 } from '../model/test-case.js';
+import {
+  MAX_CLASS_TUPLE_SEARCH_NODES,
+  MAX_COMBINATIONS,
+  MAX_DIAGNOSTIC_TUPLES,
+  MAX_SEARCH_NODES,
+  MAX_TUPLES,
+} from '../model/tuning-limits.js';
 import { checkedBinomial } from '../util/combinatorics.js';
-
-const MAX_TUPLES = 16_000_000;
-const MAX_COMBINATIONS = 1_000_000;
-const MAX_DIAGNOSTIC_TUPLES = 1_000;
 
 /** Coverage validation report with human-readable uncovered tuples. */
 export interface CoverageReport {
@@ -61,14 +64,6 @@ function generateCombinations(n: number, k: number): number[][] {
   recurse(0, 0);
   return result;
 }
-
-/**
- * Recursion-node budget for a single feasibility search. Bounds the otherwise
- * exponential backtracking so a hard model terminates; an exhausted budget is
- * reported explicitly rather than being read as "infeasible". Mirrors the C++
- * validator's kMaxSearchNodes.
- */
-const MAX_SEARCH_NODES = 2_000_000;
 
 interface SearchBudget {
   remaining: number;
@@ -206,16 +201,19 @@ function validatorSearch(
 /**
  * Whether `partial` extends to a full valid, constraint-satisfying assignment.
  * `partial` is scratch: it is restored before returning.
+ *
+ * `budget` is spent by this search and carries back whether it ran out, so a
+ * caller deciding one question with several searches can hold them to one
+ * shared total instead of handing each a fresh budget.
  */
 function hasSatisfyingCompletion(
   params: Parameter[],
   constraints: ConstraintNode[],
   partial: number[],
   stack: SearchStack,
-  budget?: SearchBudget,
+  budget: SearchBudget,
 ): boolean {
-  const b = budget ?? { remaining: MAX_SEARCH_NODES, exceeded: false };
-  return validatorSearch(params, constraints, partial, 0, b, stack);
+  return validatorSearch(params, constraints, partial, 0, budget, stack);
 }
 
 function validateSatisfiableModel(params: Parameter[], constraints: ConstraintNode[]): ErrorInfo {
@@ -257,10 +255,18 @@ function validatePositiveTest(
   }
   for (let pi = 0; pi < params.length; ++pi) {
     const vi = test.values[pi];
-    if (vi === UNASSIGNED) {
-      return `missing value for parameter ${params[pi].name}`;
-    }
     if (!Number.isInteger(vi) || vi < 0 || vi >= params[pi].size) {
+      // A row the caller recorded is described back to them in their own terms.
+      // The index here is UNASSIGNED whenever the row drifted from the model,
+      // and printing that sentinel tells the caller nothing about which part of
+      // what they submitted no longer fits.
+      const supplied = test.unresolved?.[pi];
+      if (supplied) {
+        return `value '${supplied}' is not declared by parameter ${params[pi].name}`;
+      }
+      if (vi === UNASSIGNED) {
+        return `missing value for parameter ${params[pi].name}`;
+      }
       return `value index ${vi} is out of range for parameter ${params[pi].name}`;
     }
     if (params[pi].isInvalid(vi)) {
@@ -661,18 +667,30 @@ function classTupleHasValidRepresentative(
   const k = comboParamIndices.length;
   choice.length = k;
   choice.fill(0);
-  // One representative exhausting its budget says nothing about the others, so
-  // it must not end the search: only a feasible representative, or the whole
-  // enumeration completing, decides the tuple. An exhausted budget is remembered
-  // and reported only when no representative proved feasible, which keeps the
-  // verdict independent of the order values appear in.
+  // One representative exhausting its own search says nothing about the others,
+  // so it must not end the enumeration: only a feasible representative, the
+  // enumeration completing, or the shared budget running out decides the tuple.
+  // A truncated search is remembered and reported only when no representative
+  // proved feasible, so "infeasible" is returned only when every representative
+  // was searched to the end.
+  //
+  // All the searches for this tuple draw from one budget, which is what bounds
+  // the enumeration: each spends at least one node, so the loop stops after at
+  // most that many representatives however large the cross product of class
+  // members is. Per search the draw is capped at a single search's budget, so
+  // the first representative cannot take the whole total.
+  const budget: SearchBudget = { remaining: 0, exceeded: false };
+  let aggregateRemaining = MAX_CLASS_TUPLE_SEARCH_NODES;
   let anyExceeded = false;
   for (;;) {
     for (let i = 0; i < k; ++i) {
       assignment[comboParamIndices[i]] = candidates[i][choice[i]];
     }
-    const budget: SearchBudget = { remaining: MAX_SEARCH_NODES, exceeded: false };
+    const granted = Math.min(MAX_SEARCH_NODES, aggregateRemaining);
+    budget.remaining = granted;
+    budget.exceeded = false;
     const violated = !hasSatisfyingCompletion(params, constraints, assignment, stack, budget);
+    aggregateRemaining -= granted - budget.remaining;
     for (let i = 0; i < k; ++i) {
       assignment[comboParamIndices[i]] = UNASSIGNED;
     }
@@ -681,6 +699,9 @@ function classTupleHasValidRepresentative(
     }
     if (budget.exceeded) {
       anyExceeded = true;
+    }
+    if (aggregateRemaining === 0) {
+      return ClassTupleFeasibility.BudgetExceeded;
     }
 
     // Advance the mixed-radix choice vector.
@@ -844,7 +865,14 @@ export function computeClassCoverage(
         remainder = Math.trunc(remainder / radix);
       }
 
-      if (constraints.length > 0) {
+      // A covered class tuple needs no representative search: the valid test
+      // that covers it is itself a complete assignment of valid values
+      // satisfying every constraint, and its values in this combination are
+      // exactly a representative of this class tuple. Searching again can only
+      // reproduce that answer — or fail to reach it within the node budget and
+      // report a feasible tuple as undecidable.
+      const covered = coveredFlags[flat] !== 0;
+      if (!covered && constraints.length > 0) {
         for (let k = 0; k < effectiveStrength; ++k) {
           requiredCandidates[k] = classDomains[combo[k]].validValueIndices[classIndices[k]];
         }
@@ -871,7 +899,7 @@ export function computeClassCoverage(
       }
 
       ++report.totalClassTuples;
-      if (coveredFlags[flat]) {
+      if (covered) {
         ++report.coveredClassTuples;
       }
     }
@@ -918,7 +946,7 @@ export function annotateClassCoverage(
     if (result.error.code === ErrorCode.Ok) {
       result.error = classReport.error;
     }
-    result.warnings.push(`${classReport.error.message}: ${classReport.error.detail}`);
+    result.warnings.push(surfaceErrorText(classReport.error));
     return;
   }
   result.classCoverage = {

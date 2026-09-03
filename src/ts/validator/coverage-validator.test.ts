@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import {
+  COSTLY_REPRESENTATIVE_EXPRESSION,
+  representativeOrderParameters,
+} from '../../../tests/util/class-tuple-fixture.js';
 import { fastestEach } from '../../../tests/util/timing.js';
 import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
 import { parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode } from '../model/error.js';
+import { MAX_STRING_BYTES } from '../model/limits.js';
 import { MAX_PARAMETERS, Parameter } from '../model/parameter.js';
 import type { GenerateResult, TestCase } from '../model/test-case.js';
 import { createGenerateResult, UNASSIGNED } from '../model/test-case.js';
@@ -479,6 +484,21 @@ describe('annotateClassCoverage', () => {
     expect(result.classCoverage?.classCoverageRatio).toBe(1.0);
   });
 
+  it('warns through the single error mapping', () => {
+    // validateParameters names the offending parameter and carries no detail,
+    // so a warning assembled as "message: detail" would end in a dangling
+    // separator.
+    const os = new Parameter('os', ['win', 'mac'], [true, true]);
+    os.setEquivalenceClasses(['desktop', 'apple']);
+    const result: GenerateResult = createGenerateResult();
+
+    annotateClassCoverage(result, [os, new Parameter('browser', ['chrome'])], 2);
+
+    expect(result.error.code).toBe(ErrorCode.InvalidInput);
+    expect(result.error.detail).toBe('');
+    expect(result.warnings).toEqual([result.error.message]);
+  });
+
   it('does not annotate when no equivalence classes exist', () => {
     const params = [
       new Parameter('os', ['win', 'mac']),
@@ -512,15 +532,46 @@ class LateClassWitnessConstraint implements ConstraintNode {
   }
 }
 
+/**
+ * Rejects any assignment pinning both parameters inside their large class, and
+ * counts how often it is asked.
+ *
+ * The escape value each parameter also carries keeps the model satisfiable, so
+ * the class tuple over the two large classes is the only infeasible one — and
+ * its representatives are the whole cross product of those classes.
+ */
+class WideClassRejectConstraint implements ConstraintNode {
+  evaluations = 0;
+  private readonly escapeIndex: number;
+
+  constructor(escapeIndex: number) {
+    this.escapeIndex = escapeIndex;
+  }
+
+  evaluate(assignment: number[]): ConstraintResult {
+    ++this.evaluations;
+    if (assignment[0] === UNASSIGNED || assignment[1] === UNASSIGNED) {
+      return ConstraintResult.Unknown;
+    }
+    return assignment[0] < this.escapeIndex && assignment[1] < this.escapeIndex
+      ? ConstraintResult.False
+      : ConstraintResult.True;
+  }
+
+  toString(): string {
+    return 'wide-class-reject';
+  }
+}
+
+/** Parameters named P0.. over a shared binary domain. */
+function binaryParams(count: number): Parameter[] {
+  return Array.from({ length: count }, (_, index) => new Parameter(`P${index}`, ['0', '1']));
+}
+
 describe('class coverage search budget', () => {
   it('propagates budget exhaustion instead of reporting false full coverage', () => {
-    const params = Array.from({ length: 22 }, (_, index) => {
-      const parameter = new Parameter(`P${index}`, ['0', '1']);
-      if (index === 21) {
-        parameter.setEquivalenceClasses(['', 'hard']);
-      }
-      return parameter;
-    });
+    const params = binaryParams(22);
+    params[21].setEquivalenceClasses(['', 'hard']);
     const result = createGenerateResult();
 
     annotateClassCoverage(result, params, 1, [new LateClassWitnessConstraint()]);
@@ -529,44 +580,61 @@ describe('class coverage search budget', () => {
     expect(result.error.message).toBe('Constraint search budget exceeded');
     expect(result.classCoverage).toBeUndefined();
   });
+
+  it('does not search a class tuple that a valid test already witnesses', () => {
+    // The model above, plus a valid row covering the "hard" class. That row is a
+    // complete assignment of valid values satisfying every constraint, and its
+    // value in this parameter is a representative of the class tuple, so the
+    // feasibility search has nothing left to establish. Running it anyway spends
+    // the whole node budget and reports a covered tuple as undecidable.
+    const params = binaryParams(22);
+    params[21].setEquivalenceClasses(['', 'hard']);
+    const result = createGenerateResult();
+    // Every parameter at its second value satisfies the constraint, and it is
+    // the "hard" class that the last parameter then takes.
+    result.tests = [{ values: new Array<number>(22).fill(1) }];
+
+    annotateClassCoverage(result, params, 1, [new LateClassWitnessConstraint()]);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.classCoverage?.totalClassTuples).toBe(1);
+    expect(result.classCoverage?.coveredClassTuples).toBe(1);
+    expect(result.classCoverage?.classCoverageRatio).toBe(1);
+  });
+
+  it('stops representative enumeration on a budget shared across representatives', () => {
+    // Both parameters carry one large class and one escape value. The model is
+    // satisfiable through the escape values, so validation reaches the class
+    // tuple over the two large classes — and that tuple's representatives are
+    // the whole cross product of the two classes, every one of them rejected.
+    // Without one budget shared across them, each cheap rejection starts a fresh
+    // budget that never runs out and the enumeration walks all of them.
+    const classValues = 4000;
+    const representatives = classValues * classValues;
+    const params = ['left', 'right'].map((name) => {
+      const values = Array.from({ length: classValues }, (_, index) => `${name}${index}`);
+      const classes = new Array<string>(classValues).fill('many');
+      values.push(`${name}_escape`);
+      classes.push('escape_class');
+      const parameter = new Parameter(name, values);
+      parameter.setEquivalenceClasses(classes);
+      return parameter;
+    });
+    const constraint = new WideClassRejectConstraint(classValues);
+    const result = createGenerateResult();
+
+    annotateClassCoverage(result, params, 2, [constraint]);
+
+    expect(result.error.code).toBe(ErrorCode.ConstraintError);
+    expect(result.error.message).toBe('Constraint search budget exceeded');
+    expect(result.classCoverage).toBeUndefined();
+
+    // Every representative costs at least one search node, so a bounded total of
+    // nodes is a bounded number of representatives: the enumeration has to stop
+    // short of the cross product rather than sweep it.
+    expect(constraint.evaluations).toBeLessThan(representatives);
+  }, 60_000);
 });
-
-/**
- * Expression whose only cheap witnesses are gate="open" and pick="cheap". With
- * both fixed the other way it stays undecided until "relief" is assigned, and
- * "none" — its only satisfying value — is invalid, so proving the branch
- * unsatisfiable costs more than the search budget allows. Every filler
- * parameter has more valid values than "relief", so a search ordering
- * parameters by ascending domain size settles the branch immediately while one
- * walking parameters in declaration order does not.
- */
-const COSTLY_REPRESENTATIVE_EXPRESSION = 'gate="open" OR pick="cheap" OR relief="none"';
-
-/**
- * Build a model whose "same" class holds one cheap and one costly
- * representative. `cheapFirst` places the cheap representative at value index 0
- * when true and at value index 1 when false; the class tuple is feasible either
- * way, so both orders must produce the same verdict.
- */
-function representativeOrderParameters(cheapFirst: boolean) {
-  return [
-    {
-      name: 'gate',
-      values: ['open', 'shut'],
-      equivalenceClasses: ['open_class', 'shut_class'],
-    },
-    {
-      name: 'pick',
-      values: cheapFirst ? ['cheap', 'costly'] : ['costly', 'cheap'],
-      equivalenceClasses: ['same', 'same'],
-    },
-    ...Array.from({ length: 14 }, (_, index) => ({
-      name: `f${index}`,
-      values: ['a', 'b', 'c'],
-    })),
-    { name: 'relief', values: ['r0', 'r1', 'none'], invalid: [false, false, true] },
-  ];
-}
 
 function representativeOrderModel(cheapFirst: boolean): Parameter[] {
   return representativeOrderParameters(cheapFirst).map((spec) => {
@@ -594,7 +662,12 @@ describe('class tuple representatives', () => {
       // A representative whose search runs out of budget must not decide the
       // tuple: the "same" class also holds a trivially satisfiable
       // representative, which makes the tuple feasible from either value order.
-      expect(result.error.code).toBe(ErrorCode.Ok);
+      expect(
+        result.error.code,
+        'a budget-exceeded verdict on this model means one class tuple no longer affords more ' +
+          'than a single full search, so the costly representative consumed the whole of ' +
+          'MAX_CLASS_TUPLE_SEARCH_NODES before the feasible one was reached',
+      ).toBe(ErrorCode.Ok);
       expect(result.classCoverage).toBeDefined();
       return result.classCoverage?.totalClassTuples;
     });
@@ -733,16 +806,107 @@ describe('resource budgets', () => {
   });
 });
 
+/**
+ * Undecided until every parameter is assigned, and rejecting at the leaf, so
+ * concluding anything costs a sweep of the whole space.
+ */
+class LateRejectConstraint implements ConstraintNode {
+  evaluate(assignment: number[]): ConstraintResult {
+    for (const value of assignment) {
+      if (value === UNASSIGNED) {
+        return ConstraintResult.Unknown;
+      }
+    }
+    return ConstraintResult.False;
+  }
+
+  toString(): string {
+    return 'late-reject';
+  }
+}
+
+/**
+ * Satisfied as soon as the first parameter takes its first value, and a
+ * LateRejectConstraint otherwise. The whole-model search tries first values
+ * first and so settles at once, while a tuple pinning that parameter to its
+ * second value pays the sweep.
+ */
+class GatedLateRejectConstraint implements ConstraintNode {
+  evaluate(assignment: number[]): ConstraintResult {
+    if (assignment[0] === UNASSIGNED) {
+      return ConstraintResult.Unknown;
+    }
+    if (assignment[0] === 0) {
+      return ConstraintResult.True;
+    }
+    for (const value of assignment) {
+      if (value === UNASSIGNED) {
+        return ConstraintResult.Unknown;
+      }
+    }
+    return ConstraintResult.False;
+  }
+
+  toString(): string {
+    return 'gated-late-reject';
+  }
+}
+
+// The feasibility search is bounded so a hard model terminates, which leaves two
+// answers that look alike from the outside and must not: a search that finished
+// and found nothing, and one that ran out of nodes. Both exits report the budget
+// explicitly, and an undecided tuple is counted in no bucket at all.
+describe('feasibility search budget', () => {
+  it('reports an exhausted model search as budget exceeded, not unsatisfiable', () => {
+    // The constraint can only be decided at a leaf, and 22 binary parameters put
+    // more leaves below the root than the node budget covers. "Constraints are
+    // unsatisfiable" would claim a proof the search never finished.
+    const report = validateCoverage(binaryParams(22), [], 2, [new LateRejectConstraint()]);
+
+    expect(report.error.code).toBe(ErrorCode.ConstraintError);
+    expect(report.error.message).toBe('Constraint search budget exceeded');
+    expect(report.error.detail).toBe(
+      'The constraint model is too complex to solve within the search budget',
+    );
+    expect(report.totalTuples).toBe(0);
+  }, 30_000);
+
+  it('stops on an exhausted tuple search without counting that tuple', () => {
+    // The model is satisfiable at the first assignment tried, so validation
+    // reaches the tuple loop; the tuples pinning P0 to its second value then
+    // cost a sweep of the remaining 22 parameters, which the node budget does
+    // not cover.
+    const report = validateCoverage(binaryParams(24), [], 2, [new GatedLateRejectConstraint()]);
+
+    expect(report.error.code).toBe(ErrorCode.ConstraintError);
+    expect(report.error.message).toBe('Constraint search budget exceeded');
+    expect(report.error.detail).toBe(
+      'Tuple feasibility could not be determined within the search budget',
+    );
+
+    // Validation stops on the undecided tuple. The two (P0=0, P1=*) tuples ahead
+    // of it are counted, and the undecided one is counted as neither covered,
+    // uncovered nor excluded.
+    expect(report.totalTuples).toBe(2);
+    expect(report.coveredTuples).toBe(0);
+    expect(report.uncoveredCount).toBe(2);
+  }, 30_000);
+});
+
 /// Ceiling on a hang, not a performance budget: these gates measure suites big
 /// enough that a default unit-test timeout does not apply, and they run under
 /// coverage instrumentation on a shared runner. The assertions compare two
 /// measurements from the same run, so they are unaffected by it.
 const MEASUREMENT_TIMEOUT_MS = 120_000;
 
-/// Rounds each timing gate below samples. Chosen by watching the estimator
-/// settle: past ten the high side of these ratios stops moving, and every gate
-/// here is an upper bound, so the high side is the one that matters.
-const TIMING_RUNS = 6;
+/// Rounds each timing gate below samples. Every gate here is an upper bound, so
+/// the high side of the ratio is the one that matters, and the fastest-of-N
+/// floor converges from above as N grows: past ten the high side stops moving.
+/// The value is set by whichever gate has the least room between its honest
+/// ratio and the regression it separates, since a gate with room tolerates a
+/// looser estimate. It matches the rounds the C++ tier samples for the same
+/// property, so neither port reads a steadier estimate than the other.
+const TIMING_RUNS = 15;
 
 describe('constrained validation on a covering suite', () => {
   /**
@@ -906,8 +1070,14 @@ describe('class projection cost', () => {
     // gate has less signal than the others here, so it cannot also afford a
     // measurement small enough for contention to move.
     const suiteSize = 24000;
+    // The two label lengths are what the gate contrasts, so the gap between
+    // them is its signal. A name-keyed lookup compares label bytes on every
+    // hit, so stretching the long labels to a quarter of the longest string
+    // the model layer accepts is what carries that regression clear of the
+    // bound; a flat array read never touches those bytes, so the honest ratio
+    // does not move with them at all.
     const shortNames = paddedClassParams(parameterCount, values, classes, 2);
-    const longNames = paddedClassParams(parameterCount, values, classes, 256);
+    const longNames = paddedClassParams(parameterCount, values, classes, MAX_STRING_BYTES / 4);
     const tests = spreadSuite(parameterCount, values, suiteSize);
 
     // Padding renames the classes without changing the class structure, so both
@@ -926,19 +1096,19 @@ describe('class projection cost', () => {
     );
 
     // A flat array read touches the same entries whatever the labels are, so
-    // the honest ratio is 1.0 and the bound separates that from a name-keyed
-    // lookup, which lands at 2.12 here.
+    // the honest ratio is 1.0, measured at 0.99. The bound separates that from
+    // a name-keyed lookup over the same model, which measures 27.7: a lookup
+    // hashes the label once per string and then compares its bytes on every
+    // hit, and at this label length those comparisons dominate the projection.
     //
-    // That is the narrowest separation of any gate in this file, and it is
-    // narrower than the same gate in the C++ core, where the equivalent
-    // regression measures 3.4: a name-keyed lookup costs far less on this side
-    // because a string carries its hash once computed, so a longer label is not
-    // rehashed on every projection. What holds the gate is therefore the
-    // precision of the sampling — a large suite and many rounds — rather than
-    // room in the bound, which has none. A failure here is not answered by
-    // raising the number, since past 2.12 it detects nothing; it is answered by
-    // measuring the projection against a baseline that does not move with the
-    // implementation.
+    // Both sides of the bound therefore have room — a third above the honest
+    // ratio, more than an order of magnitude below the regression — so what
+    // holds the gate is the separation itself rather than the precision of the
+    // sampling. The length of the labels is what buys that separation, and it
+    // is why they run to a quarter of the model layer's string limit instead of
+    // a length that merely looks long: at 256 characters the same regression
+    // measures 1.71 against the same bound, which leaves the gate reporting on
+    // the machine as much as on the implementation.
     expect(longMs).toBeLessThan(1.5 * shortMs);
   });
 });
@@ -995,6 +1165,24 @@ describe('validateCoverage invalidTests', () => {
 
     // Only row 5 survived, so it is the only one that can contribute coverage.
     expect(report.coveredTuples).toBe(3);
+  });
+
+  it('names the value the rejected row carried', () => {
+    // A recorded row that names a value the model no longer declares keeps
+    // UNASSIGNED at that position, so the caller's own text is the only thing
+    // left that says which member of the row drifted. Naming the parameter
+    // alone does not distinguish it from a row that omitted the member.
+    const recorded = [new Parameter('browser', ['chrome', 'firefox']), new Parameter('os', ['x'])];
+    const report = validateCoverage(
+      recorded,
+      [{ values: [UNASSIGNED, 0], unresolved: ['edge', ''] }, { values: [UNASSIGNED, 0] }],
+      2,
+    );
+
+    expect(report.invalidTests).toEqual([
+      { testIndex: 0, reason: "value 'edge' is not declared by parameter browser" },
+      { testIndex: 1, reason: 'missing value for parameter browser' },
+    ]);
   });
 
   it('is empty when every row is accepted', () => {

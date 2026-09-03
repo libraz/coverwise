@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -837,6 +838,114 @@ TEST(CoverageValidatorTest, InvalidTestsNameEveryRejectedRowAndItsReason) {
   // A=a0,B=b0 is the pair it covers; the invalid-value tuples are outside the
   // universe entirely.
   EXPECT_EQ(report.covered_tuples, 3u);
+}
+
+// ---------------------------------------------------------------------------
+// Feasibility search budget
+//
+// The search is bounded so a hard model terminates, which leaves two answers
+// that look alike from the outside and must not: a search that finished and
+// found nothing, and one that ran out of nodes. Both exits report the budget
+// explicitly, and an undecided tuple is counted in no bucket at all.
+// ---------------------------------------------------------------------------
+namespace {
+
+using coverwise::model::ConstraintNode;
+using coverwise::model::ConstraintResult;
+using coverwise::model::kUnassigned;
+
+/// @brief Undecided until every parameter is assigned, and rejecting at the
+///        leaf, so concluding anything costs a sweep of the whole space.
+class LateRejectConstraint final : public ConstraintNode {
+ public:
+  ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override {
+    for (uint32_t value : assignment) {
+      if (value == kUnassigned) return ConstraintResult::kUnknown;
+    }
+    return ConstraintResult::kFalse;
+  }
+};
+
+/// @brief Satisfied as soon as the first parameter takes its first value, and a
+///        LateRejectConstraint otherwise.
+///
+/// The whole-model search tries first values first and so settles at once,
+/// while a tuple pinning that parameter to its second value pays the sweep.
+class GatedLateRejectConstraint final : public ConstraintNode {
+ public:
+  ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override {
+    if (assignment[0] == kUnassigned) return ConstraintResult::kUnknown;
+    if (assignment[0] == 0) return ConstraintResult::kTrue;
+    for (uint32_t value : assignment) {
+      if (value == kUnassigned) return ConstraintResult::kUnknown;
+    }
+    return ConstraintResult::kFalse;
+  }
+};
+
+}  // namespace
+
+TEST(CoverageValidatorTest, ExhaustedModelSearchIsBudgetExceededNotUnsatisfiable) {
+  // The constraint can only be decided at a leaf, and 22 binary parameters put
+  // more leaves below the root than the node budget covers. "Constraints are
+  // unsatisfiable" would claim a proof the search never finished.
+  auto params = UniformParams(22, 2);
+  std::vector<coverwise::model::Constraint> constraints;
+  constraints.push_back(std::make_unique<LateRejectConstraint>());
+
+  auto report = ValidateCoverage(params, {}, 2, constraints);
+
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_EQ(report.error.message, "Constraint search budget exceeded");
+  EXPECT_EQ(report.error.detail,
+            "The constraint model is too complex to solve within the search budget");
+  EXPECT_EQ(report.total_tuples, 0u);
+}
+
+TEST(CoverageValidatorTest, ExhaustedTupleSearchStopsValidationWithoutCountingTheTuple) {
+  // The model is satisfiable at the first assignment tried, so validation
+  // reaches the tuple loop; the tuples pinning p0 to its second value then cost
+  // a sweep of the remaining 22 parameters, which the node budget does not
+  // cover.
+  auto params = UniformParams(24, 2);
+  std::vector<coverwise::model::Constraint> constraints;
+  constraints.push_back(std::make_unique<GatedLateRejectConstraint>());
+
+  auto report = ValidateCoverage(params, {}, 2, constraints);
+
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_EQ(report.error.message, "Constraint search budget exceeded");
+  EXPECT_EQ(report.error.detail,
+            "Tuple feasibility could not be determined within the search budget");
+
+  // Validation stops on the undecided tuple. The two (p0=v0, p1=*) tuples ahead
+  // of it are counted, and the undecided one is counted as neither covered,
+  // uncovered nor excluded.
+  EXPECT_EQ(report.total_tuples, 2u);
+  EXPECT_EQ(report.covered_tuples, 0u);
+  EXPECT_EQ(report.uncovered_count, 2u);
+}
+
+TEST(CoverageValidatorTest, RejectionReasonNamesTheValueTheRowCarried) {
+  // A recorded row that names a value the model no longer declares keeps
+  // kUnassigned at that position, so the caller's own text is the only thing
+  // left that says which member of the row drifted. Naming the parameter alone
+  // does not distinguish it from a row that omitted the member entirely.
+  std::vector<Parameter> params = {
+      {"browser", {"chrome", "firefox"}, {}},
+      {"os", {"linux", "mac"}, {}},
+  };
+  TestCase drifted;
+  drifted.values = {coverwise::model::kUnassigned, 0};
+  drifted.unresolved = {"edge", ""};
+  TestCase omitted;
+  omitted.values = {coverwise::model::kUnassigned, 0};
+
+  auto report = ValidateCoverage(params, {drifted, omitted}, 2);
+
+  ASSERT_EQ(report.invalid_tests.size(), 2u);
+  EXPECT_EQ(report.invalid_tests[0].reason, "value 'edge' is not declared by parameter browser");
+  EXPECT_EQ(report.invalid_tests[1].reason, "missing value for parameter browser");
 }
 
 TEST(CoverageValidatorTest, InvalidTestsIsEmptyWhenEveryRowIsAccepted) {
