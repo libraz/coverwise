@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -13,6 +12,7 @@
 #include "model/generate_options.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
+#include "model/tuning_limits.h"
 #include "validator/coverage_validator.h"
 
 using coverwise::core::Generate;
@@ -105,6 +105,72 @@ std::vector<Parameter> MakeRepresentativeOrderModel(bool cheap_first) {
   }
   params.push_back(Parameter{"relief", {"r0", "r1", "none"}, {false, false, true}});
   return params;
+}
+
+/// @brief Satisfiable only through the first value of the first parameter, and
+///        undecided until the last parameter is assigned.
+///
+/// A representative that pins the first parameter anywhere else therefore has to
+/// walk every branch below it before the contradiction shows up, which makes the
+/// node count of its search a plain function of the domain sizes. Every search
+/// node asks once, so the count of questions is the count of nodes spent.
+class LateContradictionConstraint final : public coverwise::model::ConstraintNode {
+ public:
+  ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override {
+    ++evaluations;
+    if (assignment.front() == coverwise::model::kUnassigned) return ConstraintResult::kUnknown;
+    if (assignment.front() == 0) return ConstraintResult::kTrue;
+    if (assignment.back() == coverwise::model::kUnassigned) return ConstraintResult::kUnknown;
+    return ConstraintResult::kFalse;
+  }
+
+  mutable uint64_t evaluations = 0;
+};
+
+/// @brief Parameter with @p size generated values and no classes.
+Parameter MakeFanParam(const std::string& name, uint32_t size) {
+  std::vector<std::string> values;
+  values.reserve(size);
+  for (uint32_t index = 0; index < size; ++index) {
+    values.push_back(name + std::to_string(index));
+  }
+  return Parameter{name, std::move(values)};
+}
+
+// Fan sizes chosen so one representative search under LateContradictionConstraint
+// spends exactly one search budget: the search spends one node on the root and
+// one on every prefix it extends the root into, 1 + |a| + |a||b| + |a||b||c|.
+// They are a factorisation of the budget and must be re-derived if it changes.
+constexpr uint32_t kFanA = 17;
+constexpr uint32_t kFanB = 118;
+constexpr uint32_t kFanC = 996;
+static_assert(1 + kFanA + kFanA * kFanB + kFanA * kFanB * kFanC ==
+                  coverwise::model::kMaxSearchNodes,
+              "one representative search must visit exactly one search budget of nodes");
+
+/// @brief How many of those searches the shared class-tuple total pays for.
+constexpr uint64_t kBudgetShare =
+    coverwise::model::kMaxClassTupleSearchNodes / coverwise::model::kMaxSearchNodes;
+static_assert(kBudgetShare * coverwise::model::kMaxSearchNodes ==
+                  coverwise::model::kMaxClassTupleSearchNodes,
+              "the shared total must divide evenly into whole representative searches");
+
+/// @brief Model whose "bad" class holds @p bad_values representatives, each of
+///        which costs exactly one search budget to reject.
+///
+/// The count is what decides where the shared total runs out: at kBudgetShare
+/// the enumeration ends on the search that drains it, and every representative
+/// reached a verdict; above it the total is gone with representatives still to
+/// come, and those are genuinely undecided.
+std::vector<Parameter> MakeExactBudgetModel(uint32_t bad_values) {
+  std::vector<std::string> gate_values = {"ok"};
+  std::vector<std::string> gate_classes = {"escape"};
+  for (uint32_t index = 0; index < bad_values; ++index) {
+    gate_values.push_back("bad" + std::to_string(index));
+    gate_classes.emplace_back("bad");
+  }
+  return {MakeClassParam("gate", std::move(gate_values), std::move(gate_classes)),
+          MakeFanParam("a", kFanA), MakeFanParam("b", kFanB), MakeFanParam("c", kFanC)};
 }
 
 std::vector<Constraint> ParseSingleConstraint(const std::string& expression,
@@ -394,6 +460,52 @@ TEST(EquivalenceClassTest, RepresentativeEnumerationStopsOnASharedNodeBudget) {
   EXPECT_LT(constraint->evaluations, kRepresentatives) << "cross product=" << kRepresentatives;
 }
 
+TEST(EquivalenceClassTest, ClassTupleDecidedOnItsLastNodeIsInfeasibleNotUndecided) {
+  // Draining the shared total is not by itself evidence that anything went
+  // unanswered: a search can spend every node it was granted and still reach a
+  // verdict. This model is sized so that is exactly what happens: each
+  // representative of the "bad" class walks a tree of exactly one search budget
+  // worth of nodes and rejects, and the last of them takes the shared total to
+  // zero — with every representative searched to the end, so the tuple is
+  // infeasible rather than undecidable.
+  auto params = MakeExactBudgetModel(static_cast<uint32_t>(kBudgetShare));
+  auto counted = std::make_unique<LateContradictionConstraint>();
+  const LateContradictionConstraint* constraint = counted.get();
+  std::vector<Constraint> constraints;
+  constraints.push_back(std::move(counted));
+  // A valid row through the escape value, so only the "bad" class tuple is
+  // searched and the whole shared total is available to it.
+  std::vector<TestCase> tests = {TestCase{{0, 0, 0, 0}}};
+
+  auto report = ComputeClassCoverage(params, tests, 1, constraints);
+
+  ASSERT_TRUE(report.error.ok()) << report.error.message << ": " << report.error.detail;
+  EXPECT_EQ(report.total_class_tuples, 1u);
+  EXPECT_EQ(report.covered_class_tuples, 1u);
+  EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+  // The verdict above only means anything if the shared total really did run
+  // out: one question per node spent, so this is the sizing holding.
+  EXPECT_GE(constraint->evaluations, coverwise::model::kMaxClassTupleSearchNodes);
+}
+
+TEST(EquivalenceClassTest, ClassTupleWithARepresentativeLeftUnsearchedStaysUndecided) {
+  // The model above with one more representative than the shared total pays
+  // for. The total is gone with a representative still to come, so that one
+  // never got an answer and the tuple is undecidable — the neighbouring input
+  // to the test above, and the side an over-eager "everything was decided" would
+  // wrongly claim as infeasible. Under-reporting a tuple here would drop it from
+  // the coverage universe and hide the fact that nothing covers it.
+  auto params = MakeExactBudgetModel(static_cast<uint32_t>(kBudgetShare) + 1);
+  std::vector<Constraint> constraints;
+  constraints.push_back(std::make_unique<LateContradictionConstraint>());
+  std::vector<TestCase> tests = {TestCase{{0, 0, 0, 0}}};
+
+  auto report = ComputeClassCoverage(params, tests, 1, constraints);
+
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_EQ(report.error.message, "Constraint search budget exceeded");
+}
+
 TEST(EquivalenceClassTest, ClassTupleVerdictIgnoresRepresentativeOrder) {
   uint64_t cheap_first_total = 0;
   uint64_t costly_first_total = 0;
@@ -526,11 +638,13 @@ TEST(EquivalenceClassTest, LargeDistinctClassUniverseUsesIndexedProjection) {
 }
 
 // ---------------------------------------------------------------------------
-// Cost of declaring equivalence classes
+// Declaring equivalence classes
 //
 // Class coverage is annotated onto every generate result, so resolving a value
-// to its class runs once per (combination, test, position). That resolution has
-// to be a flat array read into the parameter's class domain.
+// to its class runs once per (combination, test, position). The class domain
+// interns each label once and that resolution reads a flat array indexed by
+// value, which makes the class universe a function of how many distinct labels
+// a parameter declares and never of the labels themselves.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -553,13 +667,18 @@ GenerateOptions ClassCostModel(uint32_t parameters, uint32_t values, uint32_t cl
   return options;
 }
 
-/// @brief Class-label lengths compared by the projection-cost test. The two are
-///        128x apart, so a projection that touches the label bytes cannot come
-///        out of the comparison looking flat.
+/// @brief Class-label lengths compared below: labels short enough that nothing
+///        could confuse them, and labels 128x longer that agree on every
+///        character but their last.
 constexpr size_t kShortClassNameLength = 2;
 constexpr size_t kLongClassNameLength = 256;
 
 /// @brief Parameters whose class names are padded to @p name_length characters.
+///
+/// The padding goes in front, so long labels share every character but their
+/// last. Interning them by their whole text keeps them apart; anything that
+/// settles class identity on a bounded prefix folds them into one class and
+/// shrinks the universe the caller is told about.
 std::vector<Parameter> PaddedClassParams(uint32_t parameters, uint32_t values, uint32_t classes,
                                          size_t name_length) {
   std::vector<Parameter> params;
@@ -569,8 +688,9 @@ std::vector<Parameter> PaddedClassParams(uint32_t parameters, uint32_t values, u
     std::vector<std::string> class_names;
     for (uint32_t value = 0; value < values; ++value) {
       parameter.values.push_back("v" + std::to_string(value));
-      std::string class_name = "c" + std::to_string(value % classes);
-      class_name.append(name_length > class_name.size() ? name_length - class_name.size() : 0, 'x');
+      std::string suffix = "c" + std::to_string(value % classes);
+      std::string class_name(name_length > suffix.size() ? name_length - suffix.size() : 0, 'x');
+      class_name += suffix;
       class_names.push_back(std::move(class_name));
     }
     parameter.set_equivalence_classes(std::move(class_names));
@@ -588,43 +708,6 @@ std::vector<TestCase> SpreadSuite(uint32_t parameters, uint32_t values, uint32_t
     }
   }
   return tests;
-}
-
-/// @brief One timed ComputeClassCoverage run over @p params, in milliseconds.
-double ClassCoverageMs(const std::vector<Parameter>& params, const std::vector<TestCase>& tests) {
-  auto start = std::chrono::steady_clock::now();
-  auto report = ComputeClassCoverage(params, tests, 2);
-  auto elapsed =
-      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-  EXPECT_TRUE(report.error.ok()) << report.error.message;
-  return elapsed;
-}
-
-/// @brief Fastest run of each model, sampling the two alternately.
-///
-/// Timing one model to completion and only then the other lets a shift in
-/// machine load land wholly on whichever went second, which reads back as a
-/// ratio neither model earned. Alternating puts both through the same load
-/// window; taking each model's own minimum then keeps the quietest of them.
-std::pair<double, double> FastestClassCoverageMsEach(const std::vector<Parameter>& first,
-                                                     const std::vector<Parameter>& second,
-                                                     const std::vector<TestCase>& tests,
-                                                     int repetitions) {
-  double first_best = 0.0;
-  double second_best = 0.0;
-  for (int i = 0; i < repetitions; ++i) {
-    // Swap which model goes first on alternate rounds. Whichever runs first in a
-    // round absorbs whatever the round itself costs — a scheduling slice ending,
-    // a page fault on a grown buffer — and holding that position fixed would
-    // charge it to the same model every time.
-    const bool first_leads = (i % 2) == 0;
-    double first_ms = first_leads ? ClassCoverageMs(first, tests) : 0.0;
-    double second_ms = ClassCoverageMs(second, tests);
-    if (!first_leads) first_ms = ClassCoverageMs(first, tests);
-    if (i == 0 || first_ms < first_best) first_best = first_ms;
-    if (i == 0 || second_ms < second_best) second_best = second_ms;
-  }
-  return {first_best, second_best};
 }
 
 }  // namespace
@@ -663,63 +746,55 @@ TEST(EquivalenceClassTest, DeclaringClassesCoversEveryClassTupleWithoutChangingT
     EXPECT_EQ(classified.tests[row].values, plain.tests[row].values) << "row " << row;
   }
 
-  // Nothing here bounds classified generation time against plain: annotation is
+  // Nothing here bounds classified generation time against plain. Annotation is
   // a small enough share of generation that the ratio's noise on a loaded
-  // parallel run is wider than the slowdown a projection regression adds, so it
-  // cannot tell the two apart. ClassProjectionCostIsIndependentOfClassNameLength
-  // holds the structural property instead — resolving a value to its class is a
-  // flat array read — where the signal clears the noise.
+  // parallel run is wider than the slowdown a projection regression adds, so a
+  // bound on it would report on the host rather than on the code.
 }
 
-TEST(EquivalenceClassTest, ClassProjectionCostIsIndependentOfClassNameLength) {
-  // Resolving a value to its class runs once per (combination, test, position),
-  // so it has to be a flat array read. A name-keyed hash lookup would instead
-  // make the projection scale with how long the class labels happen to be —
-  // a property of the model's vocabulary, not of its size.
+TEST(EquivalenceClassTest, ClassUniverseIsIndependentOfClassLabelLength) {
   constexpr uint32_t kParameters = 24;
   constexpr uint32_t kValues = 12;
   constexpr uint32_t kClasses = 4;
-  constexpr uint32_t kSuiteSize = 4000;
-  // This gate separates a 3.4x regression, which is narrow next to what a
-  // loaded parallel run does to a wall clock. It therefore has to buy its
-  // separation with a precise measurement rather than a wide bound: the
-  // fastest-of-N estimator converges as N grows, and at 15 the ratio holds
-  // inside a few percent of 1.0 where at 5 it wandered by a third.
-  constexpr int kRepetitions = 15;
+  constexpr uint32_t kSuiteSize = 400;
 
   auto short_names = PaddedClassParams(kParameters, kValues, kClasses, kShortClassNameLength);
   auto long_names = PaddedClassParams(kParameters, kValues, kClasses, kLongClassNameLength);
   auto tests = SpreadSuite(kParameters, kValues, kSuiteSize);
 
-  // Padding renames the classes without changing the class structure, so both
-  // models must describe the same universe and the same coverage.
   auto short_report = ComputeClassCoverage(short_names, tests, 2);
   auto long_report = ComputeClassCoverage(long_names, tests, 2);
   ASSERT_TRUE(short_report.error.ok()) << short_report.error.message;
-  EXPECT_EQ(long_report.total_class_tuples, short_report.total_class_tuples);
+  ASSERT_TRUE(long_report.error.ok()) << long_report.error.message;
+
+  // Padding renames the classes without changing the class structure: each
+  // parameter still declares kClasses of them, so both models describe the same
+  // C(kParameters, 2) x kClasses^2 universe and project the same suite onto the
+  // same part of it. The long labels are 256 characters agreeing everywhere but
+  // their last, so this is also where a class identity that compares less than
+  // the whole label shows up — it would merge the four into one and leave the
+  // long model reporting a universe the short model does not.
+  constexpr uint64_t kExpectedClassTuples =
+      static_cast<uint64_t>(kParameters) * (kParameters - 1) / 2 * kClasses * kClasses;
+  EXPECT_EQ(short_report.total_class_tuples, kExpectedClassTuples);
+  EXPECT_EQ(long_report.total_class_tuples, kExpectedClassTuples);
+  EXPECT_GT(short_report.covered_class_tuples, 0u);
   EXPECT_EQ(long_report.covered_class_tuples, short_report.covered_class_tuples);
   EXPECT_DOUBLE_EQ(long_report.coverage_ratio, short_report.coverage_ratio);
 
-  auto [short_ms, long_ms] =
-      FastestClassCoverageMsEach(short_names, long_names, tests, kRepetitions);
-
-  // A flat array read touches the same bytes either way, so the honest ratio is
-  // 1.0 whatever the labels are, and the bound separates that from a name-keyed
-  // hash lookup, which hashes and compares two orders of magnitude more bytes
-  // per projection under the long labels and lands at 3.4.
-  //
-  // That is a narrow separation, and worth stating plainly: 3.4 is the entire
-  // signal, while heavy parallel load has been seen to carry this ratio to 2.18.
-  // The bound is wedged between the two with little room either side, and both
-  // sides are real — below it the gate reports on the machine, above 3.4 it
-  // reports on nothing. What keeps it usable is the precision of the
-  // measurement above, many repetitions with alternating order, rather than the
-  // width of the bound. So a failure here is not answered by raising the
-  // number, which has nowhere to go: it is answered by a formulation carrying
-  // more signal, one whose baseline does not move with the implementation being
-  // measured.
-  EXPECT_LT(long_ms, 3.0 * short_ms)
-      << "long names=" << long_ms << "ms short names=" << short_ms << "ms";
+  // What is deliberately not asserted here is the cost of resolving a value to
+  // its class: that it reads the flat array the class domain interned, rather
+  // than looking the label up by its text on every projection. No instrument
+  // available to this suite separates those two. They agree on every input the
+  // projection can reach: a row holding an invalid value is rejected before
+  // projection, and for every value that survives — labelled or not — both
+  // routes return the same class index. They also allocate the same number of
+  // times, to the allocation, so the counter that pins the tuple loop is blind
+  // to the difference as well. Only elapsed time tells them apart, and a wall-clock ratio measured
+  // under a loaded parallel run reports on the machine. The class domain's own
+  // declaration in the validator states the requirement, and the pure-TS port
+  // holds it structurally, where labels are reached through a call the test can
+  // count.
 }
 
 TEST(EquivalenceClassTest, PreflightUsesClassUniverseInsteadOfRawValues) {

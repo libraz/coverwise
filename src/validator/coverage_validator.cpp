@@ -530,7 +530,6 @@ ClassTupleFeasibility ClassTupleHasValidRepresentative(
     }
     if (!violated) return ClassTupleFeasibility::kFeasible;
     if (budget.exceeded) any_exceeded = true;
-    if (aggregate_remaining == 0) return ClassTupleFeasibility::kBudgetExceeded;
 
     // Advance the mixed-radix choice vector.
     int pos = static_cast<int>(k) - 1;
@@ -540,6 +539,20 @@ ClassTupleFeasibility ClassTupleHasValidRepresentative(
       --pos;
     }
     if (pos < 0) break;
+    // Only now that a representative is known to be left does an empty budget
+    // mean something is undecided: a search can spend its whole grant and still
+    // reach a verdict, so a total exhausted by the last representative — the one
+    // the enumeration ends on — leaves nothing unanswered.
+    //
+    // This return is also what bounds the loop by the remaining budget instead
+    // of by the class cross product, which a model can make arbitrarily large.
+    // It reads as redundant because nothing observable changes without it: a
+    // representative reached once the total is gone is granted zero nodes, and a
+    // search granted zero nodes reports exhaustion before it evaluates a single
+    // constraint, so both the verdict and the constraint-evaluation count come
+    // out identical either way. Only the amount of work differs, which is why no
+    // assertion detects its removal.
+    if (aggregate_remaining == 0) return ClassTupleFeasibility::kBudgetExceeded;
   }
   return any_exceeded ? ClassTupleFeasibility::kBudgetExceeded : ClassTupleFeasibility::kInfeasible;
 }

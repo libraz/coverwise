@@ -11,11 +11,28 @@ import { MAX_STRING_BYTES } from '../model/limits.js';
 import { MAX_PARAMETERS, Parameter } from '../model/parameter.js';
 import type { GenerateResult, TestCase } from '../model/test-case.js';
 import { createGenerateResult, UNASSIGNED } from '../model/test-case.js';
+import { MAX_CLASS_TUPLE_SEARCH_NODES, MAX_SEARCH_NODES } from '../model/tuning-limits.js';
 import {
   annotateClassCoverage,
   computeClassCoverage,
   validateCoverage,
 } from './coverage-validator.js';
+
+/// Parse an expression a test depends on, failing the test if it does not parse.
+///
+/// `ParseResult.constraint` is null on a parse failure, and null passes both
+/// `toBeDefined()` and a `!== undefined` guard. A test written against
+/// `undefined` therefore stays green while handing the validator a shorter
+/// constraint list than the case describes, which is the one thing a ground-truth
+/// test must never do. The C++ tests assert on `parse.error` for the same reason;
+/// this is that check, in the form the call sites need.
+function requireConstraint(expression: string, params: Parameter[]): ConstraintNode {
+  const parsed = parseConstraint(expression, params);
+  if (parsed.constraint === null) {
+    throw new Error(`Constraint did not parse: ${expression} -- ${parsed.error.message}`);
+  }
+  return parsed.constraint;
+}
 
 describe('validateCoverage', () => {
   const params2x2 = [
@@ -39,17 +56,10 @@ describe('validateCoverage', () => {
   });
 
   it('returns an error for contradictory constraints instead of full coverage', () => {
-    const constraints = ['os=win', 'os!=win'].map((expression) => {
-      const parsed = parseConstraint(expression, params2x2);
-      expect(parsed.constraint).toBeDefined();
-      return parsed.constraint;
-    });
-    const report = validateCoverage(
-      params2x2,
-      [],
-      2,
-      constraints.filter((constraint) => constraint !== undefined),
+    const constraints = ['os=win', 'os!=win'].map((expression) =>
+      requireConstraint(expression, params2x2),
     );
+    const report = validateCoverage(params2x2, [], 2, constraints);
     expect(report.error.code).toBe(ErrorCode.ConstraintError);
     expect(report.error.message).toBe('Constraints are unsatisfiable');
     expect(report.coverageRatio).not.toBe(1);
@@ -286,11 +296,7 @@ describe('validateCoverage with invalid value indices', () => {
       { length: 200_000 },
       (_, index) => new Parameter(`P${index}`, ['a', 'b']),
     );
-    const parse = parseConstraint('P0="a" OR P1="b"', params);
-    expect(parse.constraint).toBeDefined();
-
-    // biome-ignore lint/style/noNonNullAssertion: guarded by expect above.
-    const report = validateCoverage(params, [], 1, [parse.constraint!]);
+    const report = validateCoverage(params, [], 1, [requireConstraint('P0="a" OR P1="b"', params)]);
 
     expect(report.error.code).toBe(ErrorCode.InvalidInput);
     expect(report.totalTuples).toBe(0);
@@ -301,11 +307,7 @@ describe('validateCoverage with invalid value indices', () => {
       { length: MAX_PARAMETERS },
       (_, index) => new Parameter(`P${index}`, ['a', 'b']),
     );
-    const parse = parseConstraint('P0="a" OR P1="b"', params);
-    expect(parse.constraint).toBeDefined();
-
-    // biome-ignore lint/style/noNonNullAssertion: guarded by expect above.
-    const report = validateCoverage(params, [], 1, [parse.constraint!]);
+    const report = validateCoverage(params, [], 1, [requireConstraint('P0="a" OR P1="b"', params)]);
 
     expect(report.error.code).toBe(ErrorCode.Ok);
     expect(report.totalTuples).toBe(2 * MAX_PARAMETERS);
@@ -379,9 +381,7 @@ describe('computeClassCoverage', () => {
     browser.setEquivalenceClasses(['modern', 'legacy']);
     const params = [os, browser];
 
-    const parse = parseConstraint('IF os=mac THEN browser!=ie', params);
-    expect(parse.error.code).toBe(0);
-    expect(parse.constraint).toBeDefined();
+    const constraint = requireConstraint('IF os=mac THEN browser!=ie', params);
 
     const tests: TestCase[] = [
       { values: [0, 0] }, // win, chrome -> desktop, modern
@@ -389,8 +389,7 @@ describe('computeClassCoverage', () => {
       { values: [1, 0] }, // mac, chrome -> apple, modern
     ];
 
-    // biome-ignore lint/style/noNonNullAssertion: guarded by expect above.
-    const report = computeClassCoverage(params, tests, 2, [parse.constraint!]);
+    const report = computeClassCoverage(params, tests, 2, [constraint]);
     expect(report.totalClassTuples).toBe(3);
     expect(report.coveredClassTuples).toBe(3);
     expect(report.coverageRatio).toBe(1.0);
@@ -563,6 +562,76 @@ class WideClassRejectConstraint implements ConstraintNode {
   }
 }
 
+/**
+ * Satisfiable only through the first value of the first parameter, and undecided
+ * until the last parameter is assigned.
+ *
+ * A representative that pins the first parameter anywhere else therefore has to
+ * walk every branch below it before the contradiction shows up, which makes the
+ * node count of its search a plain function of the domain sizes. Every search
+ * node asks once, so the count of questions is the count of nodes spent.
+ */
+class LateContradictionConstraint implements ConstraintNode {
+  evaluations = 0;
+
+  evaluate(assignment: number[]): ConstraintResult {
+    ++this.evaluations;
+    if (assignment[0] === UNASSIGNED) {
+      return ConstraintResult.Unknown;
+    }
+    if (assignment[0] === 0) {
+      return ConstraintResult.True;
+    }
+    return assignment[assignment.length - 1] === UNASSIGNED
+      ? ConstraintResult.Unknown
+      : ConstraintResult.False;
+  }
+
+  toString(): string {
+    return 'late-contradiction';
+  }
+}
+
+/** Parameter with `size` generated values and no classes. */
+function fanParam(name: string, size: number): Parameter {
+  return new Parameter(
+    name,
+    Array.from({ length: size }, (_, index) => `${name}${index}`),
+  );
+}
+
+// Fan sizes chosen so one representative search under LateContradictionConstraint
+// spends exactly one search budget: the search spends one node on the root and
+// one on every prefix it extends the root into, 1 + |a| + |a||b| + |a||b||c|.
+// They are a factorisation of the budget and must be re-derived if it changes.
+const FAN_A = 17;
+const FAN_B = 118;
+const FAN_C = 996;
+
+/** How many of those searches the shared class-tuple total pays for. */
+const BUDGET_SHARE = MAX_CLASS_TUPLE_SEARCH_NODES / MAX_SEARCH_NODES;
+
+/**
+ * Model whose "bad" class holds `badValues` representatives, each of which costs
+ * exactly one search budget to reject.
+ *
+ * The count is what decides where the shared total runs out: at BUDGET_SHARE the
+ * enumeration ends on the search that drains it, and every representative
+ * reached a verdict; above it the total is gone with representatives still to
+ * come, and those are genuinely undecided.
+ */
+function exactBudgetModel(badValues: number): Parameter[] {
+  const gateValues = ['ok'];
+  const gateClasses = ['escape'];
+  for (let index = 0; index < badValues; ++index) {
+    gateValues.push(`bad${index}`);
+    gateClasses.push('bad');
+  }
+  const gate = new Parameter('gate', gateValues);
+  gate.setEquivalenceClasses(gateClasses);
+  return [gate, fanParam('a', FAN_A), fanParam('b', FAN_B), fanParam('c', FAN_C)];
+}
+
 /** Parameters named P0.. over a shared binary domain. */
 function binaryParams(count: number): Parameter[] {
   return Array.from({ length: count }, (_, index) => new Parameter(`P${index}`, ['0', '1']));
@@ -634,6 +703,49 @@ describe('class coverage search budget', () => {
     // short of the cross product rather than sweep it.
     expect(constraint.evaluations).toBeLessThan(representatives);
   }, 60_000);
+
+  it('reports a tuple decided on its last node as infeasible, not undecided', () => {
+    // Draining the shared total is not by itself evidence that anything went
+    // unanswered: a search can spend every node it was granted and still reach a
+    // verdict. This model is sized so that is exactly what happens — each
+    // representative of the "bad" class walks a tree of exactly one search budget
+    // worth of nodes and rejects, and the last of them takes the shared total to
+    // zero, with every representative searched to the end.
+    expect(1 + FAN_A + FAN_A * FAN_B + FAN_A * FAN_B * FAN_C).toBe(MAX_SEARCH_NODES);
+    expect(BUDGET_SHARE * MAX_SEARCH_NODES).toBe(MAX_CLASS_TUPLE_SEARCH_NODES);
+
+    const params = exactBudgetModel(BUDGET_SHARE);
+    const constraint = new LateContradictionConstraint();
+    // A valid row through the escape value, so only the "bad" class tuple is
+    // searched and the whole shared total is available to it.
+    const tests: TestCase[] = [{ values: [0, 0, 0, 0] }];
+
+    const report = computeClassCoverage(params, tests, 1, [constraint]);
+
+    expect(report.error.code, `${report.error.message}: ${report.error.detail}`).toBe(ErrorCode.Ok);
+    expect(report.totalClassTuples).toBe(1);
+    expect(report.coveredClassTuples).toBe(1);
+    expect(report.coverageRatio).toBe(1);
+    // The verdict above only means anything if the shared total really did run
+    // out: one question per node spent, so this is the sizing holding.
+    expect(constraint.evaluations).toBeGreaterThanOrEqual(MAX_CLASS_TUPLE_SEARCH_NODES);
+  }, 60_000);
+
+  it('leaves a tuple undecided when a representative goes unsearched', () => {
+    // The model above with one more representative than the shared total pays
+    // for. The total is gone with a representative still to come, so that one
+    // never got an answer and the tuple is undecidable — the neighbouring input
+    // to the test above, and the side an over-eager "everything was decided"
+    // would wrongly claim as infeasible. Under-reporting a tuple here would drop
+    // it from the coverage universe and hide that nothing covers it.
+    const params = exactBudgetModel(BUDGET_SHARE + 1);
+    const tests: TestCase[] = [{ values: [0, 0, 0, 0] }];
+
+    const report = computeClassCoverage(params, tests, 1, [new LateContradictionConstraint()]);
+
+    expect(report.error.code).toBe(ErrorCode.ConstraintError);
+    expect(report.error.message).toBe('Constraint search budget exceeded');
+  }, 60_000);
 });
 
 function representativeOrderModel(cheapFirst: boolean): Parameter[] {
@@ -652,12 +764,10 @@ describe('class tuple representatives', () => {
   it('reaches the same verdict whichever representative is cheap', () => {
     const totals = [true, false].map((cheapFirst) => {
       const params = representativeOrderModel(cheapFirst);
-      const parse = parseConstraint(COSTLY_REPRESENTATIVE_EXPRESSION, params);
-      expect(parse.constraint).toBeDefined();
+      const constraint = requireConstraint(COSTLY_REPRESENTATIVE_EXPRESSION, params);
       const result = createGenerateResult();
 
-      // biome-ignore lint/style/noNonNullAssertion: guarded by expect above.
-      annotateClassCoverage(result, params, 2, [parse.constraint!]);
+      annotateClassCoverage(result, params, 2, [constraint]);
 
       // A representative whose search runs out of budget must not decide the
       // tuple: the "same" class also holds a trivially satisfiable
@@ -727,16 +837,14 @@ describe('constraint feasibility and invalid test filtering', () => {
       new Parameter('B', ['0', '1']),
       new Parameter('C', ['0', '1']),
     ];
-    const constraints = ['IF A=0 THEN C=0', 'IF B=0 THEN C=1'].map((expression) => {
-      const parsed = parseConstraint(expression, params);
-      expect(parsed.constraint).toBeDefined();
-      return parsed.constraint;
-    });
+    const constraints = ['IF A=0 THEN C=0', 'IF B=0 THEN C=1'].map((expression) =>
+      requireConstraint(expression, params),
+    );
     const report = validateCoverage(
       params,
       [{ values: [0, 1, 0] }, { values: [1, 0, 1] }, { values: [1, 1, 0] }],
       2,
-      constraints.filter((constraint) => constraint !== undefined),
+      constraints,
     );
     expect(report.totalTuples).toBe(9);
     expect(
@@ -750,14 +858,9 @@ describe('constraint feasibility and invalid test filtering', () => {
       new Parameter('B', ['0', '1']),
       new Parameter('C', ['0', '1']),
     ];
-    const parsed = parseConstraint('IF A=0 THEN C=0', params);
-    expect(parsed.constraint).toBeDefined();
-    const report = validateCoverage(
-      params,
-      [{ values: [0, 0] }, { values: [0, 0, 1] }],
-      2,
-      parsed.constraint ? [parsed.constraint] : [],
-    );
+    const report = validateCoverage(params, [{ values: [0, 0] }, { values: [0, 0, 1] }], 2, [
+      requireConstraint('IF A=0 THEN C=0', params),
+    ]);
     expect(
       report.uncovered.some((tuple) => tuple.tuple.includes('A=0') && tuple.tuple.includes('B=0')),
     ).toBe(true);
@@ -904,8 +1007,7 @@ const MEASUREMENT_TIMEOUT_MS = 120_000;
 /// floor converges from above as N grows: past ten the high side stops moving.
 /// The value is set by whichever gate has the least room between its honest
 /// ratio and the regression it separates, since a gate with room tolerates a
-/// looser estimate. It matches the rounds the C++ tier samples for the same
-/// property, so neither port reads a steadier estimate than the other.
+/// looser estimate.
 const TIMING_RUNS = 15;
 
 describe('constrained validation on a covering suite', () => {
@@ -1032,24 +1134,44 @@ describe('constrained validation on a covering suite', () => {
   });
 });
 
-describe('class projection cost', () => {
-  /** Parameters whose class names are padded to `nameLength` characters. */
-  function paddedClassParams(
+describe('class projection', () => {
+  /**
+   * Parameters whose class labels are padded to `nameLength` characters, and a
+   * count of how many times any of those labels is read.
+   *
+   * The padding goes in front, so labels agree on everything but their last
+   * character. The label array is handed to the parameter behind a proxy, so
+   * every element read is counted however it is reached: through
+   * `equivalenceClass`, through the array getter, or by iterating it.
+   */
+  function countingClassParams(
     parameterCount: number,
     values: number,
     classes: number,
     nameLength: number,
-  ): Parameter[] {
-    return Array.from({ length: parameterCount }, (_, index) => {
+  ): { params: Parameter[]; labelReads: () => number } {
+    let reads = 0;
+    const params = Array.from({ length: parameterCount }, (_, index) => {
       const parameter = new Parameter(
         `p${index}`,
         Array.from({ length: values }, (_, value) => `v${value}`),
       );
+      const labels = Array.from({ length: values }, (_, value) =>
+        `c${value % classes}`.padStart(nameLength, 'x'),
+      );
       parameter.setEquivalenceClasses(
-        Array.from({ length: values }, (_, value) => `c${value % classes}`.padEnd(nameLength, 'x')),
+        new Proxy(labels, {
+          get(target, key, receiver) {
+            if (typeof key === 'string' && /^\d+$/.test(key)) {
+              reads += 1;
+            }
+            return Reflect.get(target, key, receiver);
+          },
+        }),
       );
       return parameter;
     });
+    return { params, labelReads: () => reads };
   }
 
   function spreadSuite(parameterCount: number, values: number, count: number): TestCase[] {
@@ -1058,58 +1180,65 @@ describe('class projection cost', () => {
     }));
   }
 
-  it('does not depend on how long the class names are', { timeout: MEASUREMENT_TIMEOUT_MS }, () => {
-    // Resolving a value to its class runs once per (combination, test,
-    // position), so it has to be a flat array read. A name-keyed lookup would
-    // instead make the projection scale with how long the class labels happen
-    // to be — a property of the model's vocabulary, not of its size.
-    const parameterCount = 24;
-    const values = 12;
-    const classes = 4;
-    // The suite size is what puts a run in the hundreds of milliseconds. This
-    // gate has less signal than the others here, so it cannot also afford a
-    // measurement small enough for contention to move.
-    const suiteSize = 24000;
-    // The two label lengths are what the gate contrasts, so the gap between
-    // them is its signal. A name-keyed lookup compares label bytes on every
-    // hit, so stretching the long labels to a quarter of the longest string
-    // the model layer accepts is what carries that regression clear of the
-    // bound; a flat array read never touches those bytes, so the honest ratio
-    // does not move with them at all.
-    const shortNames = paddedClassParams(parameterCount, values, classes, 2);
-    const longNames = paddedClassParams(parameterCount, values, classes, MAX_STRING_BYTES / 4);
-    const tests = spreadSuite(parameterCount, values, suiteSize);
+  const parameterCount = 12;
+  const values = 12;
+  const classes = 4;
+  const labelLength = MAX_STRING_BYTES / 4;
 
+  it('reads the class labels a number of times set by the model, not by the suite', () => {
+    // Resolving a value to its class runs once per (combination, test,
+    // position), so it has to be a flat array read into the class domain the
+    // validator interned up front. A lookup keyed by the label instead reaches
+    // the label text on every projection, which makes the work scale with the
+    // model's vocabulary rather than its size — and, unlike the cost of that
+    // work, the count of those reads is a function of the input alone.
+    const small = countingClassParams(parameterCount, values, classes, labelLength);
+    const large = countingClassParams(parameterCount, values, classes, labelLength);
+
+    const smallReport = computeClassCoverage(
+      small.params,
+      spreadSuite(parameterCount, values, 20),
+      2,
+    );
+    const largeReport = computeClassCoverage(
+      large.params,
+      spreadSuite(parameterCount, values, 4000),
+      2,
+    );
+    expect(smallReport.error.code).toBe(ErrorCode.Ok);
+    expect(largeReport.error.code).toBe(ErrorCode.Ok);
+    expect(largeReport.totalClassTuples).toBe(smallReport.totalClassTuples);
+
+    // Two hundred times the rows project through the same class domain, so the
+    // labels are read exactly as often for one suite as for the other.
+    expect(large.labelReads()).toBe(small.labelReads());
+    // And that shared count is the domain build itself, one read per declared
+    // value with nothing per combination or per row on top. A lookup keyed by
+    // the label would instead read one per (combination, test, position), which
+    // is two orders of magnitude more for the smaller of the two suites alone.
+    expect(small.labelReads()).toBeLessThanOrEqual(2 * parameterCount * values);
+  });
+
+  it('describes the same class universe whatever the labels are', () => {
     // Padding renames the classes without changing the class structure, so both
-    // models must describe the same universe and the same coverage.
+    // models must describe the same universe and cover the same part of it. The
+    // long labels agree on every character but their last, so a class identity
+    // that settles on a bounded prefix would merge the four into one here.
+    const shortNames = countingClassParams(parameterCount, values, classes, 2).params;
+    const longNames = countingClassParams(parameterCount, values, classes, labelLength).params;
+    const tests = spreadSuite(parameterCount, values, 400);
+
     const shortReport = computeClassCoverage(shortNames, tests, 2);
     const longReport = computeClassCoverage(longNames, tests, 2);
     expect(shortReport.error.code).toBe(ErrorCode.Ok);
-    expect(longReport.totalClassTuples).toBe(shortReport.totalClassTuples);
+    expect(longReport.error.code).toBe(ErrorCode.Ok);
+
+    const expectedClassTuples = ((parameterCount * (parameterCount - 1)) / 2) * classes * classes;
+    expect(shortReport.totalClassTuples).toBe(expectedClassTuples);
+    expect(longReport.totalClassTuples).toBe(expectedClassTuples);
+    expect(shortReport.coveredClassTuples).toBeGreaterThan(0);
     expect(longReport.coveredClassTuples).toBe(shortReport.coveredClassTuples);
     expect(longReport.coverageRatio).toBe(shortReport.coverageRatio);
-
-    const [shortMs, longMs] = fastestEach(
-      TIMING_RUNS,
-      () => computeClassCoverage(shortNames, tests, 2),
-      () => computeClassCoverage(longNames, tests, 2),
-    );
-
-    // A flat array read touches the same entries whatever the labels are, so
-    // the honest ratio is 1.0, measured at 0.99. The bound separates that from
-    // a name-keyed lookup over the same model, which measures 27.7: a lookup
-    // hashes the label once per string and then compares its bytes on every
-    // hit, and at this label length those comparisons dominate the projection.
-    //
-    // Both sides of the bound therefore have room — a third above the honest
-    // ratio, more than an order of magnitude below the regression — so what
-    // holds the gate is the separation itself rather than the precision of the
-    // sampling. The length of the labels is what buys that separation, and it
-    // is why they run to a quarter of the model layer's string limit instead of
-    // a length that merely looks long: at 256 characters the same regression
-    // measures 1.71 against the same bound, which leaves the gate reporting on
-    // the machine as much as on the implementation.
-    expect(longMs).toBeLessThan(1.5 * shortMs);
   });
 });
 
@@ -1132,9 +1261,7 @@ describe('validateCoverage invalidTests', () => {
   ];
 
   function constraint(expression: string): ConstraintNode[] {
-    const parsed = parseConstraint(expression, params);
-    expect(parsed.constraint).toBeDefined();
-    return parsed.constraint ? [parsed.constraint] : [];
+    return [requireConstraint(expression, params)];
   }
 
   it('names every rejected row and its reason', () => {
