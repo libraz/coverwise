@@ -317,12 +317,11 @@ class JsValue {
   /// @brief The value as a scalar — a string, a boolean, or a number — or
   ///        nothing if it is any other shape.
   ///
-  /// Every JS number qualifies, NaN and the infinities included, and that is a
-  /// rule rather than an oversight. This layer decides shape: whether the
-  /// caller supplied a number at all, as opposed to an object or a string.
-  /// Which numbers a particular field may hold is a different question, and it
-  /// belongs to the layer that owns the field, so that one wording answers it
-  /// for every surface.
+  /// Every JS number qualifies, NaN and the infinities included. This layer
+  /// decides shape: whether the caller supplied a number at all, as opposed to
+  /// an object or a string. Which numbers a particular field may hold is a
+  /// different question, and it belongs to the layer that owns the field, so
+  /// that one wording answers it for every surface.
   ///
   /// Moving finiteness in here would look like a tightening and would in fact
   /// remove behaviour. A non-finite boundary endpoint or step would be turned
@@ -332,6 +331,18 @@ class JsValue {
   /// TypeScript surface would still reach them, so the same input would be
   /// refused by both with two different explanations, which is exactly what the
   /// cross-surface acceptance tests exist to prevent.
+  ///
+  /// What this does not describe is a model anyone can write. JSON has no
+  /// literal for NaN or for either infinity, so a model holding one has no JSON
+  /// form, and every surface fed JSON refuses it before the question reaches
+  /// here: the native CLI as a parse error, and the npm wrapper, its pure
+  /// TypeScript entry point and the Python package — which wraps the CLI
+  /// binary — as invalid input. A non-finite number arrives only from an
+  /// embedder calling the compiled module with JavaScript values in hand. The
+  /// permissiveness above is what that one caller meets, not a position on what
+  /// coverwise accepts, and it is not a reason to relax the surfaces that
+  /// refuse: doing so would let a model be built through one of them that could
+  /// not be handed to the others at all.
   std::optional<JsScalar> TryScalar() const;
 
   /// @brief The value as an Array, or nothing if it is any other shape.
