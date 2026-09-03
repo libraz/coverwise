@@ -145,7 +145,7 @@ export function analyzeCoverage(
   const budget = createStringBudget();
   validateParameters(parameters, budget);
   validateTestArray(tests, 'tests', budget);
-  validateConstraints(constraints);
+  validateConstraints(constraints, budget);
   const s = validateStrength(strength, pureScalarError);
   const params = toInternalParams(parameters);
   const internalTests = tests.map((tc) => toInternalTestCase(tc, params));

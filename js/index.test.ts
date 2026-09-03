@@ -9,7 +9,7 @@ import {
   init,
   type Parameter,
   type TestCase,
-} from './index';
+} from './index.js';
 
 beforeAll(async () => {
   await init();

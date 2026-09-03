@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { ConstraintResult } from '../src/ts/model/constraint-ast.js';
 import { parseConstraint } from '../src/ts/model/constraint-parser.js';
 import { Parameter } from '../src/ts/model/parameter.js';
-import { allOf, anyOf, not, when } from './constraint';
+import { allOf, anyOf, not, when } from './constraint.js';
 import { generate, init } from './index.js';
 import { generate as pureGenerate } from './pure/index.js';
 import type { GenerateInput } from './types.js';
@@ -17,16 +17,16 @@ describe('when().eq()', () => {
     expect(when('os').eq('Windows').toString()).toBe('os = "Windows"');
   });
 
-  it('number value is unquoted', () => {
-    expect(when('version').eq(3).toString()).toBe('version = 3');
+  it('number value is quoted', () => {
+    expect(when('version').eq(3).toString()).toBe('version = "3"');
   });
 
-  it('boolean true is unquoted', () => {
-    expect(when('debug').eq(true).toString()).toBe('debug = true');
+  it('boolean true is quoted', () => {
+    expect(when('debug').eq(true).toString()).toBe('debug = "true"');
   });
 
-  it('boolean false is unquoted', () => {
-    expect(when('debug').eq(false).toString()).toBe('debug = false');
+  it('boolean false is quoted', () => {
+    expect(when('debug').eq(false).toString()).toBe('debug = "false"');
   });
 
   it('value with spaces is quoted', () => {
@@ -55,8 +55,8 @@ describe('when().ne()', () => {
     expect(when('browser').ne('Safari').toString()).toBe('browser != "Safari"');
   });
 
-  it('number value is unquoted', () => {
-    expect(when('count').ne(0).toString()).toBe('count != 0');
+  it('number value is quoted', () => {
+    expect(when('count').ne(0).toString()).toBe('count != "0"');
   });
 });
 
@@ -108,7 +108,10 @@ describe('when().in()', () => {
   });
 
   it('mixed types', () => {
-    expect(when('x').in('a', 1, true).toString()).toBe('x IN {a, 1, true}');
+    // A set member is bare while it survives as one token; a number does not,
+    // because the spelling the decimal scan consumes whole is quoted the same
+    // way everywhere it appears.
+    expect(when('x').in('a', 1, true).toString()).toBe('x IN {a, "1", true}');
   });
 
   it('values with spaces are quoted', () => {
@@ -408,15 +411,15 @@ describe('escape and quoting edge cases', () => {
 
 describe('numeric edge cases', () => {
   it('eq with 0', () => {
-    expect(when('n').eq(0).toString()).toBe('n = 0');
+    expect(when('n').eq(0).toString()).toBe('n = "0"');
   });
 
   it('eq with negative number', () => {
-    expect(when('n').eq(-1).toString()).toBe('n = -1');
+    expect(when('n').eq(-1).toString()).toBe('n = "-1"');
   });
 
   it('eq with float', () => {
-    expect(when('n').eq(3.14).toString()).toBe('n = 3.14');
+    expect(when('n').eq(3.14).toString()).toBe('n = "3.14"');
   });
 
   it('rejects Infinity', () => {
@@ -430,11 +433,11 @@ describe('numeric edge cases', () => {
   });
 
   it('in with mixed numbers', () => {
-    expect(when('n').in(0, -1, 3.14).toString()).toBe('n IN {0, -1, 3.14}');
+    expect(when('n').in(0, -1, 3.14).toString()).toBe('n IN {"0", "-1", "3.14"}');
   });
 
   it('ne with boolean false', () => {
-    expect(when('flag').ne(false).toString()).toBe('flag != false');
+    expect(when('flag').ne(false).toString()).toBe('flag != "false"');
   });
 });
 
@@ -798,6 +801,65 @@ describe('builder output parses on the TS parser', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Value rendering, every kind through both operand positions
+//
+// Whatever a caller hands the builder — string, number or boolean, alone on
+// the right of a comparison or as a member of a set — the emitted expression
+// has to parse back as that value, and the parameters the model happens to
+// declare must not be able to change what it means.
+// ---------------------------------------------------------------------------
+
+describe('an emitted value means the value that was passed', () => {
+  const values: Array<string | number | boolean> = [
+    'prod',
+    'Windows 11',
+    'AND',
+    '2024',
+    'a,b',
+    'say "hi"',
+    'C:\\Users',
+    '日本語',
+    0,
+    -1,
+    3.14,
+    true,
+    false,
+  ];
+
+  /** The text the engine stores for a value the builder was handed. */
+  const stored = (value: string | number | boolean): string => String(value);
+
+  const positions: Array<{ name: string; emit: (value: string | number | boolean) => string }> = [
+    { name: 'a comparison', emit: (value) => when('p').eq(value).toString() },
+    { name: 'a set', emit: (value) => when('p').in(value).toString() },
+  ];
+
+  // Every model here declares a parameter named exactly as the value renders,
+  // which is the one thing that could reinterpret a bare operand as a name.
+  for (const position of positions) {
+    it.each(values)(`%j resolves to that value in ${position.name}`, (value) => {
+      const text = stored(value);
+      const params = [new Parameter('p', [text, 'sentinel']), new Parameter(text, ['x', 'y'])];
+      const result = parseConstraint(position.emit(value), params, { caseSensitive: false });
+      expect(result.error.code).toBe(0);
+      expect(result.constraint?.evaluate([0, 0])).toBe(ConstraintResult.True);
+      expect(result.constraint?.evaluate([1, 0])).toBe(ConstraintResult.False);
+    });
+
+    it.each(values)(
+      `%j is reported unknown in ${position.name} when the parameter lacks it`,
+      (value) => {
+        const text = stored(value);
+        const params = [new Parameter('p', ['sentinel']), new Parameter(text, ['x', 'y'])];
+        const result = parseConstraint(position.emit(value), params, { caseSensitive: false });
+        expect(result.error.code).not.toBe(0);
+        expect(result.error.message).toContain(`Unknown value '${text}'`);
+      },
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
 // ELSE placement
 //
 // The grammar admits exactly one ELSE, directly after an IF ... THEN. The
@@ -924,6 +986,42 @@ describe('builder output through generate()', () => {
       expect(result.tests.length).toBeGreaterThan(0);
       for (const test of result.tests) {
         expect(test['2024']).toBe('a');
+      }
+    });
+
+    // `true` is a plain word to both tokenizers, so a parameter may be named
+    // after it. A boolean the caller passes as a value must not be readable as
+    // that parameter.
+    it(`${surface.name} rejects an eq(true) value that names another parameter`, () => {
+      let thrown: unknown;
+      try {
+        surface.generate({
+          parameters: [
+            { name: 'mode', values: ['on', 'off'] },
+            { name: 'true', values: ['x', 'y'] },
+          ],
+          constraints: [when('mode').eq(true).toString()],
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(CoverwiseError);
+      expect((thrown as CoverwiseError).code).toBe('CONSTRAINT_ERROR');
+      expect((thrown as CoverwiseError).message).toContain('true');
+    });
+
+    it(`${surface.name} constrains a parameter to the boolean value it declares`, () => {
+      const result = surface.generate({
+        parameters: [
+          { name: 'debug', values: ['true', 'false'] },
+          { name: 'true', values: ['x', 'y'] },
+        ],
+        constraints: [when('debug').eq(true).toString()],
+        seed: 1,
+      }) as { tests: Array<Record<string, unknown>> };
+      expect(result.tests.length).toBeGreaterThan(0);
+      for (const test of result.tests) {
+        expect(test.debug).toBe('true');
       }
     });
 

@@ -12,7 +12,7 @@ import {
   generate as pureGenerate,
 } from './pure/index.js';
 import type {
-  CoverageReport,
+  ExtendInput,
   GenerateInput,
   GenerateResult,
   ModelStats,
@@ -29,7 +29,11 @@ import {
 } from '../src/ts/core/generator.js';
 import type { GenerateOptions } from '../src/ts/model/generate-options.js';
 import type { Parameter as InternalParameter } from '../src/ts/model/parameter.js';
-import type { TestCase as InternalTestCase } from '../src/ts/model/test-case.js';
+import type {
+  TestCase as InternalTestCase,
+  UncoveredTuple as InternalUncoveredTuple,
+} from '../src/ts/model/test-case.js';
+import type { CoverageReport as InternalCoverageReport } from '../src/ts/validator/coverage-validator.js';
 import { validateCoverage } from '../src/ts/validator/coverage-validator.js';
 
 // --- Adapter imports (shared conversion logic) ---
@@ -78,10 +82,30 @@ function buildGenerateOptions(input: GenerateInput, params: InternalParameter[])
 }
 
 // ---------------------------------------------------------------------------
-// TS engine wrappers (same interface as WASM API)
+// TS engine wrappers (the raw engine, named the way the WASM API names things)
 // ---------------------------------------------------------------------------
 
-function tsGenerate(input: GenerateInput): GenerateResult {
+/// What the raw-engine wrappers below actually return.
+///
+/// Deliberately not the public `GenerateResult`. A shipped surface projects the
+/// engine's output before handing it over: it renders `display` onto every
+/// uncovered tuple and normalises `negativeTests` into an array. These wrappers
+/// do neither, so declaring them as the public shape would state a projection
+/// they do not perform -- and every comparison written against that declaration
+/// would be reading fields the value does not carry. Declaring the engine shape
+/// keeps the comparisons below honest about which side they are reading.
+interface EngineResult {
+  tests: TestCase[];
+  negativeTests: TestCase[] | undefined;
+  coverage: number;
+  uncovered: InternalUncoveredTuple[];
+  stats: GenerateResult['stats'];
+  suggestions: Array<{ description: string; testCase: Record<string, string> }>;
+  warnings: string[];
+  strength: number;
+}
+
+function tsGenerate(input: GenerateInput): EngineResult {
   const params = toInternalParams(input.parameters);
   const opts = buildGenerateOptions(input, params);
   const result = tsGenerateRaw(opts);
@@ -112,7 +136,7 @@ function tsAnalyzeCoverage(
   parameters: Parameter[],
   tests: TestCase[],
   strength?: number,
-): CoverageReport {
+): InternalCoverageReport {
   const params = toInternalParams(parameters);
   const internalTests: InternalTestCase[] = tests.map((t) => namedTestToInternal(t, params));
   const report = validateCoverage(params, internalTests, strength ?? 2);
@@ -123,7 +147,7 @@ function tsAnalyzeCoverage(
   return report;
 }
 
-function tsExtendTests(existing: TestCase[], input: GenerateInput): GenerateResult {
+function tsExtendTests(existing: TestCase[], input: GenerateInput): EngineResult {
   const params = toInternalParams(input.parameters);
   const existingInternal = existing.map((t) => namedTestToInternal(t, params));
   const opts = buildGenerateOptions(input, params);
@@ -871,6 +895,50 @@ describe('WASM / TS compatibility', () => {
       expect(tsExtended.coverage).toBe(1.0);
       expect(wasmExtended.coverage).toBe(1.0);
       expect(tsExtended.stats.totalTuples).toBe(wasmExtended.stats.totalTuples);
+    });
+
+    // `mode` is the one field the extend input adds to a generate input, and
+    // what it does is entirely a matter of acceptance: `'strict'` is the
+    // default, so naming it changes nothing about the suite, and it is the only
+    // accepted value, so anything else is refused instead of being ignored.
+    // Both halves need a witness -- an accepted field that changed the result
+    // and a rejected one that did not reach the engine are equally defects.
+    describe('extend mode', () => {
+      const input: GenerateInput = {
+        parameters: [
+          { name: 'os', values: ['win', 'mac', 'linux'] },
+          { name: 'browser', values: ['chrome', 'firefox', 'safari'] },
+        ],
+        seed: 42,
+      };
+      const existing: TestCase[] = [{ os: 'win', browser: 'chrome' }];
+      const strict: ExtendInput = { ...input, mode: 'strict' };
+
+      const surfaces: Array<{
+        name: string;
+        extend: (existing: TestCase[], input: ExtendInput) => GenerateResult;
+      }> = [
+        { name: 'wasm', extend: extendTests },
+        { name: 'pure', extend: pureExtendTests },
+      ];
+
+      for (const { name, extend } of surfaces) {
+        it(`${name}: naming the default mode leaves the whole result unchanged`, () => {
+          expect(extend(existing, strict)).toEqual(extend(existing, input));
+        });
+
+        it(`${name}: rejects a mode the engine does not implement`, () => {
+          expect(() =>
+            extend(existing, { ...input, mode: 'relaxed' } as unknown as ExtendInput),
+          ).toThrow(/Invalid extend mode: relaxed/);
+        });
+      }
+
+      it('both surfaces keep the existing prefix under an explicit strict mode', () => {
+        const wasmResult = extendTests(existing, strict);
+        expect(wasmResult.tests.slice(0, existing.length)).toEqual(existing);
+        expect(pureExtendTests(existing, strict)).toEqual(wasmResult);
+      });
     });
   });
 

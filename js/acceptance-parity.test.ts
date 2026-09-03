@@ -7,9 +7,18 @@
 /// other rather than as two suites that quietly disagree.
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { generate as internalGenerate } from '../src/ts/core/generator.js';
 import { boundaryAcceptanceError } from '../src/ts/model/boundary-rules.js';
-import { aggregateBudgetExceeded } from '../src/ts/model/budget.js';
+import {
+  aggregateBudgetExceeded,
+  CHARGED_STRING_KINDS,
+  type ChargedStringKind,
+  chargedStringContext,
+  stringBudgetExceeded,
+} from '../src/ts/model/budget.js';
+import { createGenerateOptions } from '../src/ts/model/generate-options.js';
 import { MAX_AGGREGATE_STRING_BYTES, MAX_STRING_BYTES } from '../src/ts/model/limits.js';
+import { UNASSIGNED } from '../src/ts/model/test-case.js';
 import * as wasm from './index.js';
 import * as pure from './pure/index.js';
 import type { CoverwiseError, GenerateInput, Parameter, TestCase } from './types.js';
@@ -314,127 +323,6 @@ describe('boundary parameters', () => {
 // surface that gates only its generator is the one where an oversized model
 // reaches the engine.
 describe('analyze judges the model by the same rules as generate', () => {
-  it('rejects a model whose strings exceed the aggregate budget, identically', () => {
-    const long = 'x'.repeat(MAX_STRING_BYTES - 16);
-    const constraintCount = Math.ceil(MAX_AGGREGATE_STRING_BYTES / long.length) + 1;
-    const parameters: Parameter[] = [{ name: 'n', values: [long, 'y'] }];
-    const constraints = Array.from({ length: constraintCount }, () => `n = "${long}"`);
-
-    const errors = surfaces.map(
-      ({ api }) =>
-        capture(() => api.analyzeCoverage(parameters, [{ n: 'y' }], 1, constraints)) as Error,
-    );
-    for (const [index, error] of errors.entries()) {
-      expect(error, surfaces[index].name).toBeInstanceOf(Error);
-      expect((error as CoverwiseError).code, surfaces[index].name).toBe('INVALID_INPUT');
-      expect(error.message, surfaces[index].name).toBe(aggregateBudgetExceeded());
-    }
-    expect(errors[0].message).toBe(errors[1].message);
-  });
-
-  // A suite is the largest thing a caller submits, and the published budget
-  // lists row count and aggregate string size in one breath. Charging only the
-  // model left the dimension that actually grows without a documented
-  // backstop, so an oversized suite reached the engine instead of the limit.
-  it('rejects a suite whose rows exceed the aggregate budget, identically', () => {
-    const cell = 'x'.repeat(60 * 1024);
-    const rows = Math.ceil(MAX_AGGREGATE_STRING_BYTES / (2 * cell.length)) + 1;
-    const parameters: Parameter[] = [
-      { name: 'a', values: ['x', 'y'] },
-      { name: 'b', values: ['1', '2'] },
-    ];
-    const tests: TestCase[] = Array.from({ length: rows }, () => ({ a: cell, b: cell }));
-
-    const errors = surfaces.map(
-      ({ api }) => capture(() => api.analyzeCoverage(parameters, tests, 2)) as Error,
-    );
-    for (const [index, error] of errors.entries()) {
-      expect(error, surfaces[index].name).toBeInstanceOf(Error);
-      expect((error as CoverwiseError).code, surfaces[index].name).toBe('INVALID_INPUT');
-      expect(error.message, surfaces[index].name).toBe(aggregateBudgetExceeded());
-    }
-    expect(errors[0].message).toBe(errors[1].message);
-  });
-
-  it('rejects rows handed to extend on the same budget, identically', () => {
-    const cell = 'x'.repeat(60 * 1024);
-    const rows = Math.ceil(MAX_AGGREGATE_STRING_BYTES / (2 * cell.length)) + 1;
-    const existing: TestCase[] = Array.from({ length: rows }, () => ({ a: cell, b: cell }));
-    const input = {
-      parameters: [
-        { name: 'a', values: ['x', 'y'] },
-        { name: 'b', values: ['1', '2'] },
-      ],
-    } as unknown as GenerateInput;
-
-    const errors = surfaces.map(
-      ({ api }) => capture(() => api.extendTests(existing, input)) as Error,
-    );
-    for (const [index, error] of errors.entries()) {
-      expect(error, surfaces[index].name).toBeInstanceOf(Error);
-      expect((error as CoverwiseError).code, surfaces[index].name).toBe('INVALID_INPUT');
-      expect(error.message, surfaces[index].name).toBe(aggregateBudgetExceeded());
-    }
-    expect(errors[0].message).toBe(errors[1].message);
-  });
-
-  // The budget is one number for the whole call: a model and a suite that each
-  // fit on their own must not pass together when their sum does not. The
-  // expected sentence is quoted from the model layer rather than written here,
-  // and budget.test.ts holds that sentence equal to the C++ one — so what these
-  // two surfaces say about this input is the same text the CLI and the
-  // embedding API say about it, without any of the four restating it.
-  it('charges the model and the suite against one budget', () => {
-    // Each cell is inside the per-string limit, and each side is inside the
-    // aggregate one; only their sum is not.
-    const cell = (index: number): string => `${index}`.padEnd(60 * 1024, 'x');
-    const cells = Array.from({ length: 9 }, (_unused, index) => cell(index));
-    const parameters = [
-      { name: 'a', values: cells },
-      { name: 'b', values: ['1', '2'] },
-    ] as unknown as Parameter[];
-    const tests: TestCase[] = cells.map((value) => ({ a: value, b: '1' }));
-
-    for (const { name, api } of surfaces) {
-      const error = capture(() => api.analyzeCoverage(parameters, tests, 2)) as Error;
-      expect(error, name).toBeInstanceOf(Error);
-      expect((error as CoverwiseError).code, name).toBe('INVALID_INPUT');
-      expect(error.message, name).toBe(aggregateBudgetExceeded());
-    }
-  });
-
-  // Weight keys are the one place caller text arrives as a key rather than a
-  // value. A reader that walks values alone never sees them, so a model can
-  // carry a megabyte of them and be charged nothing for it — while the engine
-  // holds every byte.
-  it('charges weight keys against the same budget as everything else', () => {
-    // The model and the rows together sit just inside the budget, so the one
-    // weight key decides. It is the caller's own text and the engine holds it,
-    // but it arrives as a key: a reader that walks values alone never sees it
-    // and lets this through.
-    const text = (index: number): string => `${index}`.padEnd(60 * 1024, 'w');
-    const values = Array.from({ length: 8 }, (_unused, index) => text(index));
-    const parameters = [
-      { name: 'a', values },
-      { name: 'b', values: ['1', '2'] },
-    ] as unknown as Parameter[];
-    const existing: TestCase[] = Array.from({ length: 9 }, (_unused, index) => ({
-      a: values[index % values.length],
-      b: '1',
-    }));
-    const input = {
-      parameters,
-      weights: { a: { [text(99)]: 1 } },
-    } as unknown as GenerateInput;
-
-    for (const { name: surface, api } of surfaces) {
-      const error = capture(() => api.extendTests(existing, input)) as CoverwiseError;
-      expect(error, surface).toBeInstanceOf(Error);
-      expect(error.code, surface).toBe('INVALID_INPUT');
-      expect(error.message, surface).toBe(aggregateBudgetExceeded());
-    }
-  });
-
   // An empty model is refused for being empty, not for a strength the caller
   // never gave: naming the default in the diagnostic sends them to look at an
   // argument they did not write.
@@ -605,30 +493,140 @@ describe('a suite at the documented row limit', () => {
   });
 });
 
-// What the budget charges, kind by kind.
+// ---------------------------------------------------------------------------
+// The documented byte budgets, across every surface at once
 //
-// Measuring a ceiling shows that one fixture costs the same on two surfaces. It
-// does not show that the same *set* of strings went into it: a reader that
-// started charging row keys again, or stopped charging aliases, would move a
-// ceiling by an amount nobody would recognise as either. These build a model
-// carrying one instance of every kind the contract names, padded until the call
-// sits exactly at the budget, and then add one instance of a single kind — so a
-// failure names the kind rather than reporting a number that moved.
-describe('what one call charges against the budget', () => {
+// One input, driven through every surface the package reaches, with both the
+// verdict and the refusal compared byte for byte. Two things make that hold up
+// over time. The surfaces are a table rather than a pair of imports, so a
+// surface added later has to be answered for; and the kinds of string the
+// budget charges are the shared list itself, so a kind added there without a
+// case here does not compile. A surface or a kind that quietly stops being
+// covered is how a seam survives a review.
+//
+// Measuring a ceiling alone would show only that one fixture costs the same
+// twice. It would not show that the same *set* of strings went into it: a
+// reader that started charging row keys again, or stopped charging aliases,
+// moves a ceiling by an amount nobody would recognise as either. So the model
+// below carries one instance of every kind the contract names, padded until the
+// call sits exactly at the budget, and each case adds one instance of a single
+// kind — a failure names the kind rather than reporting a number that moved.
+// ---------------------------------------------------------------------------
+
+/** The JavaScript-reachable surfaces that share the acceptance contract. */
+const ACCEPTANCE_SURFACES = ['wasm', 'pure', 'module'] as const;
+type AcceptanceSurface = (typeof ACCEPTANCE_SURFACES)[number];
+
+/** The calls that judge an input, as every surface offers them. */
+const ENTRY_POINTS = ['generate', 'extend', 'analyze'] as const;
+type EntryPoint = (typeof ENTRY_POINTS)[number];
+
+/** A model as the package entry points receive it, plus the rows beside it. */
+interface Model {
+  parameters: Array<Record<string, unknown>>;
+  constraints: string[];
+  subModels: Array<{ parameters: string[]; strength: number }>;
+  weights: Record<string, Record<string, number>>;
+  existing: TestCase[];
+  seeds?: TestCase[];
+  /** Fields the schema does not read, which some cases below add on purpose. */
+  [field: string]: unknown;
+}
+
+/** What the compiled module returns instead of throwing. */
+interface RawResult {
+  error?: true;
+  message?: string;
+}
+
+interface RawBudgetModule {
+  generate(input: unknown): RawResult;
+  extendTests(existing: unknown, input: unknown): RawResult;
+  analyzeCoverage(
+    parameters: unknown,
+    tests: unknown,
+    strength: number,
+    constraints: unknown,
+  ): RawResult;
+}
+
+describe('the documented byte budgets', () => {
+  let raw: RawBudgetModule;
+
   /** Under the per-string limit, so bulk is never refused for its own size. */
   const CELL = 60 * 1024;
 
-  interface Model {
-    parameters: Array<Record<string, unknown>>;
-    constraints: string[];
-    subModels: Array<{ parameters: string[]; strength: number }>;
-    weights: Record<string, Record<string, number>>;
-    existing: TestCase[];
-    seeds?: TestCase[];
-  }
-
   /** Filler of an exact byte length, distinct per tag. */
   const filler = (tag: string, bytes: number): string => tag.padEnd(bytes, 'p');
+
+  /** The model without the rows that travel beside it. */
+  function inputOf(built: Model): GenerateInput {
+    const { existing: _existing, ...input } = built;
+    return input as unknown as GenerateInput;
+  }
+
+  /** The refusal a thrown-error surface gives, or null when it accepts. */
+  function thrown(run: () => unknown): string | null {
+    try {
+      run();
+      return null;
+    } catch (error) {
+      return (error as Error).message;
+    }
+  }
+
+  /** The refusal the compiled module gives, or null when it accepts. */
+  function reported(run: () => RawResult): string | null {
+    try {
+      const result = run();
+      return result.error === true ? (result.message ?? '') : null;
+    } catch (error) {
+      return (error as Error).message;
+    }
+  }
+
+  /**
+   * Every surface's every entry point, as one uniform question: what does this
+   * call say about this model?
+   *
+   * Written as a map keyed by the surface and entry-point unions rather than as
+   * a list, so neither a new surface nor a new entry point can be added without
+   * an answer here.
+   */
+  const drive: Record<AcceptanceSurface, Record<EntryPoint, (built: Model) => string | null>> = {
+    wasm: {
+      generate: (built) => thrown(() => wasm.generate(inputOf(built))),
+      extend: (built) => thrown(() => wasm.extendTests(built.existing, inputOf(built))),
+      analyze: (built) =>
+        thrown(() =>
+          wasm.analyzeCoverage(
+            built.parameters as unknown as Parameter[],
+            built.existing,
+            2,
+            built.constraints,
+          ),
+        ),
+    },
+    pure: {
+      generate: (built) => thrown(() => pure.generate(inputOf(built))),
+      extend: (built) => thrown(() => pure.extendTests(built.existing, inputOf(built))),
+      analyze: (built) =>
+        thrown(() =>
+          pure.analyzeCoverage(
+            built.parameters as unknown as Parameter[],
+            built.existing,
+            2,
+            built.constraints,
+          ),
+        ),
+    },
+    module: {
+      generate: (built) => reported(() => raw.generate(inputOf(built))),
+      extend: (built) => reported(() => raw.extendTests(built.existing, inputOf(built))),
+      analyze: (built) =>
+        reported(() => raw.analyzeCoverage(built.parameters, built.existing, 2, built.constraints)),
+    },
+  };
 
   /**
    * A model carrying one instance of every kind of string the contract names,
@@ -658,21 +656,27 @@ describe('what one call charges against the budget', () => {
     };
   }
 
-  type Surface = (typeof surfaces)[number]['api'];
-
-  /** The refusal this model draws, or null when it is accepted. */
-  function refusal(api: Surface, built: Model): string | null {
-    const { existing, ...input } = built;
-    try {
-      api.extendTests(existing, input as unknown as GenerateInput);
-      return null;
-    } catch (error) {
-      return (error as Error).message;
-    }
+  /** What every surface says about `built` when asked through extend. */
+  function refusals(built: Model): Record<AcceptanceSurface, string | null> {
+    return Object.fromEntries(
+      ACCEPTANCE_SURFACES.map((surface) => [surface, drive[surface].extend(built)]),
+    ) as Record<AcceptanceSurface, string | null>;
   }
 
-  function overBudget(api: Surface, built: Model): boolean {
-    return refusal(api, built) === aggregateBudgetExceeded();
+  /**
+   * Assert every surface answered `expected`, byte for byte.
+   *
+   * Comparing the surfaces to each other would pass while all of them are
+   * wrong, and comparing each to a sentence spelled out here would be another
+   * copy of the wording. The expected text is quoted from the shared generator,
+   * which budget.test.ts holds equal to the C++ one — so what these surfaces say
+   * is the same text the command line says, without any of them restating it.
+   */
+  function expectAll(built: Model, expected: string | null, label: string): void {
+    const answers = refusals(built);
+    for (const surface of ACCEPTANCE_SURFACES) {
+      expect(answers[surface], `${label} on ${surface}`).toBe(expected);
+    }
   }
 
   /**
@@ -680,12 +684,15 @@ describe('what one call charges against the budget', () => {
    * so the cases below start from the budget itself and not from an arithmetic
    * they would have to keep in step with the accounting they are checking.
    */
-  function calibrate(api: Surface, build: (slack: number) => Model): number {
+  function calibrate(
+    drives: (built: Model) => string | null,
+    build: (slack: number) => Model,
+  ): number {
     let low = 1;
     let high = CELL;
     while (low < high) {
       const mid = Math.ceil((low + high) / 2);
-      if (refusal(api, build(mid)) === null) {
+      if (drives(build(mid)) === null) {
         low = mid;
       } else {
         high = mid - 1;
@@ -696,74 +703,93 @@ describe('what one call charges against the budget', () => {
 
   let slack = 0;
 
-  beforeAll(() => {
-    slack = calibrate(pure, model);
+  beforeAll(async () => {
+    // @ts-expect-error — built by `yarn build:wasm`, aliased to dist/ in vitest.
+    const createModule = await import('../coverwise.js');
+    raw = (await createModule.default()) as RawBudgetModule;
+    // Searched on one surface and then required of all of them: a ceiling the
+    // surfaces disagree about fails the case below rather than moving with
+    // whichever surface was asked to find it.
+    slack = calibrate(drive.pure.extend, model);
   });
 
-  it('sits exactly at the budget on both surfaces', () => {
-    for (const { name, api } of surfaces) {
-      expect(refusal(api, model(slack)), name).toBeNull();
-      expect(overBudget(api, model(slack + 1)), name).toBe(true);
+  it('puts the ceiling in the same place on every surface', () => {
+    expectAll(model(slack), null, 'at the ceiling');
+    expectAll(model(slack + 1), aggregateBudgetExceeded(), 'one byte past the ceiling');
+  });
+
+  // The budget is one number for the whole call, and one number for the whole
+  // package: whichever call a caller reached for, an input over the limit is
+  // refused, in the same words. A surface that gated only its generator is
+  // where an oversized model reaches the engine through analysis instead.
+  describe('every entry point refuses the same input', () => {
+    /**
+     * A model whose own strings are over the budget.
+     *
+     * The bulk sits in the parameters rather than in the rows, because that is
+     * the only part of an input all three calls read: generate is handed no
+     * rows at all, and analysis is handed no weights or sub-models.
+     */
+    function overBudget(): Model {
+      const wide = Math.ceil(MAX_AGGREGATE_STRING_BYTES / CELL) + 1;
+      return {
+        parameters: [
+          {
+            name: 'a',
+            values: Array.from({ length: wide }, (_unused, index) => filler(`w${index}`, CELL)),
+          },
+          { name: 'b', values: ['x', 'y'] },
+        ],
+        constraints: [],
+        subModels: [],
+        weights: {},
+        existing: [{ a: filler('w0', CELL), b: 'x' }],
+      };
+    }
+
+    for (const surface of ACCEPTANCE_SURFACES) {
+      for (const entry of ENTRY_POINTS) {
+        it(`refuses it at ${surface}.${entry}`, () => {
+          expect(drive[surface][entry](overBudget())).toBe(aggregateBudgetExceeded());
+        });
+      }
     }
   });
 
-  /** One more instance of a kind the budget charges. */
-  const charged: Array<{ kind: string; add: (built: Model, text: string) => void }> = [
-    {
-      kind: 'a parameter name',
-      add: (built, text) => built.parameters.push({ name: text, values: ['q'] }),
+  /**
+   * One more instance of a kind the budget charges.
+   *
+   * Keyed by the shared list of kinds, so a kind added to the contract without
+   * a case here is a type error rather than an omission nobody notices.
+   */
+  const charged: Record<ChargedStringKind, (built: Model, text: string) => void> = {
+    parameterName: (built, text) => built.parameters.push({ name: text, values: ['q'] }),
+    parameterValue: (built, text) => (built.parameters[1].values as string[]).push(text),
+    valueAlias: (built, text) => {
+      const values = built.parameters[0].values as Array<{ aliases?: string[] }>;
+      values[0].aliases = ['al', text];
     },
-    {
-      kind: 'a value',
-      add: (built, text) => (built.parameters[1].values as string[]).push(text),
+    equivalenceClass: (built, text) => {
+      const values = built.parameters[0].values as Array<{ value: string; class?: string }>;
+      values[1] = { value: 'v1', class: text };
     },
-    {
-      kind: 'an alias',
-      add: (built, text) => {
-        const values = built.parameters[0].values as Array<{ aliases?: string[] }>;
-        values[0].aliases = ['al', text];
-      },
+    constraintExpression: (built, text) => built.constraints.push(`b = "${text}"`),
+    subModelParameterName: (built, text) =>
+      built.subModels.push({ parameters: [text], strength: 1 }),
+    weightParameterName: (built, text) => {
+      built.weights[text] = { q: 1 };
     },
-    {
-      kind: 'a class name',
-      add: (built, text) => {
-        const values = built.parameters[0].values as Array<{ value: string; class?: string }>;
-        values[1] = { value: 'v1', class: text };
-      },
+    weightValueName: (built, text) => {
+      built.weights.a[text] = 1;
     },
-    {
-      kind: 'a constraint expression',
-      add: (built, text) => built.constraints.push(`b = "${text}"`),
-    },
-    {
-      kind: 'a sub-model parameter name',
-      add: (built, text) => built.subModels.push({ parameters: [text], strength: 1 }),
-    },
-    {
-      kind: 'a weight parameter name',
-      add: (built, text) => {
-        built.weights[text] = { q: 1 };
-      },
-    },
-    {
-      kind: 'a weight value name',
-      add: (built, text) => {
-        built.weights.a[text] = 1;
-      },
-    },
-    {
-      kind: 'a string row value',
-      add: (built, text) => built.existing.push({ b: text }),
-    },
-  ];
+    rowValue: (built, text) => built.existing.push({ b: text }),
+  };
 
-  for (const { kind, add } of charged) {
+  for (const kind of CHARGED_STRING_KINDS) {
     it(`charges ${kind}`, () => {
-      for (const { name, api } of surfaces) {
-        const built = model(slack);
-        add(built, filler('extra', 64));
-        expect(overBudget(api, built), `${name}: ${kind}`).toBe(true);
-      }
+      const built = model(slack);
+      charged[kind](built, filler('extra', 64));
+      expectAll(built, aggregateBudgetExceeded(), `one more ${kind}`);
     });
   }
 
@@ -794,17 +820,81 @@ describe('what one call charges against the budget', () => {
         }
       },
     },
+    {
+      // The schema never reads it, so the engine never holds it. Charging it
+      // would refuse a model carrying its own notes on one surface while the
+      // command line — which walks the fields it parses — generates for it.
+      kind: 'an unknown top-level field',
+      add: (built) => {
+        built.description = filler('d', CELL);
+        built.$schema = filler('s', CELL);
+      },
+    },
+    {
+      kind: 'an unknown nested field',
+      add: (built) => {
+        built.parameters[0].description = filler('n', CELL);
+        (built.parameters[0].values as Array<Record<string, unknown>>)[0].note = filler('v', CELL);
+      },
+    },
   ];
 
   for (const { kind, add } of uncharged) {
     it(`does not charge ${kind}`, () => {
-      for (const { name, api } of surfaces) {
-        const built = model(slack);
-        add(built);
-        expect(refusal(api, built), `${name}: ${kind}`).toBeNull();
-      }
+      const built = model(slack);
+      add(built);
+      expectAll(built, null, `an added ${kind}`);
     });
   }
+
+  // A row's keys are not charged, but the text under a key is — whether or not
+  // that key names a declared parameter. What the limit bounds is what the
+  // caller handed over, not the part of it the model happened to have somewhere
+  // to put; a surface that dropped an unrecognised key before counting accepts
+  // a suite every other surface refuses.
+  it('charges a row value under a key that names no parameter', () => {
+    const built = model(slack);
+    built.existing.push({ undeclared: filler('u', 64) });
+    expectAll(built, aggregateBudgetExceeded(), 'a value under an undeclared key');
+  });
+
+  // The engine can also be reached directly, with options a caller built rather
+  // than a document a surface read. Nothing is in front of that entry to count
+  // the caller's row text, so the gate charges it there — and it has to refuse
+  // in the words the reader-backed surfaces use for the same suite, or the two
+  // accounting regimes are two contracts wearing one sentence.
+  it('refuses row text at the direct engine entry in the same words', () => {
+    const text = filler('r', CELL);
+    const rows = Math.ceil(MAX_AGGREGATE_STRING_BYTES / (2 * text.length)) + 1;
+    const parameters = [
+      { name: 'a', values: ['x', 'y'] },
+      { name: 'b', values: ['1', '2'] },
+    ];
+    const built: Model = {
+      parameters,
+      constraints: [],
+      subModels: [],
+      weights: {},
+      existing: Array.from({ length: rows }, () => ({ a: text, b: text })),
+    };
+    expectAll(built, aggregateBudgetExceeded(), 'row text over the ceiling');
+
+    // The same suite as the engine receives it: value indices that did not
+    // resolve, with the caller's own text kept beside them.
+    const direct = internalGenerate(
+      createGenerateOptions({
+        parameters: parameters.map((parameter) => ({
+          name: parameter.name,
+          values: parameter.values,
+        })),
+        seeds: Array.from({ length: rows }, () => ({
+          values: [UNASSIGNED, UNASSIGNED],
+          unresolved: [text, text],
+        })),
+      }),
+    );
+    expect(direct.error.message).toBe(aggregateBudgetExceeded());
+  });
 
   // A row given as a seed is read by two checks in the same call. Charged by
   // each of them it would cost twice what the caller wrote, and the budget
@@ -819,13 +909,107 @@ describe('what one call charges against the budget', () => {
       return built;
     };
 
-    for (const { name, api } of surfaces) {
-      const seedSlack = calibrate(api, withSeed);
+    for (const surface of ACCEPTANCE_SURFACES) {
+      const seedSlack = calibrate(drive[surface].extend, withSeed);
       // What the seed itself spells: the adjustable tail and the two short
       // values beside it.
       const seedBytes = seedSlack + 'v0'.length + 'x'.length;
       const charges = Math.round((2 * slack - 2 * seedSlack) / seedBytes);
-      expect(charges, name).toBe(1);
+      expect(charges, surface).toBe(1);
+    }
+  });
+
+  // The per-string limit has one sentence too, and it names the string it
+  // refused. Every kind is driven so a wording changed for one of them cannot
+  // stay changed for that one alone.
+  describe('the per-string limit names the string it refused', () => {
+    const oversized = 'x'.repeat(MAX_STRING_BYTES + 1);
+
+    /** A small model, so only the one oversized string decides. */
+    function small(): Model {
+      return {
+        parameters: [
+          { name: 'a', values: [{ value: 'v0', aliases: ['al'], class: 'cl' }, { value: 'v1' }] },
+          { name: 'b', values: ['x', 'y'] },
+        ],
+        constraints: [],
+        subModels: [],
+        weights: {},
+        existing: [{ a: 'v0', b: 'x' }],
+      };
+    }
+
+    const contexts: Record<ChargedStringKind, string> = {
+      parameterName: chargedStringContext.parameterName(oversized),
+      parameterValue: chargedStringContext.parameterValue('b', 2),
+      valueAlias: chargedStringContext.valueAlias('a', 0),
+      equivalenceClass: chargedStringContext.equivalenceClass('a', 1),
+      constraintExpression: chargedStringContext.constraintExpression(),
+      subModelParameterName: chargedStringContext.subModelParameterName(),
+      weightParameterName: chargedStringContext.weightParameterName(),
+      weightValueName: chargedStringContext.weightValueName(),
+      rowValue: chargedStringContext.rowValue('existing', 1),
+    };
+
+    /** Where the oversized string of each kind is written into the model. */
+    const place: Record<ChargedStringKind, (built: Model) => void> = {
+      parameterName: (built) => built.parameters.push({ name: oversized, values: ['q'] }),
+      parameterValue: (built) => (built.parameters[1].values as string[]).push(oversized),
+      valueAlias: (built) => {
+        const values = built.parameters[0].values as Array<{ aliases?: string[] }>;
+        values[0].aliases = [oversized];
+      },
+      equivalenceClass: (built) => {
+        const values = built.parameters[0].values as Array<{ value: string; class?: string }>;
+        values[1] = { value: 'v1', class: oversized };
+      },
+      constraintExpression: (built) => built.constraints.push(oversized),
+      subModelParameterName: (built) =>
+        built.subModels.push({ parameters: [oversized], strength: 1 }),
+      weightParameterName: (built) => {
+        built.weights[oversized] = { v0: 1 };
+      },
+      weightValueName: (built) => {
+        built.weights.a = { [oversized]: 1 };
+      },
+      rowValue: (built) => built.existing.push({ b: oversized }),
+    };
+
+    for (const kind of CHARGED_STRING_KINDS) {
+      it(`refuses an oversized ${kind} in one wording`, () => {
+        const built = small();
+        place[kind](built);
+        expectAll(built, stringBudgetExceeded(contexts[kind]), `an oversized ${kind}`);
+      });
+    }
+  });
+});
+
+// A model can have more than one thing wrong with it, and the gate reports the
+// first one it reaches. That makes the order it walks the caller's maps in part
+// of the contract: the core keeps them sorted and a JavaScript object keeps them
+// in insertion order, so a surface walking the object as written would name a
+// different parameter for the same input and give two callers two accounts of
+// one model.
+describe('which violator a surface names when a model has several', () => {
+  const reversedRange = {
+    values: [],
+    type: 'integer' as const,
+    range: [10, 0] as [number, number],
+  };
+
+  it('names the same boundary parameter on every surface', () => {
+    const input = {
+      parameters: [
+        { name: 'zzz', ...reversedRange },
+        { name: 'aaa', ...reversedRange },
+      ],
+    } as GenerateInput;
+
+    for (const { name, api } of surfaces) {
+      const thrown = capture(() => api.generate(input));
+      expect(thrown, name).toBeInstanceOf(Error);
+      expect((thrown as Error).message, name).toBe(boundaryAcceptanceError.range('aaa'));
     }
   });
 });

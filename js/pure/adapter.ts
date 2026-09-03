@@ -12,6 +12,7 @@ import {
 } from '../../src/ts/model/generate-options.js';
 import {
   Parameter as InternalParameter,
+  resolveValueName,
   UNASSIGNED,
   validateParameters as validateInternalParameters,
 } from '../../src/ts/model/parameter.js';
@@ -197,7 +198,7 @@ export function toInternalTestCase(
     const paramName = params[i].name;
     if (Object.hasOwn(tc, paramName)) {
       const valStr = valueToString(tc[paramName]);
-      const idx = params[i].findValueIndex(valStr);
+      const idx = resolveValueName(params[i], valStr);
       if (idx === UNASSIGNED) {
         if (allowUnknown) {
           // Filled on first drift only: a row that matches the model costs

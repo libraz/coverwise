@@ -120,20 +120,31 @@ function formatNumber(value: number): string {
   return String(value);
 }
 
+/** Where a value operand lands, which decides how the parser reads it. */
+type ValuePosition = 'comparison' | 'set';
+
 /**
- * Format an equality operand. Strings are always quoted: a bare token on the
- * right of `=` or `!=` is resolved by the parser as a parameter reference when
- * one bears that name, which would silently turn a value comparison into a
+ * Format a value operand for the position it lands in.
+ *
+ * Every value kind becomes text first and the position alone decides quoting,
+ * so the rule cannot hold for one kind and be forgotten for its neighbour, and
+ * a kind added later inherits it in both positions.
+ *
+ * On the right of `=` or `!=` a bare token is resolved as a parameter
+ * reference whenever a parameter bears that name — a number token as much as a
+ * word — so text is quoted there unconditionally. A quoted operand is still
+ * matched against the parameter's values, so quoting costs no legitimate
+ * comparison; leaving it bare is what would cost one, turning `p = true` in a
+ * model that also declares a parameter named `true` into a
  * parameter-to-parameter comparison instead of reporting an unknown value.
+ *
+ * Inside an `IN` set a member resolves only against the left parameter's
+ * values, with no parameter reference for it to be confused with, so a member
+ * keeps its bare spelling whenever it survives as one token.
  */
-function formatValue(value: string | number | boolean): string {
-  if (typeof value === 'boolean') {
-    return String(value);
-  }
-  if (typeof value === 'number') {
-    return formatNumber(value);
-  }
-  return quote(value);
+function formatValue(value: string | number | boolean, position: ValuePosition): string {
+  const text = typeof value === 'number' ? formatNumber(value) : String(value);
+  return position === 'set' && canEmitBare(text, false) ? text : quote(text);
 }
 
 /**
@@ -169,16 +180,6 @@ function formatRelationalOperand(value: number | string): string {
     );
   }
   return value;
-}
-
-function formatSetValue(value: string | number | boolean): string {
-  if (typeof value === 'boolean') {
-    return String(value);
-  }
-  if (typeof value === 'number') {
-    return formatNumber(value);
-  }
-  return canEmitBare(value, false) ? value : quote(value);
 }
 
 /**
@@ -337,13 +338,16 @@ class ConditionStartImpl implements ConditionStart {
   }
 
   eq(value: string | number | boolean): Condition {
-    return new ConditionImpl({ kind: 'atom', expression: `${this.param} = ${formatValue(value)}` });
+    return new ConditionImpl({
+      kind: 'atom',
+      expression: `${this.param} = ${formatValue(value, 'comparison')}`,
+    });
   }
 
   ne(value: string | number | boolean): Condition {
     return new ConditionImpl({
       kind: 'atom',
-      expression: `${this.param} != ${formatValue(value)}`,
+      expression: `${this.param} != ${formatValue(value, 'comparison')}`,
     });
   }
 
@@ -381,7 +385,7 @@ class ConditionStartImpl implements ConditionStart {
     if (values.length === 0) {
       throw new CoverwiseError('INVALID_INPUT', 'in() requires at least one value');
     }
-    const formatted = values.map(formatSetValue).join(', ');
+    const formatted = values.map((value) => formatValue(value, 'set')).join(', ');
     return new ConditionImpl({
       kind: 'atom',
       expression: `${this.param} IN {${formatted}}`,

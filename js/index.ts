@@ -113,14 +113,66 @@ export async function init(): Promise<void> {
   wasmModule = await initPromise;
 }
 
-function getModule(): WasmModule {
+// --- Engine Boundary ---
+
+/**
+ * The error a caller sees for a throw this package did not raise.
+ *
+ * Inspecting the thrown value is itself caller code — the prototype walk behind
+ * `instanceof` can hit a proxy trap, `message` may be a getter, and `String`
+ * may reach a `toString` that throws — so every step of it is attempted
+ * defensively. A step that fails leaves the value unnamed rather than replacing
+ * one foreign throw with another.
+ */
+function asCoverwiseError(thrown: unknown): CoverwiseError {
+  try {
+    if (thrown instanceof CoverwiseError) {
+      return thrown;
+    }
+  } catch {
+    // A value that refuses the prototype walk is not one this package raised.
+  }
+  let described = 'a value that cannot be described';
+  try {
+    described = thrown instanceof Error && thrown.message !== '' ? thrown.message : String(thrown);
+  } catch {
+    // Keep the fallback: describing the value is the caller's code too.
+  }
+  return new CoverwiseError(
+    'INVALID_INPUT',
+    `Invalid input: a property read on the input threw (${described}).`,
+  );
+}
+
+/**
+ * Run one call against the engine and let nothing but a {@link CoverwiseError}
+ * out of it.
+ *
+ * Reading a field of a caller-supplied object runs caller code: a getter on a
+ * class instance, a reactive ref, a store proxy's trap. Whatever that code
+ * throws is a JavaScript exception, so it is not the `std::exception` the
+ * compiled module catches and not a `CoverwiseError` this package raised — it
+ * would reach the caller as a foreign throw out of a function documented to
+ * report failure one way only, from an input as ordinary as a component's
+ * state object. Both the validation pass and the engine call read such fields,
+ * so both run inside this frame.
+ *
+ * The module handle is reachable nowhere else: a call that wants the engine has
+ * to be written as a body handed to this function, so an entry point added
+ * later inherits the conversion instead of having to remember it.
+ */
+function callEngine<T>(run: (engine: WasmModule) => T): T {
   if (!wasmModule) {
     throw new CoverwiseError(
       'INVALID_INPUT',
       'coverwise WASM module not initialized. Call await init() first.',
     );
   }
-  return wasmModule;
+  try {
+    return run(wasmModule);
+  } catch (thrown) {
+    throw asCoverwiseError(thrown);
+  }
 }
 
 // --- Input Validation ---
@@ -169,11 +221,12 @@ function checkResult<T>(result: unknown): T {
  * // result.coverage: 1.0
  */
 export function generate(input: GenerateInput): GenerateResult {
-  validateInput(input);
-  const mod = getModule();
-  const result = checkResult<GenerateResult>(mod.generate(input));
-  result.negativeTests = result.negativeTests ?? [];
-  return result;
+  return callEngine((engine) => {
+    validateInput(input);
+    const result = checkResult<GenerateResult>(engine.generate(input));
+    result.negativeTests = result.negativeTests ?? [];
+    return result;
+  });
 }
 
 /**
@@ -193,25 +246,26 @@ export function analyzeCoverage(
   strength?: number,
   constraints?: string[],
 ): CoverageReport {
-  const budget = createStringBudget();
-  validateParameters(parameters, budget);
-  validateTestArray(tests, 'tests', budget);
-  validateConstraints(constraints);
-  const s = validateStrength(strength, wasmScalarError);
-  const mod = getModule();
-  const result = checkResult<CoverageReport>(
-    mod.analyzeCoverage(parameters, tests, s, constraints ?? []),
-  );
-  // An empty tuple universe leaves the ratio undefined; coverage is then
-  // vacuously 1.0. Every input that could produce one is turned away earlier:
-  // a strength above the parameter count, a parameter with no valid value, and
-  // an unsatisfiable constraint model are all rejected before enumeration, and
-  // any model that survives them has at least one tuple. This is a guard, not a
-  // case with an input to name.
-  if (result.totalTuples === 0) {
-    result.coverageRatio = 1.0;
-  }
-  return result;
+  return callEngine((engine) => {
+    const budget = createStringBudget();
+    validateParameters(parameters, budget);
+    validateTestArray(tests, 'tests', budget);
+    validateConstraints(constraints, budget);
+    const s = validateStrength(strength, wasmScalarError);
+    const result = checkResult<CoverageReport>(
+      engine.analyzeCoverage(parameters, tests, s, constraints ?? []),
+    );
+    // An empty tuple universe leaves the ratio undefined; coverage is then
+    // vacuously 1.0. Every input that could produce one is turned away earlier:
+    // a strength above the parameter count, a parameter with no valid value, and
+    // an unsatisfiable constraint model are all rejected before enumeration, and
+    // any model that survives them has at least one tuple. This is a guard, not a
+    // case with an input to name.
+    if (result.totalTuples === 0) {
+      result.coverageRatio = 1.0;
+    }
+    return result;
+  });
 }
 
 /**
@@ -221,24 +275,25 @@ export function analyzeCoverage(
  * Only "strict" mode is supported (existing tests are kept as-is).
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
-  const budget = createStringBudget();
-  validateTestArray(existing, 'existing', budget);
-  validateInput(input, budget);
-  validateExtendMode(input.mode);
-  const mod = getModule();
-  const result = checkResult<GenerateResult>(mod.extendTests(existing, input));
-  result.negativeTests = result.negativeTests ?? [];
-  return result;
+  return callEngine((engine) => {
+    const budget = createStringBudget();
+    validateTestArray(existing, 'existing', budget);
+    validateInput(input, budget);
+    validateExtendMode(input.mode);
+    const result = checkResult<GenerateResult>(engine.extendTests(existing, input));
+    result.negativeTests = result.negativeTests ?? [];
+    return result;
+  });
 }
 
 /**
  * Get model statistics without running generation.
  */
 export function estimateModel(input: GenerateInput): ModelStats {
-  validateInput(input);
-  const mod = getModule();
-  const result = checkResult<ModelStats>(mod.estimateModel(input));
-  return result;
+  return callEngine((engine) => {
+    validateInput(input);
+    return checkResult<ModelStats>(engine.estimateModel(input));
+  });
 }
 
 // --- Class-based API ---

@@ -12,7 +12,11 @@
  */
 
 import { boundaryShapeError } from '../src/ts/model/boundary-rules.js';
-import { aggregateBudgetExceeded } from '../src/ts/model/budget.js';
+import {
+  aggregateBudgetExceeded,
+  chargedStringContext,
+  stringBudgetExceeded,
+} from '../src/ts/model/budget.js';
 import {
   MAX_AGGREGATE_STRING_BYTES,
   MAX_CONSTRAINTS,
@@ -141,32 +145,21 @@ function chargeAggregate(bytes: number, aggregate: StringBudget): void {
   }
 }
 
+/**
+ * Charge one caller string, refusing it if it is over the per-string limit.
+ *
+ * The context and both refusals are quoted from the shared budget module: the
+ * limits are documented per input, so what a surface may do about one is
+ * measure it and report what that module says, never word it again.
+ */
 function validateStringBudget(value: string, context: string, aggregate?: StringBudget): void {
   const bytes = utf8Bytes(value);
   if (bytes > MAX_STRING_BYTES) {
-    invalid(`${context} exceeds ${MAX_STRING_BYTES} UTF-8 bytes.`);
+    invalid(stringBudgetExceeded(context));
   }
   if (aggregate) {
     chargeAggregate(bytes, aggregate);
   }
-}
-
-function validateAggregateStringBudget(value: unknown, aggregate: StringBudget): void {
-  const seen = new Set<object>();
-  const visit = (current: unknown): void => {
-    if (typeof current === 'string') {
-      chargeAggregate(utf8Bytes(current), aggregate);
-      return;
-    }
-    if (typeof current !== 'object' || current === null || seen.has(current)) {
-      return;
-    }
-    seen.add(current);
-    for (const nested of Array.isArray(current) ? current : Object.values(current)) {
-      visit(nested);
-    }
-  };
-  visit(value);
 }
 
 /**
@@ -212,8 +205,7 @@ function validateBoundary(parameter: Record<string, unknown>, name: string): voi
  * @param aggregate - Budget to charge the model's strings against. An entry
  *   point that also reads rows passes the one it charges those against, so the
  *   documented limit applies to the call rather than to each argument. Omitted
- *   where these strings have already been charged; the per-string checks below
- *   do not depend on it.
+ *   by a caller checking shape alone; the per-string checks do not depend on it.
  */
 export function validateParameters(parameters: unknown, aggregate?: StringBudget): void {
   if (!Array.isArray(parameters)) {
@@ -231,7 +223,11 @@ export function validateParameters(parameters: unknown, aggregate?: StringBudget
     if (typeof parameter.name !== 'string' || parameter.name.length === 0) {
       invalid('Parameter name must be a non-empty string');
     }
-    validateStringBudget(parameter.name, `Parameter name '${parameter.name}'`, aggregate);
+    validateStringBudget(
+      parameter.name,
+      chargedStringContext.parameterName(parameter.name),
+      aggregate,
+    );
     // The same fold the engines apply, so this module and they agree on which
     // two names are the same name.
     const foldedName = asciiToUpper(parameter.name);
@@ -255,7 +251,11 @@ export function validateParameters(parameters: unknown, aggregate?: StringBudget
       const value = parameter.values[vi];
       if (isParameterScalar(value)) {
         if (typeof value === 'string') {
-          validateStringBudget(value, `${parameter.name}[${vi}]`, aggregate);
+          validateStringBudget(
+            value,
+            chargedStringContext.parameterValue(parameter.name, vi),
+            aggregate,
+          );
         }
         continue;
       }
@@ -265,7 +265,11 @@ export function validateParameters(parameters: unknown, aggregate?: StringBudget
         invalid(`Invalid value at ${parameter.name}[${vi}]: expected string, number, or boolean.`);
       }
       if (typeof value.value === 'string') {
-        validateStringBudget(value.value, `${parameter.name}[${vi}]`, aggregate);
+        validateStringBudget(
+          value.value,
+          chargedStringContext.parameterValue(parameter.name, vi),
+          aggregate,
+        );
       }
       if (value.invalid !== undefined && typeof value.invalid !== 'boolean') {
         invalid(`Invalid flag at ${parameter.name}[${vi}] must be boolean.`);
@@ -278,13 +282,17 @@ export function validateParameters(parameters: unknown, aggregate?: StringBudget
         invalid(`Aliases at ${parameter.name}[${vi}] must be non-empty strings.`);
       }
       for (const alias of value.aliases ?? []) {
-        validateStringBudget(alias, `Alias at ${parameter.name}[${vi}]`, aggregate);
+        validateStringBudget(alias, chargedStringContext.valueAlias(parameter.name, vi), aggregate);
       }
       if (value.class !== undefined && typeof value.class !== 'string') {
         invalid(`Class at ${parameter.name}[${vi}] must be a string.`);
       }
       if (typeof value.class === 'string') {
-        validateStringBudget(value.class, `Class at ${parameter.name}[${vi}]`, aggregate);
+        validateStringBudget(
+          value.class,
+          chargedStringContext.equivalenceClass(parameter.name, vi),
+          aggregate,
+        );
       }
     }
   }
@@ -301,10 +309,10 @@ export function validateParameters(parameters: unknown, aggregate?: StringBudget
  * width rather than at the documented row ceiling.
  *
  * @param tests - The candidate row array.
- * @param field - The argument name to quote in a rejection.
+ * @param field - The caller's own name for this array, quoted in a rejection.
  * @param aggregate - Budget shared with the other arguments of the same call.
- *   Omitted where these rows have already been charged: a second budget is a
- *   second allowance, and one call has one.
+ *   Omitted by a caller checking shape alone: a second budget is a second
+ *   allowance, and one call has one.
  */
 export function validateTestArray(tests: unknown, field: string, aggregate?: StringBudget): void {
   if (!Array.isArray(tests)) {
@@ -326,22 +334,21 @@ export function validateTestArray(tests: unknown, field: string, aggregate?: Str
         invalid(`Invalid ${field}[${i}].${name}: expected string, number, or boolean.`);
       }
       if (typeof value === 'string') {
-        const bytes = utf8Bytes(value);
-        if (bytes > MAX_STRING_BYTES) {
-          invalid(
-            `Invalid ${field}[${i}].${name}: string exceeds ${MAX_STRING_BYTES} UTF-8 bytes.`,
-          );
-        }
-        if (aggregate) {
-          chargeAggregate(bytes, aggregate);
-        }
+        validateStringBudget(value, chargedStringContext.rowValue(field, i), aggregate);
       }
     }
   }
 }
 
-/** Validate an optional constraint expression array. */
-export function validateConstraints(constraints: unknown): void {
+/**
+ * Validate an optional constraint expression array.
+ *
+ * @param constraints - The candidate expression array.
+ * @param aggregate - Budget for the call these expressions belong to. Omitted
+ *   where they have already been charged; the per-string check does not depend
+ *   on it.
+ */
+export function validateConstraints(constraints: unknown, aggregate?: StringBudget): void {
   if (constraints === undefined || constraints === null) {
     return;
   }
@@ -352,19 +359,15 @@ export function validateConstraints(constraints: unknown): void {
     invalid(`Invalid constraints: maximum is ${MAX_CONSTRAINTS}.`);
   }
   for (const expression of constraints) {
-    if (utf8Bytes(expression) > MAX_STRING_BYTES) {
-      invalid(`Invalid constraint: maximum expression size is ${MAX_STRING_BYTES} UTF-8 bytes.`);
-    }
+    validateStringBudget(expression, chargedStringContext.constraintExpression(), aggregate);
   }
 }
 
-function validateSeedRows(input: Record<string, unknown>): void {
+function validateSeedRows(input: Record<string, unknown>, aggregate: StringBudget): void {
   if (input.seeds === undefined || input.seeds === null) {
     return;
   }
-  // Seeds live inside `input`, so the walk over it has already charged their
-  // text against the call's budget; this call is for their shape.
-  validateTestArray(input.seeds, 'seeds');
+  validateTestArray(input.seeds, 'seeds', aggregate);
   const seeds = input.seeds as Array<Record<string, unknown>>;
   const parameters = input.parameters as Array<Record<string, unknown>>;
   const names = new Set(parameters.map((parameter) => parameter.name as string));
@@ -383,7 +386,18 @@ function validateSeedRows(input: Record<string, unknown>): void {
   }
 }
 
-function validateSubModels(subModels: unknown): void {
+/**
+ * Validate the optional `subModels` array.
+ *
+ * A sub-model's parameter names are caller strings the engine holds, so they
+ * are charged here — the layer nearest the caller — rather than being left to
+ * the model layer, where the same limit would be reported about a value the
+ * caller cannot see they wrote.
+ *
+ * @param subModels - The candidate sub-model array.
+ * @param aggregate - Budget for the call the sub-models belong to.
+ */
+function validateSubModels(subModels: unknown, aggregate: StringBudget): void {
   if (subModels === undefined || subModels === null) {
     return;
   }
@@ -402,6 +416,9 @@ function validateSubModels(subModels: unknown): void {
       subModel.strength < 1
     ) {
       invalid(`Invalid subModels[${i}].`);
+    }
+    for (const name of (subModel as { parameters: string[] }).parameters) {
+      validateStringBudget(name, chargedStringContext.subModelParameterName(), aggregate);
     }
   }
 }
@@ -426,12 +443,12 @@ function validateWeights(weights: unknown, aggregate: StringBudget): void {
     invalid('Invalid weights: must be an object.');
   }
   for (const [parameter, valueWeights] of Object.entries(weights)) {
-    validateStringBudget(parameter, 'Weight parameter name', aggregate);
+    validateStringBudget(parameter, chargedStringContext.weightParameterName(), aggregate);
     if (!isRecord(valueWeights)) {
       invalid(`Invalid weights.${parameter}: must be an object.`);
     }
     for (const [value, weight] of Object.entries(valueWeights)) {
-      validateStringBudget(value, 'Weight value name', aggregate);
+      validateStringBudget(value, chargedStringContext.weightValueName(), aggregate);
       if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0) {
         invalid(`Invalid weight for ${parameter}=${value}: must be finite and positive.`);
       }
@@ -442,13 +459,18 @@ function validateWeights(weights: unknown, aggregate: StringBudget): void {
 /**
  * Run the full structural validation for a {@link GenerateInput}.
  *
+ * Each field validator below charges the strings it reads, so what the budget
+ * sees is exactly the documented charged set: a field the schema does not read
+ * is reached by no validator and therefore costs nothing. A walk that charged
+ * every string it could find instead would bill a caller for a `description` or
+ * a `$schema` the engine never holds, and refuse on this surface a model the
+ * command line accepts.
+ *
  * @param input - The generate/extend input to validate.
  * @param makeError - Error factory for the numeric scalar checks.
  * @param aggregate - Budget shared with arguments that are not part of `input`,
- *   such as the rows handed to extend. The walk below reaches every string
- *   inside `input` and charges it there, which is why the checks that follow
- *   are handed no budget at all: charging the same text twice would halve the
- *   documented limit for whoever wrote it in the field with two readers.
+ *   such as the rows handed to extend. One call has one, so every field below
+ *   draws from it.
  */
 export function validateGenerateInput(
   input: GenerateInput,
@@ -458,14 +480,13 @@ export function validateGenerateInput(
   if (!isRecord(input)) {
     invalid('Invalid input: must be an object.');
   }
-  validateAggregateStringBudget(input, aggregate);
-  validateParameters(input.parameters);
+  validateParameters(input.parameters, aggregate);
   validateStrength(input.strength, makeError);
   validateMaxTests(input.maxTests, makeError);
   validateSeed(input.seed, makeError);
-  validateConstraints(input.constraints);
-  validateSeedRows(input);
-  validateSubModels(input.subModels);
+  validateConstraints(input.constraints, aggregate);
+  validateSeedRows(input, aggregate);
+  validateSubModels(input.subModels, aggregate);
   validateWeights(input.weights, aggregate);
 }
 

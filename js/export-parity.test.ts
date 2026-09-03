@@ -12,7 +12,17 @@
 /// vocabulary and re-exported from one entry point produced no error anywhere.
 /// So this reads the export declarations themselves. The names are never
 /// written down here — they are collected from the files, and the assertion is
-/// that the three sets agree.
+/// that the sets agree.
+///
+/// Agreeing on names is weaker than agreeing on shapes, and the difference is
+/// the whole point of the surface: two entry points can both publish
+/// `GenerateResult` and mean different things by it. What closes that gap
+/// without a list of type-level assertions to maintain is where the names come
+/// from. A published type is required to be a re-export — never declared in an
+/// entry point — and each name is required to come from the same vocabulary
+/// module on both sides. Two names that resolve to one declaration in one file
+/// cannot differ in shape, so identity of source is identity of shape, and it
+/// is checked by enumeration like everything else here.
 
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
@@ -36,6 +46,16 @@ interface ReExport extends ExportedNames {
   /// `export * from`, which re-exports whatever the module exports and so needs
   /// no enumeration of its own.
   star: boolean;
+}
+
+/// One entry point, read from its source.
+interface Surface {
+  name: string;
+  /// What it declares itself rather than re-exporting. A type here is published
+  /// from a declaration only this entry point has.
+  own: ExportedNames;
+  /// What it re-exports, keyed by the module it re-exports from.
+  reExports: Map<string, ReExport>;
 }
 
 const repoRoot = new URL('../', import.meta.url);
@@ -171,10 +191,82 @@ function reExportsOf(url: URL): Map<string, ReExport> {
   return byModule;
 }
 
+function surfaceOf(name: string, url: URL): Surface {
+  return { name, own: exportsOf(url), reExports: reExportsOf(url) };
+}
+
 const sorted = (names: Iterable<string>): string[] => [...names].sort();
 
 const relativeToRoot = (path: string): string =>
   path.slice(decodeURIComponent(repoRoot.pathname).length);
+
+/// A vocabulary module an entry point does not re-export in full.
+interface Gap {
+  entryPoint: string;
+  module: string;
+  missing: string[];
+  extra: string[];
+}
+
+/// Where an entry point re-exports less, or more, than a module declares.
+function gapsAgainstVocabulary(surface: Surface): Gap[] {
+  const gaps: Gap[] = [];
+  for (const [modulePath, reExport] of surface.reExports) {
+    const declared = exportsOf(new URL(`file://${modulePath}`)).types;
+    const reExported = reExport.star ? declared : reExport.localTypes;
+    const missing = sorted([...declared].filter((name) => !reExported.has(name)));
+    const extra = sorted([...reExported].filter((name) => !declared.has(name)));
+    if (missing.length > 0 || extra.length > 0) {
+      gaps.push({ entryPoint: surface.name, module: relativeToRoot(modulePath), missing, extra });
+    }
+  }
+  return gaps;
+}
+
+/// Every published type name, with the module its declaration lives in.
+///
+/// A star re-export publishes whatever the module declares, so its names are
+/// taken from the module. A renaming publishes the outer name and keeps the
+/// module it came from, which is what makes two entry points that rename the
+/// same declaration differently show up as a name difference rather than as a
+/// source difference.
+function typeSources(surface: Surface): Map<string, string> {
+  const sources = new Map<string, string>();
+  for (const [modulePath, reExport] of surface.reExports) {
+    const published = reExport.star
+      ? exportsOf(new URL(`file://${modulePath}`)).types
+      : reExport.types;
+    for (const name of published) {
+      sources.set(name, relativeToRoot(modulePath));
+    }
+  }
+  return sources;
+}
+
+/// Names published by both entry points out of different declarations.
+///
+/// Two entry points can agree on every name while one of them means a
+/// different declaration by it, and a check that compared names alone would
+/// call that parity. There is nothing to compare shapes with at this level, so
+/// what is compared instead is where each name comes from: one declaration
+/// cannot disagree with itself.
+function divergentTypeSources(left: Surface, right: Surface): string[] {
+  const leftSources = typeSources(left);
+  const rightSources = typeSources(right);
+  const divergent: string[] = [];
+  for (const [name, modulePath] of leftSources) {
+    const other = rightSources.get(name);
+    if (other !== undefined && other !== modulePath) {
+      divergent.push(`${name}: ${left.name} from ${modulePath}, ${right.name} from ${other}`);
+    }
+  }
+  return divergent.sort();
+}
+
+const publishedTypes = (surface: Surface): string[] => sorted(typeSources(surface).keys());
+
+const publishedValues = (surface: Surface): string[] =>
+  sorted([...surface.reExports.values()].flatMap((reExport) => [...reExport.values]));
 
 const ENTRY_POINTS = [
   { name: 'js/index.ts', url: new URL('js/index.ts', repoRoot) },
@@ -182,21 +274,18 @@ const ENTRY_POINTS = [
 ];
 
 describe('published type surface', () => {
-  const entries = ENTRY_POINTS.map((entry) => ({
-    ...entry,
-    reExports: reExportsOf(entry.url),
-  }));
+  const [wasm, pure] = ENTRY_POINTS.map((entry) => surfaceOf(entry.name, entry.url));
 
   it('reads both entry points', () => {
     // Guards the enumeration itself: a rename that leaves this file pointing at
     // nothing would otherwise make every assertion below vacuously true.
-    for (const entry of entries) {
-      expect(entry.reExports.size, entry.name).toBeGreaterThan(0);
+    for (const surface of [wasm, pure]) {
+      expect(surface.reExports.size, surface.name).toBeGreaterThan(0);
+      expect(publishedTypes(surface).length, surface.name).toBeGreaterThan(0);
     }
   });
 
   it('re-exports from the same vocabulary modules', () => {
-    const [wasm, pure] = entries;
     const relative = (paths: Iterable<string>): string[] => sorted(paths).map(relativeToRoot);
     expect(relative(pure.reExports.keys())).toEqual(relative(wasm.reExports.keys()));
   });
@@ -205,38 +294,101 @@ describe('published type surface', () => {
     // Every entry point is reported in one run: the defect this guards is one
     // entry point falling behind the other, and an assertion that stops at the
     // first offender would name only one side of it.
-    const gaps: Array<{ entryPoint: string; module: string; missing: string[]; extra: string[] }> =
-      [];
-    for (const entry of entries) {
-      for (const [modulePath, reExport] of entry.reExports) {
-        const declared = exportsOf(new URL(`file://${modulePath}`)).types;
-        const reExported = reExport.star ? declared : reExport.localTypes;
-        const missing = sorted([...declared].filter((name) => !reExported.has(name)));
-        const extra = sorted([...reExported].filter((name) => !declared.has(name)));
-        if (missing.length > 0 || extra.length > 0) {
-          gaps.push({
-            entryPoint: entry.name,
-            module: relativeToRoot(modulePath),
-            missing,
-            extra,
-          });
-        }
-      }
-    }
-    expect(gaps).toEqual([]);
+    expect([...gapsAgainstVocabulary(wasm), ...gapsAgainstVocabulary(pure)]).toEqual([]);
+  });
+
+  it('publishes every type from a shared declaration rather than one of its own', () => {
+    // This is what makes name parity mean shape parity. A type declared in an
+    // entry point is published from a declaration the other entry point has no
+    // access to, so the two can drift apart in shape while every name still
+    // agrees -- and nothing at this level can compare the shapes. Requiring the
+    // declaration to live in a vocabulary module keeps the question from
+    // arising instead of answering it with a list of assertions per name.
+    expect({ wasm: sorted(wasm.own.types), pure: sorted(pure.own.types) }).toEqual({
+      wasm: [],
+      pure: [],
+    });
+  });
+
+  it('publishes each type name out of the same declaration on both entry points', () => {
+    expect(divergentTypeSources(wasm, pure)).toEqual([]);
   });
 
   it('publishes the same type names from both entry points', () => {
-    const publicTypes = (entry: (typeof entries)[number]): string[] =>
-      sorted([...entry.reExports.values()].flatMap((reExport) => [...reExport.types]));
-    const [wasm, pure] = entries;
-    expect(publicTypes(pure)).toEqual(publicTypes(wasm));
+    expect(publishedTypes(pure)).toEqual(publishedTypes(wasm));
   });
 
   it('publishes the same re-exported value names from both entry points', () => {
-    const publicValues = (entry: (typeof entries)[number]): string[] =>
-      sorted([...entry.reExports.values()].flatMap((reExport) => [...reExport.values]));
-    const [wasm, pure] = entries;
-    expect(publicValues(pure)).toEqual(publicValues(wasm));
+    expect(publishedValues(pure)).toEqual(publishedValues(wasm));
+  });
+});
+
+/// Entry-point pairs written to diverge, one defect each.
+///
+/// A comparison that has only ever run over a surface in agreement is a
+/// comparison nobody has watched report anything. Each pair below is a way two
+/// entry points drift that a reader would call the same API, and the assertion
+/// is that the comparison says otherwise.
+const FIXTURES = new URL('tests/util/export-fixtures/', repoRoot);
+
+function fixturePair(directory: string): [Surface, Surface] {
+  const base = new URL(`${directory}/`, FIXTURES);
+  return [
+    surfaceOf('wasm-entry.ts', new URL('wasm-entry.ts', base)),
+    surfaceOf('pure-entry.ts', new URL('pure-entry.ts', base)),
+  ];
+}
+
+describe('the comparison reports two entry points that have drifted', () => {
+  it('accepts a pair that agrees', () => {
+    const [wasm, pure] = fixturePair('agreeing');
+    expect(publishedTypes(wasm)).toEqual(publishedTypes(pure));
+    expect(divergentTypeSources(wasm, pure)).toEqual([]);
+    expect([...gapsAgainstVocabulary(wasm), ...gapsAgainstVocabulary(pure)]).toEqual([]);
+    expect({ wasm: sorted(wasm.own.types), pure: sorted(pure.own.types) }).toEqual({
+      wasm: [],
+      pure: [],
+    });
+  });
+
+  it('reports a type one entry point publishes and the other does not', () => {
+    const [wasm, pure] = fixturePair('one-name-short');
+    expect(publishedTypes(wasm)).not.toEqual(publishedTypes(pure));
+  });
+
+  it('reports a type a vocabulary module declares that neither entry point passes on', () => {
+    const [wasm] = fixturePair('one-name-short');
+    expect(gapsAgainstVocabulary(wasm)).toEqual([
+      {
+        entryPoint: 'wasm-entry.ts',
+        module: 'tests/util/export-fixtures/one-name-short/vocabulary.ts',
+        missing: ['Unpublished'],
+        extra: [],
+      },
+    ]);
+  });
+
+  it('reports the same name published out of two different declarations', () => {
+    // The case a name-level comparison calls parity: both entry points publish
+    // `Report`, and the two declarations disagree about what it is.
+    const [wasm, pure] = fixturePair('same-name-other-shape');
+    expect(publishedTypes(wasm)).toEqual(publishedTypes(pure));
+    expect(divergentTypeSources(wasm, pure)).toEqual([
+      'Report: wasm-entry.ts from tests/util/export-fixtures/same-name-other-shape/wasm-vocabulary.ts, pure-entry.ts from tests/util/export-fixtures/same-name-other-shape/pure-vocabulary.ts',
+    ]);
+  });
+
+  it('reports a type each entry point declares for itself', () => {
+    // The same divergence written without a second module: each entry point
+    // declares `Handle`, the two declarations disagree, and every name still
+    // matches. Nothing that compares names, and nothing that assigns one module
+    // type to the other, can see this.
+    const [wasm, pure] = fixturePair('declared-in-place');
+    expect(publishedTypes(wasm)).toEqual(publishedTypes(pure));
+    expect(divergentTypeSources(wasm, pure)).toEqual([]);
+    expect({ wasm: sorted(wasm.own.types), pure: sorted(pure.own.types) }).toEqual({
+      wasm: ['Handle'],
+      pure: ['Handle'],
+    });
   });
 });
