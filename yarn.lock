@@ -47,18 +47,18 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@biomejs/biome@npm:^2.5.10":
-  version: 2.5.10
-  resolution: "@biomejs/biome@npm:2.5.10"
+"@biomejs/biome@npm:^2.5.12":
+  version: 2.5.12
+  resolution: "@biomejs/biome@npm:2.5.12"
   dependencies:
-    "@biomejs/cli-darwin-arm64": "npm:2.5.10"
-    "@biomejs/cli-darwin-x64": "npm:2.5.10"
-    "@biomejs/cli-linux-arm64": "npm:2.5.10"
-    "@biomejs/cli-linux-arm64-musl": "npm:2.5.10"
-    "@biomejs/cli-linux-x64": "npm:2.5.10"
-    "@biomejs/cli-linux-x64-musl": "npm:2.5.10"
-    "@biomejs/cli-win32-arm64": "npm:2.5.10"
-    "@biomejs/cli-win32-x64": "npm:2.5.10"
+    "@biomejs/cli-darwin-arm64": "npm:2.5.12"
+    "@biomejs/cli-darwin-x64": "npm:2.5.12"
+    "@biomejs/cli-linux-arm64": "npm:2.5.12"
+    "@biomejs/cli-linux-arm64-musl": "npm:2.5.12"
+    "@biomejs/cli-linux-x64": "npm:2.5.12"
+    "@biomejs/cli-linux-x64-musl": "npm:2.5.12"
+    "@biomejs/cli-win32-arm64": "npm:2.5.12"
+    "@biomejs/cli-win32-x64": "npm:2.5.12"
   dependenciesMeta:
     "@biomejs/cli-darwin-arm64":
       optional: true
@@ -78,62 +78,62 @@ __metadata:
       optional: true
   bin:
     biome: bin/biome
-  checksum: 10c0/486653f389d235abf2f899e6b1bc5ec548905d89f15ce5a3c60f673ed4c473eabdf9ad9cebbe5c1ef080739ebdda88402c58f64e2a055af3e319126f0fec1e93
+  checksum: 10c0/2433c73b3a3e2a1405ebe04f8fa54185fa33097f199c2527ee259525c223998d26d6bcf0ee6bfca4164c6dda5e7d975cbd38a42f57ab38dc1c1f91f9fea2b957
   languageName: node
   linkType: hard
 
-"@biomejs/cli-darwin-arm64@npm:2.5.10":
-  version: 2.5.10
-  resolution: "@biomejs/cli-darwin-arm64@npm:2.5.10"
+"@biomejs/cli-darwin-arm64@npm:2.5.12":
+  version: 2.5.12
+  resolution: "@biomejs/cli-darwin-arm64@npm:2.5.12"
   conditions: os=darwin & cpu=arm64
   languageName: node
   linkType: hard
 
-"@biomejs/cli-darwin-x64@npm:2.5.10":
-  version: 2.5.10
-  resolution: "@biomejs/cli-darwin-x64@npm:2.5.10"
+"@biomejs/cli-darwin-x64@npm:2.5.12":
+  version: 2.5.12
+  resolution: "@biomejs/cli-darwin-x64@npm:2.5.12"
   conditions: os=darwin & cpu=x64
   languageName: node
   linkType: hard
 
-"@biomejs/cli-linux-arm64-musl@npm:2.5.10":
-  version: 2.5.10
-  resolution: "@biomejs/cli-linux-arm64-musl@npm:2.5.10"
+"@biomejs/cli-linux-arm64-musl@npm:2.5.12":
+  version: 2.5.12
+  resolution: "@biomejs/cli-linux-arm64-musl@npm:2.5.12"
   conditions: os=linux & cpu=arm64 & libc=musl
   languageName: node
   linkType: hard
 
-"@biomejs/cli-linux-arm64@npm:2.5.10":
-  version: 2.5.10
-  resolution: "@biomejs/cli-linux-arm64@npm:2.5.10"
+"@biomejs/cli-linux-arm64@npm:2.5.12":
+  version: 2.5.12
+  resolution: "@biomejs/cli-linux-arm64@npm:2.5.12"
   conditions: os=linux & cpu=arm64 & libc=glibc
   languageName: node
   linkType: hard
 
-"@biomejs/cli-linux-x64-musl@npm:2.5.10":
-  version: 2.5.10
-  resolution: "@biomejs/cli-linux-x64-musl@npm:2.5.10"
+"@biomejs/cli-linux-x64-musl@npm:2.5.12":
+  version: 2.5.12
+  resolution: "@biomejs/cli-linux-x64-musl@npm:2.5.12"
   conditions: os=linux & cpu=x64 & libc=musl
   languageName: node
   linkType: hard
 
-"@biomejs/cli-linux-x64@npm:2.5.10":
-  version: 2.5.10
-  resolution: "@biomejs/cli-linux-x64@npm:2.5.10"
+"@biomejs/cli-linux-x64@npm:2.5.12":
+  version: 2.5.12
+  resolution: "@biomejs/cli-linux-x64@npm:2.5.12"
   conditions: os=linux & cpu=x64 & libc=glibc
   languageName: node
   linkType: hard
 
-"@biomejs/cli-win32-arm64@npm:2.5.10":
-  version: 2.5.10
-  resolution: "@biomejs/cli-win32-arm64@npm:2.5.10"
+"@biomejs/cli-win32-arm64@npm:2.5.12":
+  version: 2.5.12
+  resolution: "@biomejs/cli-win32-arm64@npm:2.5.12"
   conditions: os=win32 & cpu=arm64
   languageName: node
   linkType: hard
 
-"@biomejs/cli-win32-x64@npm:2.5.10":
-  version: 2.5.10
-  resolution: "@biomejs/cli-win32-x64@npm:2.5.10"
+"@biomejs/cli-win32-x64@npm:2.5.12":
+  version: 2.5.12
+  resolution: "@biomejs/cli-win32-x64@npm:2.5.12"
   conditions: os=win32 & cpu=x64
   languageName: node
   linkType: hard
@@ -210,11 +210,11 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@libraz/coverwise@workspace:."
   dependencies:
-    "@biomejs/biome": "npm:^2.5.10"
+    "@biomejs/biome": "npm:^2.5.12"
     "@types/node": "npm:^22.20.1"
     "@vitest/coverage-v8": "npm:4.1.11"
-    lint-staged: "npm:^17.3.0"
-    simple-git-hooks: "npm:^2.13.1"
+    lint-staged: "npm:^17.4.1"
+    simple-git-hooks: "npm:^2.14.0"
     typescript: "npm:^6.0.3"
     vitest: "npm:^4.1.11"
   languageName: unknown
@@ -956,20 +956,20 @@ __metadata:
   languageName: node
   linkType: hard
 
-"lint-staged@npm:^17.3.0":
-  version: 17.3.0
-  resolution: "lint-staged@npm:17.3.0"
+"lint-staged@npm:^17.4.1":
+  version: 17.4.1
+  resolution: "lint-staged@npm:17.4.1"
   dependencies:
-    picomatch: "npm:^4.0.5"
+    picomatch: "npm:^4.0.7"
     string-argv: "npm:^0.3.2"
-    tinyexec: "npm:^1.2.4"
+    tinyexec: "npm:^1.3.0"
     yaml: "npm:^2.9.0"
   dependenciesMeta:
     yaml:
       optional: true
   bin:
     lint-staged: bin/lint-staged.js
-  checksum: 10c0/48703bf88fd834a5575b4f7fc77aadc7be21017ca66db4255b8962515f7b3df523ec23a1f198fb89eddc838268f2472a613723a7b058ad9260367a1698ce76e1
+  checksum: 10c0/a9d30836ee0b1fecca98f47bb4f1de013928ea6a6fef137abae83c0c009cf2731b6cc02e576dffbeb42a1c05c47ab633be13935e6938805f7e9df5ab59c5c749
   languageName: node
   linkType: hard
 
@@ -1206,10 +1206,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"picomatch@npm:^4.0.3, picomatch@npm:^4.0.5":
-  version: 4.0.5
-  resolution: "picomatch@npm:4.0.5"
-  checksum: 10c0/947bc6b6e1ff1e6c5aaf95b107a0839d12802f4f7b867663f67d47accba939ca1cb582cf99dfc30438efa1c4648ac5990967e783e8929c36b03e8440704ef1bd
+"picomatch@npm:^4.0.3, picomatch@npm:^4.0.7":
+  version: 4.0.7
+  resolution: "picomatch@npm:4.0.7"
+  checksum: 10c0/beb6ae02c43ae44e84883b90830196d9046b1726ead292adcf7f57945e0bb0d992d68563d87e03b484b6f3c9a5c6defda7523477f047d7f0e663f126cc01787f
   languageName: node
   linkType: hard
 
@@ -1312,12 +1312,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"simple-git-hooks@npm:^2.13.1":
-  version: 2.13.1
-  resolution: "simple-git-hooks@npm:2.13.1"
+"simple-git-hooks@npm:^2.14.0":
+  version: 2.14.0
+  resolution: "simple-git-hooks@npm:2.14.0"
   bin:
     simple-git-hooks: cli.js
-  checksum: 10c0/09631ce2cce5c6cf91f5a990bbefce88f95589ce112a601e2745b8e10ea951668c13f89b3fab2044506646380dcc91b618bb400d35142873a1990c4528b456bb
+  checksum: 10c0/2ae4dc2583046b171b206e142f3dc277a363a6647df6e78766d2f26ab6598625011bad5251e3449890c2973c7a876eb93837efff1edf08cbdf84389bd59f51ca
   languageName: node
   linkType: hard
 
@@ -1415,10 +1415,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tinyexec@npm:^1.0.2, tinyexec@npm:^1.2.4":
-  version: 1.2.4
-  resolution: "tinyexec@npm:1.2.4"
-  checksum: 10c0/153b8db6b080194b558ff145b9cffc36b80a6e07babd644dcfbe49c807eee668c876049d28bdee90b96304476f883352f2dad91b3f86bc23832532f4363e66ff
+"tinyexec@npm:^1.0.2, tinyexec@npm:^1.3.0":
+  version: 1.3.1
+  resolution: "tinyexec@npm:1.3.1"
+  checksum: 10c0/c590369cb3fa73cc18a3998caec8a00f9712d91309c881be3ac52b160fb2f80c7b1fbf3591858ab6abab47ad55385b0c86ec19982e32441a01f55298dab9ccd2
   languageName: node
   linkType: hard
 
