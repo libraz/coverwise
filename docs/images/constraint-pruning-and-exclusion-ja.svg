@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 552" width="900" height="552" role="img" aria-labelledby="cw-con-t cw-con-d">
+  <title id="cw-con-t">制約が枝刈りするものと、除外するもの</title>
+  <desc id="cw-con-d">3 つの os と 4 つの browser のグリッドに、Windows なら Safari を選べないという制約をかけています。Windows と Safari の組は斜線を引いて除外と記しています。制約が禁じるので必要タプル集合には初めから入らず、埋める対象になりません。Windows と Chrome の組は破線で囲み未網羅と記しています。集合には含まれますが、このスイートのどの行もまだ到達していません。グリッドの横では、行になる前の部分割り当てが構築中に破棄される様子を示しています。</desc>
+
+  <style>
+    .bg   { fill:#f6f7f9 }
+    .grp  { fill:#eceef2 }
+    .chip { fill:#ffffff; stroke:#d5d9e0 }
+    .op   { fill:#ffffff; stroke:#2b6cb0 }
+    .rule { fill:none; stroke:#c3c8d0; stroke-width:1 }
+    .seam { fill:none; stroke:#c3c8d0; stroke-dasharray:6 5 }
+    .ln   { fill:none; stroke:#2b6cb0; stroke-width:1.4 }
+    .ah   { fill:#2b6cb0 }
+    text  { font-family:Inter,"Helvetica Neue","Hiragino Sans","Noto Sans JP",Arial,sans-serif; fill:#1f2328 }
+    .h    { font-size:12.5px }
+    .lbl  { font-size:11px; fill:#6e7781; letter-spacing:.06em }
+    .s    { font-size:10.5px; fill:#6e7781 }
+    .n    { font-size:24px; fill:#1f2328 }
+    .n2   { font-size:24px; fill:#2a7f6f }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px; fill:#2b6cb0 }
+    .cov  { fill:#2a7f6f }
+    .unc  { fill:none; stroke:#2b6cb0; stroke-dasharray:5 4 }
+    .ring { fill:none; stroke:#2b6cb0; stroke-width:1.4 }
+    .unct { fill:#2b6cb0 }
+    .exc  { fill:#ffffff; stroke:#a3401f; stroke-dasharray:5 4 }
+    .exct { fill:#a3401f }
+    .monow{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px; fill:#a3401f }
+    .hatch{ stroke:#a3401f; stroke-width:1.2; opacity:.4 }
+    .strike{ stroke:#a3401f; stroke-width:1.2 }
+    @media (prefers-color-scheme: dark) {
+      .bg{fill:#0d1117} .grp{fill:#12171d}
+      .chip{fill:#161b22;stroke:#30363d} .op{fill:#161b22;stroke:#7fb3d5}
+      .rule{stroke:#484f58} .seam{stroke:#484f58}
+      .ln{stroke:#7fb3d5} .ah{fill:#7fb3d5}
+      text{fill:#e6edf3} .lbl{fill:#8b949e} .s{fill:#8b949e}
+      .n{fill:#e6edf3} .n2{fill:#6fc2ae} .mono{fill:#7fb3d5}
+      .cov{fill:#6fc2ae} .unc{stroke:#7fb3d5} .ring{stroke:#7fb3d5}
+      .unct{fill:#7fb3d5} .monow{fill:#e08a68}
+      .exc{fill:#161b22;stroke:#e08a68} .exct{fill:#e08a68}
+      .hatch{stroke:#e08a68} .strike{stroke:#e08a68}
+    }
+  </style>
+  <defs>
+    <marker id="cw-con-a" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path class="ah" d="M0,0 L9,4.5 L0,9 z"/>
+    </marker>
+  </defs>
+  <defs>
+    <pattern id="cw-con-h" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line class="hatch" x1="0" y1="0" x2="0" y2="7"/>
+    </pattern>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="552" rx="12"/>
+
+  <!-- the rule under which the grid is read -->
+  <rect class="op" x="40" y="24" width="482" height="44" rx="7"/>
+  <text class="lbl" x="54" y="42">制約</text>
+  <text class="mono" x="54" y="59">IF os = "Windows" THEN browser != "Safari"</text>
+
+  <!-- the grid -->
+  <text class="lbl" x="40" y="90">os</text>
+  <text class="lbl" x="329" y="90" text-anchor="middle">browser</text>
+  <text class="h" x="182" y="110" text-anchor="middle">Safari</text>
+  <text class="h" x="280" y="110" text-anchor="middle">Chrome</text>
+  <text class="h" x="378" y="110" text-anchor="middle">Edge</text>
+  <text class="h" x="476" y="110" text-anchor="middle">Firefox</text>
+  <text class="h" x="120" y="157" text-anchor="end">Windows</text>
+  <rect class="exc" x="136" y="120" width="92" height="62" rx="5"/>
+  <rect x="136" y="120" width="92" height="62" rx="5" fill="url(#cw-con-h)"/>
+  <rect class="chip" x="150" y="142" width="64" height="19" rx="4"/>
+  <text class="exct" x="182" y="155" text-anchor="middle" font-size="10.5">除外</text>
+  <rect class="unc" x="234" y="120" width="92" height="62" rx="5"/>
+  <circle class="ring" cx="280" cy="142" r="6"/>
+  <text class="unct" x="280" y="167" text-anchor="middle" font-size="10.5">未網羅</text>
+  <rect class="chip" x="332" y="120" width="92" height="62" rx="5"/>
+  <circle class="cov" cx="378" cy="151" r="6"/>
+  <rect class="chip" x="430" y="120" width="92" height="62" rx="5"/>
+  <circle class="cov" cx="476" cy="151" r="6"/>
+  <text class="h" x="120" y="225" text-anchor="end">macOS</text>
+  <rect class="chip" x="136" y="188" width="92" height="62" rx="5"/>
+  <circle class="cov" cx="182" cy="219" r="6"/>
+  <rect class="chip" x="234" y="188" width="92" height="62" rx="5"/>
+  <circle class="cov" cx="280" cy="219" r="6"/>
+  <rect class="chip" x="332" y="188" width="92" height="62" rx="5"/>
+  <circle class="cov" cx="378" cy="219" r="6"/>
+  <rect class="chip" x="430" y="188" width="92" height="62" rx="5"/>
+  <circle class="cov" cx="476" cy="219" r="6"/>
+  <text class="h" x="120" y="293" text-anchor="end">Linux</text>
+  <rect class="chip" x="136" y="256" width="92" height="62" rx="5"/>
+  <circle class="cov" cx="182" cy="287" r="6"/>
+  <rect class="chip" x="234" y="256" width="92" height="62" rx="5"/>
+  <circle class="cov" cx="280" cy="287" r="6"/>
+  <rect class="chip" x="332" y="256" width="92" height="62" rx="5"/>
+  <circle class="cov" cx="378" cy="287" r="6"/>
+  <rect class="chip" x="430" y="256" width="92" height="62" rx="5"/>
+  <circle class="cov" cx="476" cy="287" r="6"/>
+
+  <!-- the universe the grid adds up to -->
+  <rect class="chip" x="40" y="340" width="482" height="80" rx="7"/>
+  <text class="lbl" x="54" y="364">必要タプル集合</text>
+  <text class="h" x="54" y="388">グリッド上 12 通り − 除外 1 = 必要 11 · 網羅 10 · 未網羅 1</text>
+  <text class="s" x="54" y="408">除外された組は分母に入りません。10 / 12 ではなく 10 / 11 です。</text>
+
+  <!-- construction, one value at a time -->
+  <rect class="grp" x="556" y="24" width="304" height="250" rx="8"/>
+  <text class="lbl" x="572" y="46">構築中に起きること</text>
+  <rect class="chip" x="572" y="58" width="200" height="26" rx="5"/>
+  <text class="mono" x="672" y="76" text-anchor="middle">os = "Windows"</text>
+  <text class="s" x="572" y="100">ここまでの部分割り当てです</text>
+  <path class="ln" d="M672,106 V118" marker-end="url(#cw-con-a)"/>
+  <rect class="exc" x="572" y="120" width="200" height="26" rx="5"/>
+  <text class="monow" x="672" y="138" text-anchor="middle">browser = "Safari"</text>
+  <path class="strike" d="M613,134 H731"/>
+  <text class="s" x="572" y="162">制約がこの組を禁じるので、部分割り当ては</text>
+  <text class="s" x="572" y="175">そこで破棄されます。この組から行が</text>
+  <text class="s" x="572" y="188">作られることはありません。</text>
+  <path class="ln" d="M672,208 V220" marker-end="url(#cw-con-a)"/>
+  <rect class="chip" x="572" y="222" width="200" height="26" rx="5"/>
+  <text class="mono" x="672" y="240" text-anchor="middle">browser = "Chrome"</text>
+  <text class="s" x="572" y="264">次の値が試され、</text>
+  <text class="s" x="572" y="277">行が完成します。</text>
+
+  <!-- legend -->
+  <text class="lbl" x="556" y="316">グリッドの読み方</text>
+  <rect class="chip" x="560" y="326" width="64" height="34" rx="5"/>
+  <circle class="cov" cx="592" cy="343" r="6"/>
+  <text class="h" x="636" y="340">網羅済み</text>
+  <text class="s" x="636" y="356">集合に含まれ、行が到達して</text>
+  <text class="s" x="636" y="369">います。</text>
+  <rect class="unc" x="560" y="384" width="64" height="34" rx="5"/>
+  <circle class="ring" cx="592" cy="392" r="6"/>
+  <text class="h" x="636" y="398">未網羅</text>
+  <text class="s" x="636" y="414">集合に含まれますが、まだ到達</text>
+  <text class="s" x="636" y="427">していません。行を足せば埋まります。</text>
+  <rect class="exc" x="560" y="442" width="64" height="34" rx="5"/>
+  <rect x="560" y="442" width="64" height="34" rx="5" fill="url(#cw-con-h)"/>
+  <text class="h" x="636" y="456">除外</text>
+  <text class="s" x="636" y="472">制約が禁じるので、そもそも集合に</text>
+  <text class="s" x="636" y="485">入りません。埋める対象ではありません。</text>
+
+  <path class="seam" d="M40,510 H860"/>
+  <text class="s" x="450" y="530" text-anchor="middle">除外と未網羅はどちらも空白のセルです。スイートの穴と呼べるのは片方だけです。</text>
+</svg>

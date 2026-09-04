@@ -1,0 +1,227 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640" width="900" height="640" role="img" aria-labelledby="cw-strength-t cw-strength-d">
+  <title id="cw-strength-t">What strength changes, and what it does not</title>
+  <desc id="cw-strength-d">Three panels over the same model of three binary parameters A, B and C. At strength 1 a coverage unit names one parameter and there are 6 units; at strength 2 it names two and there are 12; at strength 3 it names all three and there are 8. Under each panel is the suite the engine generates for that strength: 2, 5 and 8 test cases. In all three panels every test case is three cells wide, because a test case always assigns every parameter.</desc>
+
+  <style>
+    .bg   { fill:#f6f7f9 }
+    .grp  { fill:#eceef2 }
+    .chip { fill:#ffffff; stroke:#d5d9e0 }
+    .op   { fill:#ffffff; stroke:#2b6cb0 }
+    .rule { fill:none; stroke:#c3c8d0; stroke-width:1 }
+    .seam { fill:none; stroke:#c3c8d0; stroke-dasharray:6 5 }
+    .ln   { fill:none; stroke:#2b6cb0; stroke-width:1.4 }
+    .ah   { fill:#2b6cb0 }
+    text  { font-family:Inter,"Helvetica Neue","Hiragino Sans","Noto Sans JP",Arial,sans-serif; fill:#1f2328 }
+    .h    { font-size:12.5px }
+    .lbl  { font-size:11px; fill:#6e7781; letter-spacing:.06em }
+    .s    { font-size:10.5px; fill:#6e7781 }
+    .n    { font-size:24px; fill:#1f2328 }
+    .n2   { font-size:24px; fill:#2a7f6f }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px; fill:#2b6cb0 }
+    @media (prefers-color-scheme: dark) {
+      .bg{fill:#0d1117} .grp{fill:#12171d}
+      .chip{fill:#161b22;stroke:#30363d} .op{fill:#161b22;stroke:#7fb3d5}
+      .rule{stroke:#484f58} .seam{stroke:#484f58}
+      .ln{stroke:#7fb3d5} .ah{fill:#7fb3d5}
+      text{fill:#e6edf3} .lbl{fill:#8b949e} .s{fill:#8b949e}
+      .n{fill:#e6edf3} .n2{fill:#6fc2ae} .mono{fill:#7fb3d5}
+    }
+  </style>
+  <rect class="bg" x="0" y="0" width="900" height="640" rx="12"/>
+
+  <!-- t = 1 -->
+  <text class="mono" x="168" y="46" text-anchor="middle" font-size="15">t = 1</text>
+  <text class="s" x="168" y="64" text-anchor="middle">one parameter per unit</text>
+  <rect class="grp" x="110" y="76" width="117" height="58" rx="7"/>
+  <text class="mono" x="120" y="92" font-size="10.5">A</text>
+  <rect class="chip" x="120" y="98" width="46" height="26" rx="4"/>
+  <text class="mono" x="143" y="115" text-anchor="middle">0</text>
+  <rect class="chip" x="171" y="98" width="46" height="26" rx="4"/>
+  <text class="mono" x="194" y="115" text-anchor="middle">1</text>
+  <rect class="grp" x="110" y="140" width="117" height="58" rx="7"/>
+  <text class="mono" x="120" y="156" font-size="10.5">B</text>
+  <rect class="chip" x="120" y="162" width="46" height="26" rx="4"/>
+  <text class="mono" x="143" y="179" text-anchor="middle">0</text>
+  <rect class="chip" x="171" y="162" width="46" height="26" rx="4"/>
+  <text class="mono" x="194" y="179" text-anchor="middle">1</text>
+  <rect class="grp" x="110" y="204" width="117" height="58" rx="7"/>
+  <text class="mono" x="120" y="220" font-size="10.5">C</text>
+  <rect class="chip" x="120" y="226" width="46" height="26" rx="4"/>
+  <text class="mono" x="143" y="243" text-anchor="middle">0</text>
+  <rect class="chip" x="171" y="226" width="46" height="26" rx="4"/>
+  <text class="mono" x="194" y="243" text-anchor="middle">1</text>
+  <text class="n2" x="168" y="274" text-anchor="middle">6<tspan class="h" dx="6">coverage units</tspan></text>
+  <text class="s" x="168" y="292" text-anchor="middle">3 parameters × 2 values = 6</text>
+  <path class="rule" d="M54,306 H283"/>
+  <text class="lbl" x="54" y="324">the suite</text>
+  <text class="lbl" x="120" y="340" text-anchor="middle">A</text>
+  <text class="lbl" x="168" y="340" text-anchor="middle">B</text>
+  <text class="lbl" x="216" y="340" text-anchor="middle">C</text>
+  <rect class="chip" x="98" y="346" width="44" height="20" rx="4"/>
+  <text class="mono" x="120" y="360" text-anchor="middle">0</text>
+  <rect class="chip" x="146" y="346" width="44" height="20" rx="4"/>
+  <text class="mono" x="168" y="360" text-anchor="middle">1</text>
+  <rect class="chip" x="194" y="346" width="44" height="20" rx="4"/>
+  <text class="mono" x="216" y="360" text-anchor="middle">1</text>
+  <rect class="chip" x="98" y="370" width="44" height="20" rx="4"/>
+  <text class="mono" x="120" y="384" text-anchor="middle">1</text>
+  <rect class="chip" x="146" y="370" width="44" height="20" rx="4"/>
+  <text class="mono" x="168" y="384" text-anchor="middle">0</text>
+  <rect class="chip" x="194" y="370" width="44" height="20" rx="4"/>
+  <text class="mono" x="216" y="384" text-anchor="middle">0</text>
+  <text class="h" x="168" y="556" text-anchor="middle">2 test cases</text>
+
+  <!-- t = 2 -->
+  <text class="mono" x="449" y="46" text-anchor="middle" font-size="15">t = 2</text>
+  <text class="s" x="449" y="64" text-anchor="middle">two parameters per unit</text>
+  <rect class="grp" x="340" y="76" width="219" height="58" rx="7"/>
+  <text class="mono" x="350" y="92" font-size="10.5">A B</text>
+  <rect class="chip" x="350" y="98" width="46" height="26" rx="4"/>
+  <text class="mono" x="373" y="115" text-anchor="middle">0 0</text>
+  <rect class="chip" x="401" y="98" width="46" height="26" rx="4"/>
+  <text class="mono" x="424" y="115" text-anchor="middle">0 1</text>
+  <rect class="chip" x="452" y="98" width="46" height="26" rx="4"/>
+  <text class="mono" x="475" y="115" text-anchor="middle">1 0</text>
+  <rect class="chip" x="503" y="98" width="46" height="26" rx="4"/>
+  <text class="mono" x="526" y="115" text-anchor="middle">1 1</text>
+  <rect class="grp" x="340" y="140" width="219" height="58" rx="7"/>
+  <text class="mono" x="350" y="156" font-size="10.5">A C</text>
+  <rect class="chip" x="350" y="162" width="46" height="26" rx="4"/>
+  <text class="mono" x="373" y="179" text-anchor="middle">0 0</text>
+  <rect class="chip" x="401" y="162" width="46" height="26" rx="4"/>
+  <text class="mono" x="424" y="179" text-anchor="middle">0 1</text>
+  <rect class="chip" x="452" y="162" width="46" height="26" rx="4"/>
+  <text class="mono" x="475" y="179" text-anchor="middle">1 0</text>
+  <rect class="chip" x="503" y="162" width="46" height="26" rx="4"/>
+  <text class="mono" x="526" y="179" text-anchor="middle">1 1</text>
+  <rect class="grp" x="340" y="204" width="219" height="58" rx="7"/>
+  <text class="mono" x="350" y="220" font-size="10.5">B C</text>
+  <rect class="chip" x="350" y="226" width="46" height="26" rx="4"/>
+  <text class="mono" x="373" y="243" text-anchor="middle">0 0</text>
+  <rect class="chip" x="401" y="226" width="46" height="26" rx="4"/>
+  <text class="mono" x="424" y="243" text-anchor="middle">0 1</text>
+  <rect class="chip" x="452" y="226" width="46" height="26" rx="4"/>
+  <text class="mono" x="475" y="243" text-anchor="middle">1 0</text>
+  <rect class="chip" x="503" y="226" width="46" height="26" rx="4"/>
+  <text class="mono" x="526" y="243" text-anchor="middle">1 1</text>
+  <text class="n2" x="449" y="274" text-anchor="middle">12<tspan class="h" dx="6">coverage units</tspan></text>
+  <text class="s" x="449" y="292" text-anchor="middle">3 pairs × 4 value pairs = 12</text>
+  <path class="rule" d="M335,306 H564"/>
+  <text class="lbl" x="335" y="324">the suite</text>
+  <text class="lbl" x="401" y="340" text-anchor="middle">A</text>
+  <text class="lbl" x="449" y="340" text-anchor="middle">B</text>
+  <text class="lbl" x="497" y="340" text-anchor="middle">C</text>
+  <rect class="chip" x="379" y="346" width="44" height="20" rx="4"/>
+  <text class="mono" x="401" y="360" text-anchor="middle">0</text>
+  <rect class="chip" x="427" y="346" width="44" height="20" rx="4"/>
+  <text class="mono" x="449" y="360" text-anchor="middle">1</text>
+  <rect class="chip" x="475" y="346" width="44" height="20" rx="4"/>
+  <text class="mono" x="497" y="360" text-anchor="middle">1</text>
+  <rect class="chip" x="379" y="370" width="44" height="20" rx="4"/>
+  <text class="mono" x="401" y="384" text-anchor="middle">1</text>
+  <rect class="chip" x="427" y="370" width="44" height="20" rx="4"/>
+  <text class="mono" x="449" y="384" text-anchor="middle">0</text>
+  <rect class="chip" x="475" y="370" width="44" height="20" rx="4"/>
+  <text class="mono" x="497" y="384" text-anchor="middle">1</text>
+  <rect class="chip" x="379" y="394" width="44" height="20" rx="4"/>
+  <text class="mono" x="401" y="408" text-anchor="middle">1</text>
+  <rect class="chip" x="427" y="394" width="44" height="20" rx="4"/>
+  <text class="mono" x="449" y="408" text-anchor="middle">1</text>
+  <rect class="chip" x="475" y="394" width="44" height="20" rx="4"/>
+  <text class="mono" x="497" y="408" text-anchor="middle">0</text>
+  <rect class="chip" x="379" y="418" width="44" height="20" rx="4"/>
+  <text class="mono" x="401" y="432" text-anchor="middle">1</text>
+  <rect class="chip" x="427" y="418" width="44" height="20" rx="4"/>
+  <text class="mono" x="449" y="432" text-anchor="middle">0</text>
+  <rect class="chip" x="475" y="418" width="44" height="20" rx="4"/>
+  <text class="mono" x="497" y="432" text-anchor="middle">0</text>
+  <rect class="chip" x="379" y="442" width="44" height="20" rx="4"/>
+  <text class="mono" x="401" y="456" text-anchor="middle">0</text>
+  <rect class="chip" x="427" y="442" width="44" height="20" rx="4"/>
+  <text class="mono" x="449" y="456" text-anchor="middle">0</text>
+  <rect class="chip" x="475" y="442" width="44" height="20" rx="4"/>
+  <text class="mono" x="497" y="456" text-anchor="middle">0</text>
+  <text class="h" x="449" y="556" text-anchor="middle">5 test cases</text>
+
+  <!-- t = 3 -->
+  <text class="mono" x="730" y="46" text-anchor="middle" font-size="15">t = 3</text>
+  <text class="s" x="730" y="64" text-anchor="middle">three parameters per unit</text>
+  <rect class="grp" x="621" y="118" width="219" height="89" rx="7"/>
+  <text class="mono" x="631" y="134" font-size="10.5">A B C</text>
+  <rect class="chip" x="631" y="140" width="46" height="26" rx="4"/>
+  <text class="mono" x="654" y="157" text-anchor="middle">0 0 0</text>
+  <rect class="chip" x="682" y="140" width="46" height="26" rx="4"/>
+  <text class="mono" x="705" y="157" text-anchor="middle">0 0 1</text>
+  <rect class="chip" x="733" y="140" width="46" height="26" rx="4"/>
+  <text class="mono" x="756" y="157" text-anchor="middle">0 1 0</text>
+  <rect class="chip" x="784" y="140" width="46" height="26" rx="4"/>
+  <text class="mono" x="807" y="157" text-anchor="middle">0 1 1</text>
+  <rect class="chip" x="631" y="171" width="46" height="26" rx="4"/>
+  <text class="mono" x="654" y="188" text-anchor="middle">1 0 0</text>
+  <rect class="chip" x="682" y="171" width="46" height="26" rx="4"/>
+  <text class="mono" x="705" y="188" text-anchor="middle">1 0 1</text>
+  <rect class="chip" x="733" y="171" width="46" height="26" rx="4"/>
+  <text class="mono" x="756" y="188" text-anchor="middle">1 1 0</text>
+  <rect class="chip" x="784" y="171" width="46" height="26" rx="4"/>
+  <text class="mono" x="807" y="188" text-anchor="middle">1 1 1</text>
+  <text class="n2" x="730" y="274" text-anchor="middle">8<tspan class="h" dx="6">coverage units</tspan></text>
+  <text class="s" x="730" y="292" text-anchor="middle">1 triple × 8 value triples = 8</text>
+  <path class="rule" d="M616,306 H845"/>
+  <text class="lbl" x="616" y="324">the suite</text>
+  <text class="lbl" x="682" y="340" text-anchor="middle">A</text>
+  <text class="lbl" x="730" y="340" text-anchor="middle">B</text>
+  <text class="lbl" x="778" y="340" text-anchor="middle">C</text>
+  <rect class="chip" x="660" y="346" width="44" height="20" rx="4"/>
+  <text class="mono" x="682" y="360" text-anchor="middle">0</text>
+  <rect class="chip" x="708" y="346" width="44" height="20" rx="4"/>
+  <text class="mono" x="730" y="360" text-anchor="middle">1</text>
+  <rect class="chip" x="756" y="346" width="44" height="20" rx="4"/>
+  <text class="mono" x="778" y="360" text-anchor="middle">1</text>
+  <rect class="chip" x="660" y="370" width="44" height="20" rx="4"/>
+  <text class="mono" x="682" y="384" text-anchor="middle">1</text>
+  <rect class="chip" x="708" y="370" width="44" height="20" rx="4"/>
+  <text class="mono" x="730" y="384" text-anchor="middle">0</text>
+  <rect class="chip" x="756" y="370" width="44" height="20" rx="4"/>
+  <text class="mono" x="778" y="384" text-anchor="middle">1</text>
+  <rect class="chip" x="660" y="394" width="44" height="20" rx="4"/>
+  <text class="mono" x="682" y="408" text-anchor="middle">1</text>
+  <rect class="chip" x="708" y="394" width="44" height="20" rx="4"/>
+  <text class="mono" x="730" y="408" text-anchor="middle">1</text>
+  <rect class="chip" x="756" y="394" width="44" height="20" rx="4"/>
+  <text class="mono" x="778" y="408" text-anchor="middle">1</text>
+  <rect class="chip" x="660" y="418" width="44" height="20" rx="4"/>
+  <text class="mono" x="682" y="432" text-anchor="middle">0</text>
+  <rect class="chip" x="708" y="418" width="44" height="20" rx="4"/>
+  <text class="mono" x="730" y="432" text-anchor="middle">1</text>
+  <rect class="chip" x="756" y="418" width="44" height="20" rx="4"/>
+  <text class="mono" x="778" y="432" text-anchor="middle">0</text>
+  <rect class="chip" x="660" y="442" width="44" height="20" rx="4"/>
+  <text class="mono" x="682" y="456" text-anchor="middle">1</text>
+  <rect class="chip" x="708" y="442" width="44" height="20" rx="4"/>
+  <text class="mono" x="730" y="456" text-anchor="middle">0</text>
+  <rect class="chip" x="756" y="442" width="44" height="20" rx="4"/>
+  <text class="mono" x="778" y="456" text-anchor="middle">0</text>
+  <rect class="chip" x="660" y="466" width="44" height="20" rx="4"/>
+  <text class="mono" x="682" y="480" text-anchor="middle">0</text>
+  <rect class="chip" x="708" y="466" width="44" height="20" rx="4"/>
+  <text class="mono" x="730" y="480" text-anchor="middle">0</text>
+  <rect class="chip" x="756" y="466" width="44" height="20" rx="4"/>
+  <text class="mono" x="778" y="480" text-anchor="middle">1</text>
+  <rect class="chip" x="660" y="490" width="44" height="20" rx="4"/>
+  <text class="mono" x="682" y="504" text-anchor="middle">1</text>
+  <rect class="chip" x="708" y="490" width="44" height="20" rx="4"/>
+  <text class="mono" x="730" y="504" text-anchor="middle">1</text>
+  <rect class="chip" x="756" y="490" width="44" height="20" rx="4"/>
+  <text class="mono" x="778" y="504" text-anchor="middle">0</text>
+  <rect class="chip" x="660" y="514" width="44" height="20" rx="4"/>
+  <text class="mono" x="682" y="528" text-anchor="middle">0</text>
+  <rect class="chip" x="708" y="514" width="44" height="20" rx="4"/>
+  <text class="mono" x="730" y="528" text-anchor="middle">0</text>
+  <rect class="chip" x="756" y="514" width="44" height="20" rx="4"/>
+  <text class="mono" x="778" y="528" text-anchor="middle">0</text>
+  <text class="h" x="730" y="556" text-anchor="middle">8 test cases</text>
+
+  <path class="seam" d="M40,584 H860"/>
+  <text class="s" x="450" y="604" text-anchor="middle">In every panel a test case assigns all three parameters. The rows get more numerous, never wider.</text>
+  <text class="s" x="450" y="622" text-anchor="middle">t is the size of a coverage unit, not the size of a test case.</text>
+</svg>

@@ -1,0 +1,365 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 750" width="900" height="750" role="img" aria-labelledby="cw-cross-t cw-cross-d">
+  <title id="cw-cross-t">全数とペアワイズのカバリング配列</title>
+  <desc id="cw-cross-d">同じ縮尺で行を 2 列に並べています。左は os 3 通り・browser 4 通り・screen_size 3 通りをすべて掛け合わせた全数で、36 行あります。右は同じモデルに対する強度 2 のカバリング配列で 12 行、その下に実行しない 24 行分を空のブロックとして描いています。os = Linux と browser = Safari のペアを両側で強調しており、左では 3 行、右では 1 行に現れます。</desc>
+
+  <style>
+    .bg   { fill:#f6f7f9 }
+    .grp  { fill:#eceef2 }
+    .chip { fill:#ffffff; stroke:#d5d9e0 }
+    .op   { fill:#ffffff; stroke:#2b6cb0 }
+    .rule { fill:none; stroke:#c3c8d0; stroke-width:1 }
+    .seam { fill:none; stroke:#c3c8d0; stroke-dasharray:6 5 }
+    .ln   { fill:none; stroke:#2b6cb0; stroke-width:1.4 }
+    .ah   { fill:#2b6cb0 }
+    text  { font-family:Inter,"Helvetica Neue","Hiragino Sans","Noto Sans JP",Arial,sans-serif; fill:#1f2328 }
+    .h    { font-size:12.5px }
+    .lbl  { font-size:11px; fill:#6e7781; letter-spacing:.06em }
+    .s    { font-size:10.5px; fill:#6e7781 }
+    .n    { font-size:24px; fill:#1f2328 }
+    .n2   { font-size:24px; fill:#2a7f6f }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px; fill:#2b6cb0 }
+    .hi   { fill:#2b6cb0; fill-opacity:.13; stroke:#2b6cb0 }
+    .hit  { fill:#2b6cb0 }
+    .ghost{ fill:#eceef2; stroke:#c3c8d0; stroke-dasharray:6 5 }
+    @media (prefers-color-scheme: dark) {
+      .bg{fill:#0d1117} .grp{fill:#12171d}
+      .chip{fill:#161b22;stroke:#30363d} .op{fill:#161b22;stroke:#7fb3d5}
+      .rule{stroke:#484f58} .seam{stroke:#484f58}
+      .ln{stroke:#7fb3d5} .ah{fill:#7fb3d5}
+      text{fill:#e6edf3} .lbl{fill:#8b949e} .s{fill:#8b949e}
+      .n{fill:#e6edf3} .n2{fill:#6fc2ae} .mono{fill:#7fb3d5}
+      .hi{fill:#7fb3d5;stroke:#7fb3d5} .hit{fill:#7fb3d5}
+      .ghost{fill:#12171d;stroke:#484f58}
+    }
+  </style>
+  <rect class="bg" x="0" y="0" width="900" height="750" rx="12"/>
+
+  <text class="lbl" x="56" y="36">全数（全組み合わせ）</text>
+  <text class="n" x="56" y="70">36<tspan class="h" dx="6">行</tspan></text>
+  <text class="s" x="56" y="90">os 3 × browser 4 × screen_size 3</text>
+  <text class="s" x="56" y="103">1 行が 1 通りに対応します</text>
+  <text class="lbl" x="108" y="116" text-anchor="middle">os</text>
+  <text class="lbl" x="217" y="116" text-anchor="middle">browser</text>
+  <text class="lbl" x="312" y="116" text-anchor="middle">screen_size</text>
+
+  <text class="lbl" x="550" y="36">ペアワイズのカバリング配列</text>
+  <text class="n2" x="550" y="70">12<tspan class="h" dx="6">行</tspan></text>
+  <text class="s" x="550" y="90">同じモデル、強度 2</text>
+  <text class="s" x="550" y="103">どのペアも最低 1 回は現れます</text>
+  <text class="lbl" x="602" y="116" text-anchor="middle">os</text>
+  <text class="lbl" x="711" y="116" text-anchor="middle">browser</text>
+  <text class="lbl" x="806" y="116" text-anchor="middle">screen_size</text>
+
+  <!-- the traced pair, shown in the gutter between the two columns -->
+  <text class="lbl" x="450" y="36" text-anchor="middle">追いかけるペア</text>
+  <rect class="hi" x="364" y="48" width="172" height="40" rx="6"/>
+  <text class="mono" x="450" y="66" text-anchor="middle">os = Linux</text>
+  <text class="mono" x="450" y="80" text-anchor="middle">browser = Safari</text>
+
+  <!-- left: every combination -->
+  <rect class="chip" x="56" y="122" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="132" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="122" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="132" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="chip" x="274" y="122" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="132" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="137" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="147" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="137" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="147" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="chip" x="274" y="137" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="147" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="152" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="162" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="152" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="162" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="chip" x="274" y="152" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="162" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="56" y="167" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="177" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="167" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="177" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="274" y="167" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="177" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="182" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="192" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="182" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="192" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="274" y="182" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="192" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="197" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="207" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="197" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="207" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="274" y="197" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="207" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="56" y="212" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="222" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="212" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="222" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="274" y="212" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="222" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="227" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="237" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="227" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="237" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="274" y="227" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="237" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="242" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="252" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="242" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="252" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="274" y="242" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="252" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="56" y="257" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="267" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="257" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="267" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="274" y="257" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="267" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="272" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="282" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="272" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="282" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="274" y="272" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="282" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="287" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="297" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="165" y="287" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="297" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="274" y="287" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="297" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="56" y="302" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="312" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="302" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="312" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="chip" x="274" y="302" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="312" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="317" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="327" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="317" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="327" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="chip" x="274" y="317" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="327" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="332" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="342" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="332" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="342" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="chip" x="274" y="332" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="342" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="56" y="347" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="357" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="347" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="357" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="274" y="347" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="357" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="362" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="372" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="362" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="372" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="274" y="362" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="372" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="377" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="387" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="377" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="387" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="274" y="377" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="387" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="56" y="392" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="402" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="392" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="402" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="274" y="392" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="402" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="407" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="417" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="407" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="417" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="274" y="407" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="417" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="422" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="432" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="422" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="432" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="274" y="422" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="432" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="56" y="437" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="447" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="437" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="447" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="274" y="437" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="447" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="452" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="462" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="452" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="462" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="274" y="452" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="462" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="467" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="477" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="165" y="467" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="477" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="274" y="467" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="477" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="hi" x="56" y="482" width="104" height="13" rx="3"/>
+  <text class="hit" x="108" y="492" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="hi" x="165" y="482" width="104" height="13" rx="3"/>
+  <text class="hit" x="217" y="492" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="hi" x="274" y="482" width="76" height="13" rx="3"/>
+  <text class="hit" x="312" y="492" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="hi" x="56" y="497" width="104" height="13" rx="3"/>
+  <text class="hit" x="108" y="507" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="hi" x="165" y="497" width="104" height="13" rx="3"/>
+  <text class="hit" x="217" y="507" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="hi" x="274" y="497" width="76" height="13" rx="3"/>
+  <text class="hit" x="312" y="507" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="hi" x="56" y="512" width="104" height="13" rx="3"/>
+  <text class="hit" x="108" y="522" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="hi" x="165" y="512" width="104" height="13" rx="3"/>
+  <text class="hit" x="217" y="522" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="hi" x="274" y="512" width="76" height="13" rx="3"/>
+  <text class="hit" x="312" y="522" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="56" y="527" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="537" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="165" y="527" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="537" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="274" y="527" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="537" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="542" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="552" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="165" y="542" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="552" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="274" y="542" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="552" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="557" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="567" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="165" y="557" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="567" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="274" y="557" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="567" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="56" y="572" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="582" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="165" y="572" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="582" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="274" y="572" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="582" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="587" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="597" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="165" y="587" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="597" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="274" y="587" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="597" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="602" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="612" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="165" y="602" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="612" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="274" y="602" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="612" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="56" y="617" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="627" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="165" y="617" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="627" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="274" y="617" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="627" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="56" y="632" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="642" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="165" y="632" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="642" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="274" y="632" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="642" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="56" y="647" width="104" height="13" rx="3"/>
+  <text class="s" x="108" y="657" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="165" y="647" width="104" height="13" rx="3"/>
+  <text class="s" x="217" y="657" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="274" y="647" width="76" height="13" rx="3"/>
+  <text class="s" x="312" y="657" text-anchor="middle" font-size="9.5">10</text>
+
+  <!-- right: the suite the engine generates -->
+  <rect class="chip" x="550" y="122" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="132" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="659" y="122" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="132" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="768" y="122" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="132" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="550" y="137" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="147" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="659" y="137" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="147" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="768" y="137" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="147" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="550" y="152" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="162" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="659" y="152" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="162" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="768" y="152" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="162" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="550" y="167" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="177" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="659" y="167" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="177" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="768" y="167" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="177" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="550" y="182" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="192" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="659" y="182" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="192" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="768" y="182" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="192" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="550" y="197" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="207" text-anchor="middle" font-size="9.5">macOS</text>
+  <rect class="chip" x="659" y="197" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="207" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="chip" x="768" y="197" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="207" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="550" y="212" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="222" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="659" y="212" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="222" text-anchor="middle" font-size="9.5">Chrome</text>
+  <rect class="chip" x="768" y="212" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="222" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="550" y="227" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="237" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="chip" x="659" y="227" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="237" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="768" y="227" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="237" text-anchor="middle" font-size="9.5">7</text>
+  <rect class="chip" x="550" y="242" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="252" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="659" y="242" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="252" text-anchor="middle" font-size="9.5">Edge</text>
+  <rect class="chip" x="768" y="242" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="252" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="hi" x="550" y="257" width="104" height="13" rx="3"/>
+  <text class="hit" x="602" y="267" text-anchor="middle" font-size="9.5">Linux</text>
+  <rect class="hi" x="659" y="257" width="104" height="13" rx="3"/>
+  <text class="hit" x="711" y="267" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="hi" x="768" y="257" width="76" height="13" rx="3"/>
+  <text class="hit" x="806" y="267" text-anchor="middle" font-size="9.5">5</text>
+  <rect class="chip" x="550" y="272" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="282" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="659" y="272" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="282" text-anchor="middle" font-size="9.5">Firefox</text>
+  <rect class="chip" x="768" y="272" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="282" text-anchor="middle" font-size="9.5">10</text>
+  <rect class="chip" x="550" y="287" width="104" height="13" rx="3"/>
+  <text class="s" x="602" y="297" text-anchor="middle" font-size="9.5">Windows</text>
+  <rect class="chip" x="659" y="287" width="104" height="13" rx="3"/>
+  <text class="s" x="711" y="297" text-anchor="middle" font-size="9.5">Safari</text>
+  <rect class="chip" x="768" y="287" width="76" height="13" rx="3"/>
+  <text class="s" x="806" y="297" text-anchor="middle" font-size="9.5">10</text>
+
+  <!-- brackets counting the traced pair on each side -->
+  <path class="ln" d="M356,482 H362 V525 H356"/>
+  <text class="hit" x="368" y="507" font-size="10.5">36 行中 3 行</text>
+  <path class="ln" d="M544,257 H538 V270 H544"/>
+  <text class="hit" x="532" y="267" text-anchor="end" font-size="10.5">12 行中 1 行</text>
+
+  <!-- the rows the covering array leaves unrun -->
+  <rect class="ghost" x="550" y="305" width="294" height="355" rx="6"/>
+  <text class="s" x="697" y="478" text-anchor="middle">カバリング配列が実行しない 24 行</text>
+  <text class="s" x="697" y="496" text-anchor="middle">12 + 24 = 36</text>
+
+  <path class="seam" d="M40,686 H860"/>
+  <text class="s" x="450" y="706" text-anchor="middle">3 通りある 3 つ目のパラメータが自由に動くので、左では 1 つのペアが 3 行に広がります。</text>
+  <text class="s" x="450" y="724" text-anchor="middle">減るのは行であって、ペアではありません。モデルが求める 33 個のペアは右にもすべて現れます。</text>
+</svg>

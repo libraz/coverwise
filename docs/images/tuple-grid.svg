@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 430" width="900" height="430" role="img" aria-labelledby="cw-tuple-t cw-tuple-d">
+  <title id="cw-tuple-t">The two levels inside a coverage unit</title>
+  <desc id="cw-tuple-d">Three parameters A, B and C, each taking 0 or 1. The coverage universe is drawn as three blocks, one per pair of parameters, and each block is a two by two grid of the value combinations, giving twelve units in all. Below the blocks are the five test cases the engine generates, each with its own colour and number. Every cell carries the numbered chip of each row that covers it, and no cell is empty.</desc>
+
+  <style>
+    .bg   { fill:#f6f7f9 }
+    .grp  { fill:#eceef2 }
+    .chip { fill:#ffffff; stroke:#d5d9e0 }
+    .op   { fill:#ffffff; stroke:#2b6cb0 }
+    .rule { fill:none; stroke:#c3c8d0; stroke-width:1 }
+    .seam { fill:none; stroke:#c3c8d0; stroke-dasharray:6 5 }
+    .ln   { fill:none; stroke:#2b6cb0; stroke-width:1.4 }
+    .ah   { fill:#2b6cb0 }
+    text  { font-family:Inter,"Helvetica Neue","Hiragino Sans","Noto Sans JP",Arial,sans-serif; fill:#1f2328 }
+    .h    { font-size:12.5px }
+    .lbl  { font-size:11px; fill:#6e7781; letter-spacing:.06em }
+    .s    { font-size:10.5px; fill:#6e7781 }
+    .n    { font-size:24px; fill:#1f2328 }
+    .n2   { font-size:24px; fill:#2a7f6f }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px; fill:#2b6cb0 }
+    .r1  { stroke:#2b6cb0; fill:#2b6cb0; fill-opacity:.14 }
+    .r1t { fill:#2b6cb0 }
+    .r2  { stroke:#a3401f; fill:#a3401f; fill-opacity:.14 }
+    .r2t { fill:#a3401f }
+    .r3  { stroke:#2a7f6f; fill:#2a7f6f; fill-opacity:.14 }
+    .r3t { fill:#2a7f6f }
+    .r4  { stroke:#7a4f8a; fill:#7a4f8a; fill-opacity:.14 }
+    .r4t { fill:#7a4f8a }
+    .r5  { stroke:#8a6a1f; fill:#8a6a1f; fill-opacity:.14 }
+    .r5t { fill:#8a6a1f }
+    @media (prefers-color-scheme: dark) {
+      .bg{fill:#0d1117} .grp{fill:#12171d}
+      .chip{fill:#161b22;stroke:#30363d} .op{fill:#161b22;stroke:#7fb3d5}
+      .rule{stroke:#484f58} .seam{stroke:#484f58}
+      .ln{stroke:#7fb3d5} .ah{fill:#7fb3d5}
+      text{fill:#e6edf3} .lbl{fill:#8b949e} .s{fill:#8b949e}
+      .n{fill:#e6edf3} .n2{fill:#6fc2ae} .mono{fill:#7fb3d5}
+      .r1{stroke:#7fb3d5;fill:#7fb3d5} .r1t{fill:#7fb3d5}
+      .r2{stroke:#e08a68;fill:#e08a68} .r2t{fill:#e08a68}
+      .r3{stroke:#6fc2ae;fill:#6fc2ae} .r3t{fill:#6fc2ae}
+      .r4{stroke:#c08fd0;fill:#c08fd0} .r4t{fill:#c08fd0}
+      .r5{stroke:#d9b45c;fill:#d9b45c} .r5t{fill:#d9b45c}
+    }
+  </style>
+  <rect class="bg" x="0" y="0" width="900" height="430" rx="12"/>
+
+  <text class="lbl" x="104" y="36">the coverage universe — 3 parameter pairs × 4 value pairs = 12 units</text>
+
+  <!-- A-B -->
+  <rect class="grp" x="104" y="56" width="200" height="158" rx="8"/>
+  <text class="h" x="118" y="78">A and B</text>
+  <text class="lbl" x="189" y="100" text-anchor="middle">A=0</text>
+  <text class="lbl" x="260" y="100" text-anchor="middle">A=1</text>
+  <text class="lbl" x="134" y="135" text-anchor="end">B=0</text>
+  <rect class="chip" x="156" y="108" width="66" height="44" rx="5"/>
+  <circle class="r5" cx="189" cy="130" r="9"/>
+  <text class="r5t" x="189" y="134" text-anchor="middle" font-size="10.5">5</text>
+  <rect class="chip" x="227" y="108" width="66" height="44" rx="5"/>
+  <circle class="r2" cx="249" cy="130" r="9"/>
+  <text class="r2t" x="249" y="134" text-anchor="middle" font-size="10.5">2</text>
+  <circle class="r4" cx="271" cy="130" r="9"/>
+  <text class="r4t" x="271" y="134" text-anchor="middle" font-size="10.5">4</text>
+  <text class="lbl" x="134" y="184" text-anchor="end">B=1</text>
+  <rect class="chip" x="156" y="157" width="66" height="44" rx="5"/>
+  <circle class="r1" cx="189" cy="179" r="9"/>
+  <text class="r1t" x="189" y="183" text-anchor="middle" font-size="10.5">1</text>
+  <rect class="chip" x="227" y="157" width="66" height="44" rx="5"/>
+  <circle class="r3" cx="260" cy="179" r="9"/>
+  <text class="r3t" x="260" y="183" text-anchor="middle" font-size="10.5">3</text>
+
+  <!-- A-C -->
+  <rect class="grp" x="350" y="56" width="200" height="158" rx="8"/>
+  <text class="h" x="364" y="78">A and C</text>
+  <text class="lbl" x="435" y="100" text-anchor="middle">A=0</text>
+  <text class="lbl" x="506" y="100" text-anchor="middle">A=1</text>
+  <text class="lbl" x="380" y="135" text-anchor="end">C=0</text>
+  <rect class="chip" x="402" y="108" width="66" height="44" rx="5"/>
+  <circle class="r5" cx="435" cy="130" r="9"/>
+  <text class="r5t" x="435" y="134" text-anchor="middle" font-size="10.5">5</text>
+  <rect class="chip" x="473" y="108" width="66" height="44" rx="5"/>
+  <circle class="r3" cx="495" cy="130" r="9"/>
+  <text class="r3t" x="495" y="134" text-anchor="middle" font-size="10.5">3</text>
+  <circle class="r4" cx="517" cy="130" r="9"/>
+  <text class="r4t" x="517" y="134" text-anchor="middle" font-size="10.5">4</text>
+  <text class="lbl" x="380" y="184" text-anchor="end">C=1</text>
+  <rect class="chip" x="402" y="157" width="66" height="44" rx="5"/>
+  <circle class="r1" cx="435" cy="179" r="9"/>
+  <text class="r1t" x="435" y="183" text-anchor="middle" font-size="10.5">1</text>
+  <rect class="chip" x="473" y="157" width="66" height="44" rx="5"/>
+  <circle class="r2" cx="506" cy="179" r="9"/>
+  <text class="r2t" x="506" y="183" text-anchor="middle" font-size="10.5">2</text>
+
+  <!-- B-C -->
+  <rect class="grp" x="596" y="56" width="200" height="158" rx="8"/>
+  <text class="h" x="610" y="78">B and C</text>
+  <text class="lbl" x="681" y="100" text-anchor="middle">B=0</text>
+  <text class="lbl" x="752" y="100" text-anchor="middle">B=1</text>
+  <text class="lbl" x="626" y="135" text-anchor="end">C=0</text>
+  <rect class="chip" x="648" y="108" width="66" height="44" rx="5"/>
+  <circle class="r4" cx="670" cy="130" r="9"/>
+  <text class="r4t" x="670" y="134" text-anchor="middle" font-size="10.5">4</text>
+  <circle class="r5" cx="692" cy="130" r="9"/>
+  <text class="r5t" x="692" y="134" text-anchor="middle" font-size="10.5">5</text>
+  <rect class="chip" x="719" y="108" width="66" height="44" rx="5"/>
+  <circle class="r3" cx="752" cy="130" r="9"/>
+  <text class="r3t" x="752" y="134" text-anchor="middle" font-size="10.5">3</text>
+  <text class="lbl" x="626" y="184" text-anchor="end">C=1</text>
+  <rect class="chip" x="648" y="157" width="66" height="44" rx="5"/>
+  <circle class="r2" cx="681" cy="179" r="9"/>
+  <text class="r2t" x="681" y="183" text-anchor="middle" font-size="10.5">2</text>
+  <rect class="chip" x="719" y="157" width="66" height="44" rx="5"/>
+  <circle class="r1" cx="752" cy="179" r="9"/>
+  <text class="r1t" x="752" y="183" text-anchor="middle" font-size="10.5">1</text>
+
+  <!-- the suite, one colour per row -->
+  <text class="lbl" x="104" y="238">the suite the engine generates</text>
+  <rect class="r1" x="104" y="250" width="22" height="20" rx="5"/>
+  <text class="r1t" x="115" y="264" text-anchor="middle" font-size="10.5">1</text>
+  <rect class="chip" x="138" y="250" width="46" height="20" rx="4"/>
+  <text class="mono" x="161" y="264" text-anchor="middle">A=0</text>
+  <rect class="chip" x="190" y="250" width="46" height="20" rx="4"/>
+  <text class="mono" x="213" y="264" text-anchor="middle">B=1</text>
+  <rect class="chip" x="242" y="250" width="46" height="20" rx="4"/>
+  <text class="mono" x="265" y="264" text-anchor="middle">C=1</text>
+  <rect class="r2" x="104" y="276" width="22" height="20" rx="5"/>
+  <text class="r2t" x="115" y="290" text-anchor="middle" font-size="10.5">2</text>
+  <rect class="chip" x="138" y="276" width="46" height="20" rx="4"/>
+  <text class="mono" x="161" y="290" text-anchor="middle">A=1</text>
+  <rect class="chip" x="190" y="276" width="46" height="20" rx="4"/>
+  <text class="mono" x="213" y="290" text-anchor="middle">B=0</text>
+  <rect class="chip" x="242" y="276" width="46" height="20" rx="4"/>
+  <text class="mono" x="265" y="290" text-anchor="middle">C=1</text>
+  <rect class="r3" x="104" y="302" width="22" height="20" rx="5"/>
+  <text class="r3t" x="115" y="316" text-anchor="middle" font-size="10.5">3</text>
+  <rect class="chip" x="138" y="302" width="46" height="20" rx="4"/>
+  <text class="mono" x="161" y="316" text-anchor="middle">A=1</text>
+  <rect class="chip" x="190" y="302" width="46" height="20" rx="4"/>
+  <text class="mono" x="213" y="316" text-anchor="middle">B=1</text>
+  <rect class="chip" x="242" y="302" width="46" height="20" rx="4"/>
+  <text class="mono" x="265" y="316" text-anchor="middle">C=0</text>
+  <rect class="r4" x="104" y="328" width="22" height="20" rx="5"/>
+  <text class="r4t" x="115" y="342" text-anchor="middle" font-size="10.5">4</text>
+  <rect class="chip" x="138" y="328" width="46" height="20" rx="4"/>
+  <text class="mono" x="161" y="342" text-anchor="middle">A=1</text>
+  <rect class="chip" x="190" y="328" width="46" height="20" rx="4"/>
+  <text class="mono" x="213" y="342" text-anchor="middle">B=0</text>
+  <rect class="chip" x="242" y="328" width="46" height="20" rx="4"/>
+  <text class="mono" x="265" y="342" text-anchor="middle">C=0</text>
+  <rect class="r5" x="104" y="354" width="22" height="20" rx="5"/>
+  <text class="r5t" x="115" y="368" text-anchor="middle" font-size="10.5">5</text>
+  <rect class="chip" x="138" y="354" width="46" height="20" rx="4"/>
+  <text class="mono" x="161" y="368" text-anchor="middle">A=0</text>
+  <rect class="chip" x="190" y="354" width="46" height="20" rx="4"/>
+  <text class="mono" x="213" y="368" text-anchor="middle">B=0</text>
+  <rect class="chip" x="242" y="354" width="46" height="20" rx="4"/>
+  <text class="mono" x="265" y="368" text-anchor="middle">C=0</text>
+
+  <text class="s" x="380" y="262">A coverage unit is two choices, not one.</text>
+  <text class="s" x="380" y="278">First, which two parameters — that is the block.</text>
+  <text class="s" x="380" y="294">Then, which value each of them takes — that is the cell.</text>
+  <text class="s" x="380" y="326">The five rows cover 12 of 12 units.</text>
+  <text class="s" x="380" y="342">Three cells carry two chips: the same unit reached</text>
+  <text class="s" x="380" y="358">by two rows. Coverage asks for at least one.</text>
+
+  <path class="seam" d="M104,396 H796"/>
+  <text class="s" x="450" y="416" text-anchor="middle">Coverage is measured against these 12 units, not against the 8 test cases the model can produce.</text>
+</svg>

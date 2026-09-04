@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 360" width="900" height="360" role="img" aria-labelledby="cw-loop-t cw-loop-d">
+  <title id="cw-loop-t">The test design loop</title>
+  <desc id="cw-loop-d">A loop with three named operations. Starting from no tests, generate builds a suite from a model. The suite you already have is measured by analyze, which reports a coverage ratio. At 100 percent the loop ends. Below 100 percent, extend adds rows that close the gaps while keeping the rows already written, and the suite is measured again.</desc>
+
+  <style>
+    .bg   { fill:#f6f7f9 }
+    .grp  { fill:#eceef2 }
+    .chip { fill:#ffffff; stroke:#d5d9e0 }
+    .op   { fill:#ffffff; stroke:#2b6cb0 }
+    .rule { fill:none; stroke:#c3c8d0; stroke-width:1 }
+    .seam { fill:none; stroke:#c3c8d0; stroke-dasharray:6 5 }
+    .ln   { fill:none; stroke:#2b6cb0; stroke-width:1.4 }
+    .ah   { fill:#2b6cb0 }
+    text  { font-family:Inter,"Helvetica Neue","Hiragino Sans","Noto Sans JP",Arial,sans-serif; fill:#1f2328 }
+    .h    { font-size:12.5px }
+    .lbl  { font-size:11px; fill:#6e7781; letter-spacing:.06em }
+    .s    { font-size:10.5px; fill:#6e7781 }
+    .n    { font-size:24px; fill:#1f2328 }
+    .n2   { font-size:24px; fill:#2a7f6f }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:10.5px; fill:#2b6cb0 }
+    @media (prefers-color-scheme: dark) {
+      .bg{fill:#0d1117} .grp{fill:#12171d}
+      .chip{fill:#161b22;stroke:#30363d} .op{fill:#161b22;stroke:#7fb3d5}
+      .rule{stroke:#484f58} .seam{stroke:#484f58}
+      .ln{stroke:#7fb3d5} .ah{fill:#7fb3d5}
+      text{fill:#e6edf3} .lbl{fill:#8b949e} .s{fill:#8b949e}
+      .n{fill:#e6edf3} .n2{fill:#6fc2ae} .mono{fill:#7fb3d5}
+    }
+  </style>
+  <defs>
+    <marker id="cw-loop-a" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path class="ah" d="M0,0 L9,4.5 L0,9 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="900" height="360" rx="12"/>
+
+  <!-- edges, drawn under the nodes -->
+  <path class="ln" d="M170,68 H208" marker-end="url(#cw-loop-a)"/>
+  <path class="ln" d="M314,96 V114 H115 V130" marker-end="url(#cw-loop-a)"/>
+  <path class="ln" d="M190,164 H246" marker-end="url(#cw-loop-a)"/>
+  <path class="ln" d="M452,164 H496" marker-end="url(#cw-loop-a)"/>
+  <path class="ln" d="M630,164 H700" marker-end="url(#cw-loop-a)"/>
+  <path class="ln" d="M566,206 V232 H352 V244" marker-end="url(#cw-loop-a)"/>
+  <path class="ln" d="M252,278 H115 V198" marker-end="url(#cw-loop-a)"/>
+
+  <text class="s" x="660" y="154">yes</text>
+  <text class="s" x="578" y="226">no</text>
+
+  <!-- states -->
+  <rect class="chip" x="40" y="40" width="130" height="56" rx="7"/>
+  <text class="h" x="105" y="74" text-anchor="middle">no tests</text>
+  <rect class="chip" x="40" y="136" width="150" height="56" rx="7"/>
+  <text class="h" x="115" y="170" text-anchor="middle">existing tests</text>
+  <rect class="chip" x="706" y="136" width="154" height="56" rx="7"/>
+  <text class="h" x="783" y="170" text-anchor="middle">done</text>
+
+  <!-- decision -->
+  <polygon class="chip" points="566,122 630,164 566,206 502,164"/>
+  <text class="h" x="566" y="168" text-anchor="middle">100%?</text>
+
+  <!-- operations -->
+  <rect class="op" x="214" y="40" width="200" height="56" rx="7"/>
+  <text class="mono" x="314" y="66" text-anchor="middle">generate</text>
+  <text class="s" x="314" y="82" text-anchor="middle">a covering suite from a model</text>
+  <rect class="op" x="252" y="136" width="200" height="56" rx="7"/>
+  <text class="mono" x="352" y="162" text-anchor="middle">analyze</text>
+  <text class="s" x="352" y="178" text-anchor="middle">coverage of the suite you have</text>
+  <rect class="op" x="252" y="250" width="200" height="56" rx="7"/>
+  <text class="mono" x="352" y="276" text-anchor="middle">extend</text>
+  <text class="s" x="352" y="292" text-anchor="middle">new rows, existing rows kept</text>
+
+  <path class="seam" d="M40,322 H860"/>
+  <text class="s" x="450" y="342" text-anchor="middle">generate, analyze and extend are the three operations the API exposes; the loop is how they compose.</text>
+</svg>
