@@ -7,6 +7,7 @@
 #include <limits>
 #include <locale>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 
 // libc++ implemented std::from_chars for floating point in LLVM 20, and Apple
@@ -46,26 +47,27 @@ unsigned char FoldAsciiChar(unsigned char value) {
   return value;
 }
 
-bool HasNegativeDecimalOrder(const std::string& value) {
+bool HasNegativeDecimalOrder(std::string_view value) {
   size_t i = (value[0] == '+' || value[0] == '-') ? 1 : 0;
   const size_t exponent_pos = value.find_first_of("eE", i);
-  const size_t mantissa_end = exponent_pos == std::string::npos ? value.size() : exponent_pos;
+  const size_t mantissa_end = exponent_pos == std::string_view::npos ? value.size() : exponent_pos;
   const size_t decimal_pos = value.find('.', i);
-  const size_t integer_digits = decimal_pos == std::string::npos || decimal_pos >= mantissa_end
+  const size_t integer_digits = decimal_pos == std::string_view::npos || decimal_pos >= mantissa_end
                                     ? mantissa_end - i
                                     : decimal_pos - i;
 
   size_t digit_position = 0;
-  size_t first_nonzero = std::string::npos;
+  size_t first_nonzero = std::string_view::npos;
   for (size_t pos = i; pos < mantissa_end; ++pos) {
     if (value[pos] == '.') continue;
-    if (first_nonzero == std::string::npos && value[pos] != '0') first_nonzero = digit_position;
+    if (first_nonzero == std::string_view::npos && value[pos] != '0')
+      first_nonzero = digit_position;
     ++digit_position;
   }
-  if (first_nonzero == std::string::npos) return false;
+  if (first_nonzero == std::string_view::npos) return false;
 
   long long explicit_exponent = 0;
-  if (exponent_pos != std::string::npos) {
+  if (exponent_pos != std::string_view::npos) {
     size_t pos = exponent_pos + 1;
     bool negative = false;
     if (value[pos] == '+' || value[pos] == '-') {
@@ -122,12 +124,16 @@ DecimalParse ParseDecimal(const char* begin, const char* end) {
   // The field is out of range for at least one of the two backends, and they
   // do not agree on what that means: an underflow that still rounds to a
   // subnormal is a range error for num_get (which nevertheless stores the
-  // correctly rounded value) but an ordinary result for from_chars, while a
-  // decimal that truly leaves the representable range may or may not leave a
-  // value behind. Keeping a stored finite non-zero value and discarding
-  // everything else makes the outcome depend on the decimal alone, so every
-  // platform and build configuration parses a subnormal identically.
-  if (std::isfinite(parsed.value) && parsed.value != 0.0) {
+  // correctly rounded value) but an ordinary result for from_chars. That is the
+  // one case a stored value may be kept, and the decimal's own order is what
+  // identifies it. A finite non-zero leftover does not, because an overflow can
+  // leave one too: num_get is specified to store the largest representable
+  // double there, so accepting any such leftover would parse a decimal past the
+  // range as that maximum on one backend and as an infinity on the other.
+  // Deciding from the decimal alone keeps every platform and build
+  // configuration on the same answer.
+  if (std::isfinite(parsed.value) && parsed.value != 0.0 &&
+      HasNegativeDecimalOrder(std::string_view(begin, static_cast<size_t>(end - begin)))) {
     parsed.complete = true;
     return parsed;
   }
