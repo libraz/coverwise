@@ -1,6 +1,6 @@
 {
   "name": "@libraz/coverwise",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "packageManager": "yarn@4.18.0",
   "description": "Combinatorial test coverage engine — analyze, generate, and extend t-wise test suites via WASM",
@@ -24,8 +24,12 @@
   },
   "typesVersions": {
     "*": {
-      "pure": ["dist/js/pure/index.d.ts"],
-      "constraint": ["dist/js/constraint.d.ts"]
+      "pure": [
+        "dist/js/pure/index.d.ts"
+      ],
+      "constraint": [
+        "dist/js/constraint.d.ts"
+      ]
     }
   },
   "files": [
