@@ -116,19 +116,11 @@ const DelegatedDocument kDocumentsCheckedElsewhere[] = {
      "sets of rules, which is the drift this gate exists to prevent."},
 };
 
-/// @brief Every document this gate is responsible for.
+/// @brief The root-level names the repository declares it does not keep.
 ///
-/// Both the repository root and the documentation tree are enumerated rather
-/// than matched against a name pattern. A document added under `docs/` is
-/// therefore gated without anything here being edited, and renaming one at the
-/// root cannot drop it out of coverage the way a `README*.md` pattern would --
-/// it stays enumerated under its new name, or its entry below stops resolving.
-/// Either way the change is announced rather than silent.
-///
-/// A file the repository declares it does not keep is passed over. Such a file
-/// is present in some working copies and absent from others, so reading one
-/// would let the gate reach a different verdict on a developer's machine than
-/// on a clean checkout. Which names those are is the repository's own
+/// Such a file is present in some working copies and absent from others, so a
+/// gate that read one would reach a different verdict on a developer's machine
+/// than on a clean checkout. Which names those are is the repository's own
 /// statement, read from its ignore file rather than repeated here.
 std::set<std::string> UntrackedRootNames() {
   std::set<std::string> names;
@@ -148,6 +140,16 @@ std::set<std::string> UntrackedRootNames() {
   return names;
 }
 
+/// @brief Every document this gate is responsible for.
+///
+/// Both the repository root and the documentation tree are enumerated rather
+/// than matched against a name pattern. A document added under `docs/` is
+/// therefore gated without anything here being edited, and renaming one at the
+/// root cannot drop it out of coverage the way a `README*.md` pattern would --
+/// it stays enumerated under its new name, or its entry above stops resolving.
+/// Either way the change is announced rather than silent. What the repository
+/// declares untracked is passed over, since it is no document the project
+/// publishes.
 std::vector<std::string> ShippedDocuments() {
   namespace fs = std::filesystem;
   const fs::path root(COVERWISE_REPO_ROOT);
