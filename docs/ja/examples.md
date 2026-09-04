@@ -1,18 +1,18 @@
 # 実例集
 
-よくあるテストシナリオの実践的なレシピ集です。
+機能ごとに 1 つずつ、エンジンが実際に返す数値を添えたレシピを並べます。アプリケーションの流れを紹介するページではありません。手元のスイートを起点に最後まで通す例は[ユースケース](use-cases/index.md)にあり、ここで使う語彙（タプル、カバレッジ単位、強度）は[入門](primer/index.md)で扱っています。
 
-以下のレシピは、クラスベース API を使う TypeScript の断片です。同じモデルを pytest から扱う例は [Python](#python) の節にまとめています。同じモジュールに次の準備コードを置き、その後で各レシピを実行してください：
+以下の TypeScript のレシピはすべて断片で、1 つの共通の準備コードを再利用します。同じモジュールに次のコードを置き、その後で各レシピを実行してください。Python のレシピはそれぞれ単体で完結しており、import を毎回書いています。
 
 ```typescript
-import { Coverwise, when, allOf } from '@libraz/coverwise';
+import { Coverwise } from '@libraz/coverwise';
 
 const cw = await Coverwise.create();
 ```
 
 ## 基本的なペアワイズ生成
 
-最も一般的なケース — すべてのパラメータペアの網羅を目標に、コンパクトなテストセットを生成：
+最も一般的なケースです。異なる 2 つのパラメータから取った値のペアが、すべて少なくとも 1 行に現れます。
 
 ```typescript
 const result = cw.generate({
@@ -24,12 +24,14 @@ const result = cw.generate({
   ],
 });
 
-console.log(`${result.tests.length} テストで全 ${result.stats.totalTuples} ペアを網羅`);
+result.stats.totalTuples;  // 53 pairs: 12 + 9 + 6 + 12 + 8 + 6 over the six parameter pairs
+result.tests.length;       // 15 rows, against a cross-product of 3 * 4 * 3 * 2 = 72
+result.coverage;           // 1
 ```
 
-## 制約：無効な組み合わせの除外
+## 無効な組み合わせの除外
 
-テストに不可能な組み合わせが含まれないようにします：
+制約は、あり得ない行をスイートから締め出します。同時に、網羅すべき対象そのものも縮めます。有効な行が 1 つも持てないペアは、不足ではないからです。
 
 ```typescript
 const result = cw.generate({
@@ -39,23 +41,21 @@ const result = cw.generate({
     { name: 'device',  values: ['desktop', 'tablet', 'phone'] },
   ],
   constraints: [
-    when('os').eq('iOS').then(when('browser').eq('Safari')).toString(),
-    when('os').eq('iOS').then(when('device').ne('desktop')).toString(),
-    when('os').eq('Android').then(
-      allOf(when('browser').ne('Safari'), when('browser').ne('Edge'))
-    ).toString(),
-    when('device').eq('desktop').then(
-      allOf(when('os').ne('iOS'), when('os').ne('Android'))
-    ).toString(),
+    'IF os = iOS THEN browser = Safari',
+    'IF device = phone THEN os IN {iOS, Android}',
   ],
 });
+
+result.stats.totalTuples;  // 35 required pairs, down from 40 without the constraints
+result.tests.length;       // 17 rows
+result.coverage;           // 1
 ```
 
-制約式の詳細は[制約構文](constraints.md)リファレンスを参照してください。
+必要タプル集合から外れたのは 5 ペアです。`os=iOS` と Chrome・Firefox・Edge の組、および `device=phone` と Windows・macOS の組です。式の書き方は[制約構文](constraints.md)を、この 5 つが未網羅として報告されるのではなく除外される理由は[制約と必要タプル集合](primer/constraints-and-the-universe.md)を参照してください。
 
-## ネガティブテスト
+## 異常系テスト
 
-値を `invalid` としてマークすると、ネガティブテストケースが自動生成されます。各ネガティブテストは正確に1つの無効値を含み、単一障害の分離を保証します：
+値に `invalid` を付けると、coverwise はそこから 2 つ目のスイートを組み立てます。異常系の各行は無効値をちょうど 1 つだけ含むため、拒否された原因をその値 1 つに帰せます。
 
 ```typescript
 const result = cw.generate({
@@ -74,16 +74,17 @@ const result = cw.generate({
   ],
 });
 
-console.log('正常テスト:', result.tests.length);
-console.log('ネガティブテスト:', result.negativeTests.length);
-
-// 正常テストは有効な組み合わせのみ。
-// ネガティブテストはそれぞれ無効値が正確に1つ。
+result.tests.length;                   // 3 positive rows
+result.stats.totalTuples;              // 7 positive pairs: 1 + 3 + 3 over the valid values only
+result.negativeTests.length;           // 12 negative rows
+result.negativeCoverage?.totalTuples;  // 16 negative tuples, each one invalid value beside one valid one
 ```
 
-## 混合強度（サブモデル）
+無効値は正常系のカバレッジには数えません。ここでの正常系の対象が、値リスト全体から出る 27 ペアではなく 7 ペアなのはそのためです。
 
-重要なパラメータグループには高いカバレッジを、それ以外はペアワイズを適用：
+## 重要なグループだけ強度を上げる
+
+`subModels` は、指定したグループの強度だけを上げます。モデル全体でその強度を払う必要はありません。
 
 ```typescript
 const result = cw.generate({
@@ -95,17 +96,20 @@ const result = cw.generate({
     { name: 'cache',    values: ['enabled', 'disabled'] },
     { name: 'compress', values: ['gzip', 'br', 'none'] },
   ],
-  strength: 2,  // デフォルト：ペアワイズ。
   subModels: [
-    // 重要なネットワーキング3パラメータは 3-wise。
     { parameters: ['protocol', 'auth', 'cache'], strength: 3 },
   ],
 });
+
+result.stats.totalTuples;  // 138: the 120 pairs of the whole model plus 18 triples over the group
+result.tests.length;       // 18 rows, where the same model at plain pairwise needs 14
 ```
 
-## 同値クラス
+18 個の 3 つ組はグループの全組み合わせ（プロトコル 3 種、認証 3 種、キャッシュ 2 種）そのものなので、これだけでスイートの行数に 18 の下限が生まれます。残りはその 18 行の中で網羅されます。
 
-値をクラスにグループ化し、クラスレベルのカバレッジを追跡：
+## 等価クラス
+
+複数の値が同じコードパスを通ると分かっていて、関心のあるペアが値と値の間ではなくクラスとクラスの間にあるときに、クラス単位のカバレッジを使います。値単位のカバレッジのほうが厳しい目標であり、実際の挙動の違いに見合わないコストになることがあります。
 
 ```typescript
 const result = cw.generate({
@@ -126,33 +130,38 @@ const result = cw.generate({
   ],
 });
 
-if (result.classCoverage) {
-  console.log(`クラスカバレッジ: ${result.classCoverage.classCoverageRatio * 100}%`);
-  // クラスレベルのカバレッジを追跡（child×unpaid, child×paid 等）
-}
+result.stats.totalTuples;                  // 20 value pairs, from 5 ages and 4 plans
+result.tests.length;                       // 20 rows, because value-level pairwise is the cross-product here
+result.classCoverage?.totalClassTuples;    // 6 class pairs, from 3 age classes and 2 plan classes
+result.classCoverage?.classCoverageRatio;  // 1
 ```
+
+値のペア 20 に対してクラスのペアは 6 で、これが判断の大きさです。`classCoverage` は両方を報告するので、システムが実際に区別している水準に合わせてスイートを評価できます。
 
 ## 重み付けヒント
 
-複数の候補が同等のカバレッジを提供する場合に値の選択へ影響を与えます。重みは頻度を保証するものではなく、選好として扱われます：
+重みは同点を破るためのものです。複数の値が同じ数の不足を埋められるとき、重みが大きい値が選ばれやすくなります。スイートに必要な行数は変わりません。
 
 ```typescript
 const result = cw.generate({
   parameters: [
     { name: 'os',      values: ['Windows', 'macOS', 'Linux'] },
     { name: 'browser', values: ['Chrome', 'Firefox', 'Safari', 'Edge'] },
+    { name: 'theme',   values: ['light', 'dark'] },
   ],
   weights: {
     os: { Windows: 3.0, macOS: 1.0, Linux: 1.0 },
     browser: { Chrome: 2.0 },
   },
 });
-// カバレッジが同等なら、重みの高い値が優先されます。
+
+result.stats.totalTuples;  // 26 pairs: 12 + 6 + 8
+result.tests.length;       // 12 rows, the same count the model produces with no weights at all
 ```
 
-## シードテスト：既存テストの活用
+## シードテスト
 
-必須テストから始めて、不足分を埋めます：
+`seeds` は、出力に必ず含める行です。ジェネレータはその順序のまま保持し、残りの不足をその周りで埋めます。
 
 ```typescript
 const result = cw.generate({
@@ -162,44 +171,39 @@ const result = cw.generate({
     { name: 'env',     values: ['staging', 'production'] },
   ],
   seeds: [
-    // これらのテストは出力に必ず含まれます。
     { os: 'Windows', browser: 'Chrome', env: 'production' },
     { os: 'macOS',   browser: 'Safari', env: 'production' },
   ],
 });
-// シードが最初に含まれ、追加テストがカバレッジの隙間を埋めます。
+
+result.tests.slice(0, 2);  // the two seed rows, in the order they were given
+result.stats.totalTuples;  // 21 pairs: 9 + 6 + 6
+result.tests.length;       // 9 rows, where the same model without seeds produces 10
 ```
+
+シードは、これから生成するモデルに属するものです。既存のスイートをそのまま残し、不足を埋める行だけを足したい場合は `extendTests` を使います。その流れは[不足を少しずつ埋める](use-cases/close-the-gaps-incrementally.md)で最後まで通しています。
 
 ## 境界値展開
 
-数値範囲を端と端付近の値に自動展開：
+数値範囲は、各端で試す価値のある値へ展開されます。端の 1 つ外側、端そのもの、端の 1 つ内側の 3 つです。
 
-```json
-{
-  "parameters": [
-    {
-      "name": "port",
-      "values": [],
-      "type": "integer",
-      "range": [1, 65535],
-      "step": 1
-    },
-    {
-      "name": "timeout",
-      "values": [],
-      "type": "float",
-      "range": [0.1, 30.0],
-      "step": 0.1
-    }
-  ]
-}
+```typescript
+const result = cw.generate({
+  parameters: [
+    { name: 'port',    values: [], type: 'integer', range: [1, 65535], step: 1 },
+    { name: 'timeout', values: [], type: 'float',   range: [0.1, 30.0], step: 0.1 },
+  ],
+});
+
+result.stats.totalTuples;  // 36 pairs: each range expands to 6 values, so 6 * 6
+result.tests.length;       // 36 rows
 ```
 
-`port` の場合、`0`、`1`、`2`、`65534`、`65535`、`65536` に展開されます。各端の外側1つ、端そのもの、内側1つを含め、既存の数値は同じ集合にマージされます。
+`port` は `0`、`1`、`2`、`65534`、`65535`、`65536` に、`timeout` は `0`、`0.1`、`0.2`、`29.9`、`30`、`30.1` に展開されます。境界値パラメータでも `values` は宣言します。そこに書いた値は置き換えられるのではなく、展開後の集合にマージされます。整数の範囲では `step: 1` しか受け付けません。同じ 4 つのフィールドは CLI のモデル文書でもパラメータの下に置きます。[CLI リファレンス](cli.md)を参照してください。
 
 ## モデル推定
 
-生成前に複雑さを確認：
+`estimateModel` は、スイートを作らずにモデルの規模を見積もります。
 
 ```typescript
 const stats = cw.estimateModel({
@@ -212,39 +216,20 @@ const stats = cw.estimateModel({
   strength: 3,
 });
 
-console.log(`パラメータ数: ${stats.parameterCount}`);
-console.log(`3-wise タプル数: ${stats.totalTuples}`);
-console.log(`推定テスト数: ${stats.estimatedTests}`);
+stats.parameterCount;  // 4
+stats.totalTuples;     // 500: 4 parameter triples, each with 5 * 5 * 5 = 125 value combinations
+stats.estimatedTests;  // 250
 ```
+
+このモデルを実際に生成すると 165 行になります。`estimatedTests` は規模の目安であり、上限でも下限でもありません。ここでは過大に、別のモデルでは過小に出ます。コストの判断には `stats.totalTuples` を、結果の判断には生成後のカバレッジを使ってください。
 
 ## Python
 
-上記のレシピはすべて Python からそのまま使えます。モデルのフィールドは同じで、`coverwise.generate` に keyword 引数または mapping として渡すだけです。ここでは、モデルではなく Python のテストスイートの形に沿ったレシピを挙げます。完全なリファレンスは [Python API](python-api.md) を参照してください。
-
-### pytest テストのパラメータ化
-
-`coverwise.parametrize` は手書きの全組み合わせを置き換えます。各パラメータは同名の引数として渡されます。
-
-```python
-import coverwise
-
-@coverwise.parametrize(
-    {
-        "os": ["Windows", "macOS", "Linux"],
-        "browser": ["Chrome", "Firefox", "Safari"],
-        "language": ["en", "ja", "de"],
-    },
-    constraints=["IF os = Windows THEN browser != Safari"],
-)
-def test_page_renders(os, browser, language):
-    assert render(os, browser, language).ok
-```
-
-制約適用後の有効な組み合わせは 24 通りですが、ペアワイズスイートは 13 ケースですべてのペアを網羅します。各ケースには読みやすい id (`os=macOS-browser=Chrome-language=ja`) が付きます。
+上のモデルフィールドは Python でも同じで、`coverwise.generate` にキーワード引数として渡すか、1 つのマッピングとして渡します。ここに挙げる 2 つのレシピは、モデルではなくテストスイートの形に沿ったものです。完全なリファレンスは[Python API](python-api.md)を、パラメータ化済みスイートの移行は[pytest の全組み合わせを置き換える](use-cases/replace-a-cross-product-in-pytest.md)を参照してください。
 
 ### 正常系と異常系を別のテストに分ける
 
-invalid 値からは、invalid 値をちょうど 1 つ含むネガティブテストが生成されます。期待結果が逆になるため、2 つのテストに分けるのが自然です。
+異常系の行は無効値を 1 つずつ含みます。期待結果が逆になるため、2 つのテストに分けるのが自然です。
 
 ```python
 import coverwise
@@ -259,11 +244,14 @@ LOGIN_MODEL = {
         ]},
         {"name": "password", "values": [
             "Str0ng!Pass",
+            {"value": "", "invalid": True},
             {"value": "short", "invalid": True},
         ]},
+        {"name": "role", "values": ["admin", "user", "guest"]},
     ]
 }
 _suite = coverwise.generate(LOGIN_MODEL)
+# _suite["tests"] holds 3 rows; _suite["negativeTests"] holds 12.
 
 
 @pytest.mark.parametrize("case", _suite["tests"])
@@ -277,27 +265,16 @@ def test_login_rejects_invalid_input(case):
         login(**case)
 ```
 
-テストケース全体を 1 つの `case` 引数として渡しておくと、モデルにパラメータが増えてもテストの書き換えが要りません。`coverwise.parametrize(..., include_negative=True)` を使えば両方のスイートを 1 つのテストで実行できます。こちらは、受け取った値から期待結果を自分で判断するテストに向きます。
+行全体を 1 つの `case` 引数として渡しておくと、モデルにパラメータが増えても両方のテストがそのまま動きます。`coverwise.parametrize(..., include_negative=True)` を使えば、2 つのスイートを 1 つのテストで実行できます。こちらは、受け取った値から期待結果を自分で判断するテストに向きます。
 
-### 手書きスイートのカバレッジを保証する
+### デコレータ経由のサブモデル
 
-既存スイートのカバレッジは通常のアサーションとして書けます。不足があれば、欠けている組み合わせを名指しでテストが失敗します。
-
-```python
-PARAMETERS = {"os": ["Windows", "macOS"], "browser": ["Chrome", "Firefox"]}
-
-
-def test_manual_suite_covers_every_pair():
-    report = coverwise.analyze_coverage(PARAMETERS, MANUAL_TESTS)
-
-    assert report["uncovered"] == [], [item["display"] for item in report["uncovered"]]
-```
-
-### 重要なグループだけ強度を上げる
-
-`subModels` を含め、モデルのフィールドはそのまま decorator に渡せます。
+`subModels` を含め、モデルのフィールドはそのままデコレータに渡せます。
 
 ```python
+import coverwise
+
+
 @coverwise.parametrize(
     {
         "protocol": ["HTTP/1.1", "HTTP/2", "HTTP/3"],
@@ -305,32 +282,43 @@ def test_manual_suite_covers_every_pair():
         "cache": ["enabled", "disabled"],
         "region": ["us", "eu", "ap"],
     },
-    strength=2,
     subModels=[{"parameters": ["protocol", "auth", "cache"], "strength": 3}],
 )
 def test_request_path(protocol, auth, cache, region):
     assert request(protocol, auth, cache, region).ok
 ```
 
-ネットワーク周りの 3 パラメータは 3-wise で網羅し、`region` はペアワイズのままです。全組み合わせの 54 ケースに対して 18 ケースになります。
+対象は 63 タプルです。4 パラメータにまたがる 45 ペアと、ネットワーク周りのグループの 18 個の 3 つ組です。実行は 18 ケースで、全組み合わせの 54 ケースに対する数字です。グループの 18 通りが下限を決め、`region` はその中で網羅されます。
 
-## CI 統合
+## CI でのカバレッジゲート
 
-CI パイプラインで CLI を使用：
+CLI はカバレッジを終了コードで報告します。追加のスクリプトを書かずに、不足でジョブを失敗させられます。
 
 ```bash
-# テスト生成。カバレッジ不足の場合 CI を失敗させる。
-coverwise generate input.json > tests.json
-# 終了コード 2 = カバレッジ不足（maxTests 設定時）。
-
-# 手書きテストのペアワイズカバレッジを検証。
+# 0 when the hand-written suite covers every pair, 2 when it does not.
 coverwise analyze --params params.json --tests tests.json
-# 終了コード 0 = 100%カバレッジ、2 = 不足あり。
+
+# 0 at full coverage, 2 when a maxTests ceiling stopped generation short.
+coverwise generate input.json > tests.json
 ```
+
+終了コード 3 は入力が拒否されたことを表します。`analyze` では、パラメータモデルに書かれていないテスト行があった場合もこれに含まれます。全コードは[CLI リファレンス](cli.md)にあります。ここで出るレポートを読んで次に何をするかを決める流れは[既存スイートを監査する](use-cases/audit-an-existing-suite.md)にあります。
 
 ```yaml
-# GitHub Actions の例
-- name: テストカバレッジ検証
-  run: |
-    coverwise analyze --params params.json --tests tests.json
+- uses: actions/setup-python@v7
+  with:
+    python-version: '3.12'
+- name: Install coverwise
+  run: pip install coverwise
+- name: Check pairwise coverage
+  run: coverwise analyze --params params.json --tests tests.json
 ```
+
+## 次に読むもの
+
+- [ユースケース](use-cases/index.md) — 手元のスイートや全組み合わせを起点に、最後まで通す流れ
+- [制約構文](constraints.md) — `constraints` フィールドの背後にある式の言語
+- [決定性](determinism.md) — `seed` が保証すること、それがどのサーフェスに及ぶか
+- [JavaScript API](js-api.md) — これらのレシピが触れるフィールドと結果の型
+- [Python API](python-api.md) — 同じモデルを Python から扱う方法と `parametrize`
+- [FAQ と制限](faq.md) — 理論的な最小値よりスイートが大きい理由と、`maxTests` が効いたときの挙動

@@ -1,119 +1,81 @@
 # Glossary
 
-Key terms used in combinatorial testing and coverwise.
+Terms as coverwise uses them, each naming the field or function where the term shows up in an API. Where a word has more than one common meaning in combinatorial testing, the entry says which one coverwise implements.
 
-## Combinatorial Testing
+## The model
 
-### Covering Array
+**Parameter** — A dimension of variation in the system under test, holding a finite list of values. Declared in `parameters`; `estimateModel` reports one entry per parameter in `stats.parameters`.
 
-A set of test cases where every t-wise combination of parameter values appears in at least one test. The primary output of coverwise.
+**High-cardinality parameter** — A parameter holding many values. The benchmark tables shorten a model built from a few of them to `high-card`, as in the `5 × 20 high-card` row: five parameters of twenty values each, the shape where a small model still has a large required universe.
 
-### Pairwise Testing
+**Value** — One discrete option of a parameter. Written as a bare string, number or boolean, or as an object that also carries `invalid`, `aliases` or `class`. Values are compared with ASCII case folded, so one parameter may not hold two values that differ only by case.
 
-Combinatorial testing with **strength 2**. Ensures every pair of parameter values from different parameters appears in at least one test. Catches the majority of interaction bugs with a fraction of exhaustive tests.
+**Alias** — An alternative spelling the resolver accepts for a value. Declared in `aliases` on a value object. Output always names the declared spelling, never the alias.
 
-### t-wise Testing
+**Invalid value** — A value marked `invalid: true`. It never appears in a positive row and never counts toward positive coverage; it is the raw material of negative testing.
 
-Generalization of pairwise testing. **t** (the strength) is the number of parameters considered simultaneously. t=2 is pairwise, t=3 is 3-wise, and so on. Higher strength catches deeper interactions but requires more tests.
+**Equivalence class** — A label grouping values expected to take the same path through the system. Declared in `class` on a value object.
 
-### Strength
+**Boundary value** — A value at or immediately beside the edge of a numeric range. A parameter carrying `type` and `range` expands into six of them: one outside each edge, each edge, and one inside each edge.
 
-The number of parameters in each coverage unit. For strength t, every possible combination of values from any t parameters must appear in the test suite.
+**Sub-model** — A named group of parameters given a strength of its own, so one group can be covered more deeply than the rest of the model. Declared in `subModels`.
 
-| Strength | Coverage | Test-count implication |
-|----------|----------|------------------------|
-| 2 | All pairs | Usually much smaller than exhaustive testing |
-| 3 | All triples | Usually requires more rows than pairwise coverage |
-| t | All t-tuples | Depends on parameter domains, constraints, and the generator |
+**Weight** — A preference between values that would close the same number of gaps. Declared in `weights`. A higher weight makes a value likelier to be picked, never certain, and never changes whether the suite reaches full coverage.
 
-There is no general test-count formula for a concrete constrained model. Treat
-`stats` as an estimate and generated coverage as the result to verify.
+**Seed test** — A row required to appear in the output of a generation run. Declared in `seeds`. The generator keeps seed rows in order and fills the remaining gaps around them.
 
-### Parameter
+**Constraint** — A boolean expression over parameter values that every generated row must satisfy. Declared in `constraints`; the syntax is [Constraint syntax](constraints.md).
 
-A dimension of variation in the system under test. Each parameter has a finite set of values.
-
-### Value
-
-One of the discrete options for a parameter. Values are strings internally but can represent numbers, booleans, or any discrete choice.
-
-### Test Case
-
-A complete assignment of one value to each parameter. A single row in the covering array.
-
-### Tuple
-
-A specific combination of values from t different parameters. For example, with strength 2, `(os=Windows, browser=Chrome)` is a tuple.
+**Test ceiling** — The largest number of rows a run may produce, declared in `maxTests`. Zero means no limit.
 
 ## Coverage
 
-### Coverage Ratio
+**Test case** — A complete assignment of one value to every parameter. One row of `result.tests`.
 
-The fraction of required t-wise tuples that appear in the test suite. Ranges from 0.0 to 1.0. coverwise targets 1.0 (100%).
+**Covering array** — A set of test cases in which every required tuple appears at least once. It is what `generate` returns.
 
-### Uncovered Tuple
+**Tuple** — A combination of values drawn from t different parameters, such as `(os=Windows, browser=Chrome)`. Coverage is counted in tuples rather than in rows.
 
-A required t-wise combination that does not appear in any test case. coverwise reports these in human-readable format.
+**Coverage unit** — The same object named from the coverage side: one tuple the suite is required to contain. `result.stats.totalTuples` counts them.
 
-### Total Tuples
+**Strength (t)** — How many parameters a coverage unit draws from. Declared in `strength`; 2 is pairwise and the default, and `subModels[].strength` overrides it for one group. Strength is a property of the coverage unit, not of the test case, which always assigns every parameter.
 
-The number of required t-wise combinations after exclusions. Tuples containing a
-value marked invalid are excluded from positive coverage. With constraints, a
-tuple is excluded only if no full assignment of valid values can complete it
-while satisfying every constraint.
+**Required universe** — The set of coverage units a suite has to contain: every t-tuple of the model, minus those holding an invalid value and those no constraint-satisfying row could ever hold. `result.stats.totalTuples` is its size, and [Constraints and the required universe](primer/constraints-and-the-universe.md) works through how a constraint shrinks it.
 
-## Constraints
+**Coverage ratio** — Covered units divided by required units, from 0 to 1. `result.coverage` after generation, `report.coverageRatio` after analysis. An empty universe is reported as fully covered.
 
-### Constraint
+**Uncovered tuple** — A required unit no row in the suite holds. `result.uncovered` and `report.uncovered` list them, each with a readable `display` string; `uncoveredCount` is the total and `omittedUncovered` says how many the list left out.
 
-A boolean expression that defines invalid parameter combinations. Positive test
-cases violating constraints are never generated. For coverage accounting, a
-partial tuple is removed only when no valid full completion can satisfy all
-constraints.
+**Invalid test row** — A row in an analyzed suite that the parameter model does not describe, because it is missing a parameter or names a value the model never declared. `report.invalidTests` names each one with a readable reason, and such rows are left out of the coverage accounting.
 
-### Constraint Pruning
+**Negative test** — A row carrying exactly one invalid value, so a rejection can be attributed to that value alone. `result.negativeTests` holds them, separately from `result.tests`.
 
-During test case construction, the generator evaluates constraints on partial assignments and prunes branches that would lead to violations. This is more efficient than generate-and-filter.
+**Negative coverage** — The same accounting applied to tuples that hold one invalid value. `result.negativeCoverage`.
 
-## Advanced Features
+**Class coverage** — The same accounting applied at equivalence-class level rather than value level. `result.classCoverage`, present when any value declares a `class`.
 
-### Sub-Model
+## Generation
 
-A group of parameters with a different strength than the default. Allows mixed-strength coverage — e.g., pairwise overall, but 3-wise for critical parameters.
+**Generate** — Build a covering array from a model. `generate`.
 
-### Seed Test
+**Analyze** — Measure an existing suite against a model, by enumerating the required universe independently of the generator. `analyzeCoverage`.
 
-An existing test case provided as input. The generator preserves seed tests and generates additional tests to fill coverage gaps.
+**Extend** — Keep an existing suite verbatim as the prefix of the result and append only the rows that close its gaps. `extendTests`.
 
-### Negative Test
+**Model estimate** — Sizing a model without building a suite for it. `estimateModel` reports `totalTuples` and `estimatedTests`, the second of which bounds nothing in either direction.
 
-A test case containing exactly one invalid value. Used to verify that the system
-correctly rejects bad input. coverwise generates these separately from values
-marked as `invalid`; invalid values never count toward positive coverage.
+**Greedy construction** — The algorithm coverwise uses. Each new row is chosen to close as many still-open coverage units as it can, which yields near-optimal suites without searching for the true minimum.
 
-Negative generation targets feasible requested-strength tuples containing one
-invalid value. A `maxTests` limit applies to both positive and negative rows, so
-negative generation can be incomplete. Check `negativeCoverage` and `warnings`
-for the covered and omitted negative tuples.
+**Constraint pruning** — Evaluating constraints against a partial assignment while a row is being built, so a violating row is never constructed and then discarded.
 
-### Equivalence Class
+**RNG seed** — The number that fixes every random choice the generator makes. Declared in `seed`, default 0.
 
-A grouping of parameter values that are expected to behave similarly. coverwise tracks coverage at the class level in addition to value level.
+**Determinism** — The property that the same valid model and the same seed produce the same suite. What that covers, and what it does not, is [Determinism](determinism.md).
 
-### Boundary Value
+## Where to go next
 
-A value at or near the edge of a valid range (minimum, maximum, and adjacent values). coverwise can auto-expand numeric ranges into boundary values.
-
-### Weight
-
-A hint to the generator about value preference. When multiple values offer equal coverage improvement, one is chosen by weighted random selection — the probability of picking a value is proportional to its weight, so a higher weight makes a value more likely (not guaranteed) to be chosen. Does not affect coverage completeness.
-
-## Algorithm
-
-### Greedy Construction
-
-The algorithm used by coverwise. For each test case, it evaluates candidates and selects the one that covers the most uncovered tuples. Produces near-optimal covering arrays in practice.
-
-### Determinism
-
-Given the same input parameters, constraints, strength, and seed, coverwise produces identical output. This makes test generation reproducible across environments.
+- [Primer](primer/index.md) — the concepts above taught in prerequisite order, worked on small models.
+- [Constraint syntax](constraints.md) — the expression language behind the constraint entry.
+- [JavaScript API](js-api.md) — the declarations every field named here belongs to.
+- [Determinism](determinism.md) — what a seed guarantees and across which surfaces.
+- [Questions and limitations](faq.md) — the behaviour behind the terms, including what happens when the test ceiling binds.

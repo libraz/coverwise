@@ -1,34 +1,68 @@
 # CLI リファレンス
 
-Linux（x86_64 / aarch64）または macOS 14 以降の Apple Silicon では、PyPI から `coverwise` native CLI をインストールできます。
+`coverwise` 実行ファイルのリファレンスです。4 つのコマンド、それぞれが読み書きする JSON、そしてそれぞれが返す終了コードを扱います。シェルスクリプト、CI ジョブ、coverwise のバインディングがない言語から coverwise を動かす読者に向けたページで、語彙は[タプルとカバレッジ](primer/tuples-and-coverage.md)と[強度](primer/strength.md)のものを前提とし、ここでは再説明しません。実行ファイルの導入と最初のスイート生成は[はじめかた](getting-started.md)にあります。
+
+入力パスにはいずれも `-` を指定でき、その JSON を標準入力から読み込みます。標準入力は一度しか読めないため、入力を 2 つ取るコマンドではそのうち 1 つにだけ `-` を指定できます。同じ呼び出しで 2 つ目の `-` を渡した場合は、空として読むのではなく拒否されます。
+
+## 実行ファイルのインストール
+
+PyPI パッケージにはネイティブの実行ファイルと、それを駆動する薄い Python ラッパーが入っています。Python 3.10 以上が必要で、Linux では wheel が `manylinux_2_28` としてビルドされているため glibc 2.28 以上が必要です。
 
 ```bash
 pip install coverwise
 ```
 
-native CLIはnpm packageには含まれません。Linux x64版は
-[GitHub Releases](https://github.com/libraz/coverwise/releases) からも取得できます。ソースbuild時の
-pathは`build/bin/coverwise`で、CMake install後は指定prefix配下の`bin/coverwise`です。
+wheel があるのは Linux x86_64、Linux aarch64、macOS 14 以降の Apple Silicon です。npm パッケージには実行ファイルは含まれません。
 
-`coverwise` コマンドラインツールは JSON 入力を読み込み、JSON 出力を書き出します。
+Python を導入していない場合は、[GitHub Releases](https://github.com/libraz/coverwise/releases)の Linux x64 アーカイブを使ってください。これは実行ファイル単体ではなく、完全なインストールツリーです。`bin/coverwise` に加えて、ライブラリ、ヘッダ、[C++ API](cpp-api.md)が説明する CMake パッケージが含まれます。展開してその場の `bin/coverwise` を実行するか、ツリーごと prefix 配下に配置してください。
 
-入力 path にはいずれも `-` を指定でき、その JSON を標準入力から読み込みます。標準入力は一度しか読めないため、入力を 2 つ取るコマンドでは、そのうち 1 つに `-` を指定できます。
+それ以外の環境ではソースからビルドします。実行ファイルは `build/bin/coverwise` に置かれ、`cmake --install` を実行すると指定した prefix 配下の `bin/coverwise` に配置されます。
 
-すべてのコマンド出力は CLI schema version `1` を使用し、`"schemaVersion": 1` を含みます。
-v1 では空の配列フィールドも常に出力し、suggestionを`{ description, testCase }`形式へ変更し、
-statsの名称を`subModelCount`、`constraintCount`、`parameters`へ統一しています。
+```bash
+make release
+```
+
+## usage テキストを読む
+
+`--help` と `-h` は usage テキストを標準出力へ書き、終了コード `0` で終わります。そのままリダイレクトやパイプに渡せます。
+
+```bash
+coverwise --help
+```
+
+```text
+Usage:
+  coverwise generate <input.json>
+  coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [--constraints <file.json>]
+  coverwise extend --existing <tests.json> <input.json>
+  coverwise stats <input.json>
+
+Any input path may be '-' to read that JSON from standard input.
+
+Exit codes:
+  0 = OK (coverage 100%)
+  1 = Constraint error
+  2 = Insufficient coverage
+  3 = Invalid input
+```
+
+呼び出し方が誤っている場合は、同じテキストを標準エラーへ書き、終了コード `3` で終わります。
+
+`--version` はありません。`coverwise --version` は未知のコマンドとして扱われ、`Unknown command: --version` に続けて usage テキストを標準エラーへ書き、終了コード `3` で終わります。
 
 ## コマンド
 
 ### `generate`
 
-JSON 仕様からカバリングテストスイートを生成します。
+JSON のモデルからカバリング配列となるテストスイートを生成します。
 
 ```bash
 coverwise generate <input.json> [> output.json]
 ```
 
-**入力フォーマット:**
+モデルは唯一の位置引数です。`generate` にフラグはありません。
+
+**入力フォーマット**
 
 ```json
 {
@@ -44,12 +78,11 @@ coverwise generate <input.json> [> output.json]
 }
 ```
 
-`parameters` のみ必須。他のフィールドはすべてオプションで、[JavaScript API](js-api.md) が
-`GenerateInput` として文書化しているものと同じフィールドです。
+必須なのは `parameters` だけで、パラメータを 1 つ以上持つ必要があります。残りのフィールドは任意で、[JavaScript API](js-api.md)が `GenerateInput` として文書化しているものと同じです。
 
 | フィールド | 定義域 |
 |-----------|--------|
-| `strength` | 正の整数。デフォルトは `2`（ペアワイズ）。 |
+| `strength` | 4294967295 以下の正の整数。パラメータ数を超えることはできません。デフォルトは `2`（ペアワイズ）。 |
 | `seed` | `[0, 4294967295]` の uint32 整数。デフォルトは `0`。 |
 | `maxTests` | `[0, 4294967295]` の uint32 整数。`0` は上限なしで、これがデフォルト。ポジティブとネガティブを合わせたスイートに上限をかけます。 |
 | `constraints` | 制約式の配列。[制約構文](constraints.md) を参照。 |
@@ -57,18 +90,11 @@ coverwise generate <input.json> [> output.json]
 | `seeds` | 出発点とするテストケースの配列。形式は `tests` 出力と同じオブジェクト形式。 |
 | `subModels` | `{ "parameters": [...], "strength": n }` の配列。指定したグループに独自の強度を与えます。 |
 
-パラメータは離散パラメータか境界パラメータのどちらかです。境界パラメータは
-`"type": "integer"` または `"type": "float"` と、両端を含む `"range": [min, max]` を
-併せて持ち、coverwise がその範囲を端と端付近の値に展開します。`"values"` は依然として
-必須です。値は範囲から得られるため通常は空配列にしますが、そこに列挙した値は展開結果と
-併せて保持されます。`"step"` のデフォルトは `1` で、`"type": "integer"` では `1` のみ
-指定できます。`"type"` だけ、あるいは `"range"` だけを宣言した場合は終了コード `3` で
-拒否します。
+パラメータオブジェクトは `name` と `values` を持ち、境界パラメータではさらに `type`・`range`・`step` を持ちます。パラメータは離散パラメータか境界パラメータのどちらかです。境界パラメータは `"type": "integer"` または `"type": "float"` と、両端を含む `"range": [min, max]` を併せて持ち、coverwise がその範囲を端と端付近の値に展開します。`"values"` は依然として必須です。値は範囲から得られるため通常は空配列にしますが、そこに列挙した値は展開結果と併せて保持されます。`"step"` のデフォルトは `1` で、`"type": "integer"` では `1` のみ指定できます。`"type"` だけ、あるいは `"range"` だけを宣言した場合は終了コード `3` で拒否します。
 
-個々の値は文字列ではなくオブジェクトでも記述できます。[パラメータ値のフォーマット](#パラメータ値のフォーマット)
-を参照してください。
+個々の値は文字列ではなくオブジェクトでも記述できます。[パラメータ値のフォーマット](#パラメータ値のフォーマット)を参照してください。
 
-**出力フォーマット:**
+**出力フォーマット**
 
 ```json
 {
@@ -99,42 +125,36 @@ coverwise generate <input.json> [> output.json]
 }
 ```
 
-これは、同梱ジェネレータで上記の入力を実行した正確な結果を、読みやすさのために
-改行したものです。CLI は出力を 1 行で書き出します。制約により
-`os=Windows, browser=Safari` は実行不能となるため、要求強度のペアは8個残ります。
-`coverage` は往復可能な最短形式の JSON 数値なので、完全カバレッジは `1.0` ではなく
-`1` になります。固定した入力とシードに対する出力順は決定的ですが、バージョンをまたぐ
-順序の契約として利用しないでください。
+これは同梱ジェネレータで上記の入力を実行した正確な結果を、読みやすさのために改行したものです。CLI は出力を 1 行で書き出します。制約により `os=Windows, browser=Safari` は実行不能となるため、要求強度のペアは 8 個残ります。`coverage` は往復可能な最短形式の JSON 数値なので、完全カバレッジは `1.0` ではなく `1` になります。固定した入力とシードに対する出力順は決定的ですが、バージョンをまたぐ順序の契約ではありません。
 
-`"invalid": true` とした値はポジティブカバレッジから除外され、別のネガティブテストとして
-処理されます。無効値がある場合、出力には `negativeCoverage`（`totalTuples`、
-`coveredTuples`、`omittedTuples`、`coverageRatio`）も含まれます。`maxTests` はポジティブと
-ネガティブを合わせたスイートに制限をかけるため、ネガティブ生成は未完了になることがあり
-ます。すべてのネガティブタプルが出力されたと決めつけず、`negativeCoverage` と `warnings`
-を確認してください。
+`"invalid": true` とした値はポジティブカバレッジから除外され、別の異常系テストとして処理されます。無効値がある場合、出力には `negativeCoverage`（`totalTuples`・`coveredTuples`・`omittedTuples`・`coverageRatio`）も含まれます。`maxTests` はポジティブとネガティブを合わせたスイートに制限をかけるため、ネガティブの生成が未完了になることがあります。すべてのネガティブタプルが出力されたと決めつけず、`negativeCoverage` と `warnings` を確認してください。
 
 ### `analyze`
 
-既存テストスイートの t-wise カバレッジを分析します。
+既存のテストスイートの t-wise カバレッジを分析します。
 
 ```bash
 coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [--constraints <file.json>]
 ```
 
-- `--params` — パラメータ定義の JSON ファイル
-- `--tests` — テストケースの JSON ファイル
-- `--strength` — 相互作用の強度（デフォルト: `--params` のモデルが持つ `strength`、なければ 2）
-- `--constraints` — 制約文字列の JSON ファイル（任意）。`--params` のモデルが宣言した制約を置き換えます。タプルがカバレッジの対象から除外されるのは、すべての制約を満たす有効値の完全な割り当てへ補完できない場合だけです。部分的な制約評価だけを違反とみなすことなく、制約付きで完全にカバーされたスイートは 100% と報告されます。
+| フラグ | 引数 | デフォルト |
+|--------|------|-----------|
+| `--params` | パスまたは標準入力。パラメータ配列そのもの、あるいは `parameters` と、任意で `constraints`・`strength` を持つオブジェクト。必須。 | — |
+| `--tests` | パスまたは標準入力。テスト配列そのもの、あるいは `generate` が書き出す schema-v1 エンベロープ。必須。 | — |
+| `--strength` | 4294967295 以下の正の整数。 | `--params` のオブジェクトが宣言する `strength`、なければ `2` |
+| `--constraints` | パスまたは標準入力。式の配列そのもの、あるいは `constraints` 配列を持つオブジェクト。 | `--params` のオブジェクトが宣言する制約 |
+
+それ以外の引数は `unknown argument` と終了コード `3` で拒否されます。タプルがカバレッジの対象から除外されるのは、すべての制約を満たす有効値の完全な割り当てへ補完できない場合だけです。そのため、制約付きで完全にカバーされたスイートは、部分的な制約評価だけを違反とみなされることなく 100% と報告されます。
 
 `--tests` と `--existing` は、テスト配列そのものに加え `generate` が出力する schema-v1 エンベロープも受け付けます。したがって `coverwise generate input.json > tests.json` の出力をそのまま後続コマンドへ渡せます。
 
-**強度をどこから取るか。** `--params` がパラメータ配列そのものではなくモデルオブジェクトの場合、その `strength` フィールドがカバレッジの対象範囲を定めるため、測定にもその値を使います。同じモデルを `generate` に通してから `analyze` に渡す際に、強度を書き直す必要はありません。`--strength` を明示した場合はモデルの値より優先されます。`--strength` はモデルの性質ではなく、その実行のために選ぶ分析用のつまみだからです。どちらも指定がなければペアワイズです。
+**強度をどこから取るか**。`--params` がパラメータ配列そのものではなくモデルオブジェクトの場合、その `strength` フィールドが必要タプル集合を定めるため、測定にもその値を使います。同じモデルを `generate` に通してから `analyze` に渡す際に、強度を書き直す必要はありません。`--strength` を明示した場合はモデルの値より優先されます。`--strength` はモデルの性質ではなく、その実行のために選ぶ分析用のつまみだからです。どちらも指定がなければペアワイズです。
 
-`subModels` を宣言したモデルは終了コード `3` で拒否します。サブモデルはモデルの一部に独自の強度を与える仕組みですが、カバレッジレポートは 1 つの対象範囲を 1 つの強度で測るため、これを表現できません。グループごとに `--strength` で強度を指定して個別に分析してください。
+`subModels` を宣言したモデルは終了コード `3` で拒否します。サブモデルはモデルの一部に独自の強度を与える仕組みですが、カバレッジレポートは 1 つの必要タプル集合を 1 つの強度で測るため、これを表現できません。グループごとに `--strength` で強度を指定して個別に分析してください。
 
-**`--constraints` はモデルの制約をどう扱うか。** `--constraints` を明示した場合、そのファイルは `--params` が宣言した制約を置き換えます。両者がマージされることはないため、ファイルの内容が測定に使う制約のすべてになります。ファイルの形式は、式の配列そのものか、`constraints` 配列を持つオブジェクトのどちらかです。それ以外のトップレベル文書は終了コード `3` で拒否します。制約を持たないモデルに対して `jq '.constraints'` が書き出す `null` 単体も同様です。こうした文書を「制約なし」と読んでしまうと、制約のない対象範囲を測ってカバレッジ不足を報告し、その理由を説明するエラー出力が何も残らないためです。
+**`--constraints` はモデルの制約をどう扱うか**。`--constraints` を明示した場合、そのファイルは `--params` が宣言した制約を置き換えます。両者がマージされることはないため、ファイルの内容が測定に使う制約のすべてになります。配列そのものでも `constraints` 配列を持つオブジェクトでもないトップレベル文書は、終了コード `3` で拒否します。制約を持たないモデルに対して `jq '.constraints'` が書き出す `null` 単体も同様です。こうした文書を「制約なし」と読んでしまうと、制約のない集合を測ってカバレッジ不足を報告し、その理由を説明するエラー出力が何も残らないためです。
 
-**`--params` ファイル:**
+**`--params` ファイル**
 
 ```json
 {
@@ -145,7 +165,7 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
 }
 ```
 
-**`--tests` ファイル:**
+**`--tests` ファイル**
 
 ```json
 [
@@ -159,7 +179,7 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
 ]
 ```
 
-**出力:**
+**出力**
 
 ```json
 {
@@ -189,32 +209,24 @@ coverwise analyze --params <params.json> --tests <tests.json> [--strength <n>] [
 }
 ```
 
-9 ペアのうち 7 ペアしかスイートに現れないため、`analyze` は終了コード `2` を返します。
-`uncoveredCount` は未カバータプルの総数です。`uncovered` 配列は診断用の上限で打ち切られ、
-そこから漏れた件数が `omittedUncovered` に入るため、配列の要素数は常に
-`uncoveredCount - omittedUncovered` と一致します。`coverageRatio` は表示用に丸めず、
-往復可能な最短形式で書き出されます。
+9 ペアのうち 7 ペアしかスイートに現れないため、`analyze` は終了コード `2` を返します。`uncoveredCount` は未網羅タプルの総数です。`uncovered` 配列は診断用の上限で打ち切られ、そこから漏れた件数が `omittedUncovered` に入るため、配列の要素数は常に `uncoveredCount - omittedUncovered` と一致します。`coverageRatio` は表示用に丸めず、往復可能な最短形式で書き出されます。
 
-**モデルが記述していない行。** `--params` のモデルが宣言していないパラメータや値を
-含むテストケースは分析対象になりません。除外の理由とともに `invalidTests` に報告され、
-カバレッジには一切寄与しないため、比率は残りの行だけで測られます。レポート全体は
-それでも標準出力に書き出され、そのうえで `analyze` は終了コード `3` を返します。
-無効な行はカバレッジ不足より優先されます。モデルと合っていないスイートは、それについての
-カバレッジ値が意味を持つ前に直す必要があるからです。`coverageRatio` より先に
-`invalidTests` を読んでください。
+**モデルが記述していない行**。`--params` のモデルが宣言していないパラメータや値を含むテストケースは分析対象になりません。除外の理由とともに `invalidTests` に報告され、カバレッジには一切寄与しないため、比率は残りの行だけで測られます。レポート全体はそれでも標準出力に書き出され、そのうえで `analyze` は終了コード `3` を返します。無効な行はカバレッジ不足より優先されます。モデルと合っていないスイートは、それについてのカバレッジ率が意味を持つ前に直す必要があるからです。カバレッジ率を読む前に `invalidTests` を読んでください。
 
 ### `extend`
 
-既存テストスイートを拡張してカバレッジを改善します。
+既存のテストスイートを拡張してカバレッジを改善します。
 
 ```bash
 coverwise extend --existing <tests.json> <input.json> [> output.json]
 ```
 
-- `--existing` — 現在のテストケースの JSON ファイル
-- `<input.json>` — `generate` が読むものと同じモデル
+| 引数 | 値 | デフォルト |
+|------|-----|-----------|
+| `--existing` | パスまたは標準入力。テスト配列そのもの、あるいは `generate` が書き出す schema-v1 エンベロープ。必須。 | — |
+| `<input.json>` | パスまたは標準入力。`generate` が読むものと同じモデル文書。必須。 | — |
 
-**`--existing` ファイル:**
+**`--existing` ファイル**
 
 ```json
 [
@@ -223,7 +235,7 @@ coverwise extend --existing <tests.json> <input.json> [> output.json]
 ]
 ```
 
-**入力フォーマット:**
+**入力フォーマット**
 
 ```json
 {
@@ -236,7 +248,7 @@ coverwise extend --existing <tests.json> <input.json> [> output.json]
 }
 ```
 
-**出力フォーマット:**
+**出力フォーマット**
 
 ```json
 {
@@ -268,26 +280,21 @@ coverwise extend --existing <tests.json> <input.json> [> output.json]
 }
 ```
 
-`extend` は `generate` と同じエンベロープを返すため、後続の処理では両者を差し替えられます。
-既存テストが与えられた順のまま先頭に並び、その後ろに新規テストが続きます。`--existing` の
-件数より後ろの行が、その実行で追加された分です。`stats` と `coverage` は追加分ではなく
-結合後のスイートを表します。
+`extend` は `generate` と同じエンベロープを返すため、後続の処理では両者を差し替えられます。既存テストが与えられた順のまま先頭に並び、その後ろに新規テストが続きます。`--existing` の件数より後ろの行が、その実行で追加された分です。`stats` と `coverage` は追加分ではなく結合後のスイートを表します。
 
-`extend` は `--existing` とモデルの `seeds` という 2 か所から行を読み、そのどちらも、
-その実行が持つ 1 つの合計バイト数の予算へ計上されます。片方だけなら収まっても、両方を
-合わせると収まらないことがあります。[入力の上限](#入力の上限) を参照してください。
+`extend` は `--existing` とモデルの `seeds` という 2 か所から行を読み、そのどちらも、その実行が持つ 1 つの合計バイト数の予算へ計上されます。片方だけなら収まっても、両方を合わせると収まらないことがあります。[入力上限](limits.md)を参照してください。
 
 ### `stats`
 
-生成を実行せずにモデル統計をプレビューします。
-
-`stats` は、制約で除外する前の raw タプル数を推定しますが、報告前に制約構文とパラメータ参照を検証します。
+生成を実行せずにモデルの統計をプレビューします。
 
 ```bash
 coverwise stats <input.json>
 ```
 
-**入力:**
+モデルは唯一の位置引数です。`stats` にフラグはありません。制約の構文とパラメータ参照を検証したうえで、制約による除外前の生のタプル数の見積もりを報告します。
+
+**入力**
 
 ```json
 {
@@ -303,7 +310,7 @@ coverwise stats <input.json>
 }
 ```
 
-**出力:**
+**出力**
 
 ```json
 {
@@ -323,23 +330,11 @@ coverwise stats <input.json>
 }
 ```
 
-`totalTuples` は制約で除外する前のペア数（3·3 + 3·2 + 3·2）です。`estimatedTests` は
-最大値数・強度・パラメータ数から求めて `totalTuples` で頭打ちにした、大まかな
-見積もりです。上限でも下限でもなく、`generate` が返すテストケース数は、このモデルの
-ようにこれを下回ることも、上回ることもあります。
-
-## 終了コード
-
-| コード | 意味 |
-|-------|------|
-| `0` | 成功。100%カバレッジ達成。 |
-| `1` | 制約エラー。 |
-| `2` | カバレッジ不足（例: `maxTests` 制限到達）。 |
-| `3` | 入力不正。 |
+`totalTuples` は制約で除外する前のペア数（3·3 + 3·2 + 3·2）です。`estimatedTests` は最大値数・強度・パラメータ数から求めて `totalTuples` で頭打ちにした、大まかな見積もりです。上限でも下限でもなく、`generate` が返すテストケース数は、このモデルのようにこれを下回ることも、上回ることもあります。
 
 ## パラメータ値のフォーマット
 
-値はシンプルな文字列またはオブジェクトで指定できます：
+値は単純な文字列でも、オブジェクトでも指定できます。
 
 ```json
 {
@@ -357,97 +352,232 @@ coverwise stats <input.json>
 }
 ```
 
-1 つのパラメータの中では、すべての値とすべてのエイリアスが、ASCII の大小文字を畳み込んだ後も互いに異なる名前になっている必要があります。`Chrome` を値と `Chromium` のエイリアスの両方に挙げる場合や、`Chrome` と `chrome` を並べる場合は、大小文字を区別しない解決の結果が一意に定まらないため、終了コード `3` で拒否されます。パラメータ名どうしにも同じ規則が適用されます。
+値オブジェクトは `value`（文字列・数値・真偽値）を持ち、任意で `invalid`・`aliases`・`class` を持ちます。1 つのパラメータの中では、すべての値とすべてのエイリアスが、ASCII の大小文字を畳み込んだ後も互いに異なる名前になっている必要があります。`Chrome` を値と `Chromium` のエイリアスの両方に挙げる場合や、`Chrome` と `chrome` を並べる場合は、大小文字を区別しない解決の結果が一意に定まらないため、終了コード `3` で拒否されます。パラメータ名どうしにも同じ規則が適用されます。
 
 書き込んだ値名はすべてこの大小文字を区別しない解決で扱われます。`seeds`・`tests`・`existing` の行に書いた値、`weights` のキー、制約式のオペランドは、ASCII の大小文字がどの表記であっても、また値そのものでもエイリアスでも、同じ値に解決されます。1 つのパラメータ内で 2 つの `weights` キーが同じ値を指すことはできません。適用できる重みは一方だけだからです。ただし、いずれかがモデルの宣言どおりの綴りであれば、そちらが優先されることで一意に決まります。`{"Windows": 5, "wINdows": 9}` は受理され `Windows` に `5` が付きますが、`{"wINdows": 5, "WINDOWS": 9}` は終了コード `3` になります。
 
+## 出力フィールド
+
+ここまでの出力はいずれも `"schemaVersion": 1` から始まります。これは CLI 自身の出力スキーマのバージョンです。v1 の形では空の配列フィールドも常に出力し、提案を `{ description, testCase }` として表し、`stats` のフィールド名を `subModelCount`・`constraintCount`・`parameters` に統一しています。
+
+`generate` と `extend` は、この順で `schemaVersion`、`tests`、`uncoveredCount`、`omittedUncovered`、`negativeTests`、無効値を宣言したモデルでは `negativeCoverage`、`coverage`、`uncovered`、`stats`、クラスを宣言したモデルでは `classCoverage`、`suggestions`、`warnings`、`strength`、実行が失敗したときは `error` を書き出します。`analyze` は `schemaVersion`、`totalTuples`、`coveredTuples`、`coverageRatio`、`uncovered`、`uncoveredCount`、`omittedUncovered`、`invalidTests` を書き出します。`stats` は `schemaVersion`、`parameterCount`、`totalValues`、`strength`、`totalTuples`、`estimatedTests`、`subModelCount`、`constraintCount`、`parameters` を書き出します。
+
+### クラスカバレッジ
+
+値には `class` を宣言でき、同じパラメータの中で同じ `class` を宣言した値どうしが 1 つの等価クラスになります。いずれかの値がクラスを宣言していると、`generate` と `extend` の出力に `classCoverage` が加わります。
+
+```json
+{
+  "parameters": [
+    {
+      "name": "browser",
+      "values": [
+        { "value": "Chrome", "class": "blink" },
+        { "value": "Edge", "class": "blink" },
+        { "value": "Firefox", "class": "gecko" }
+      ]
+    },
+    {
+      "name": "filesystem",
+      "values": [
+        { "value": "NTFS", "class": "journaling" },
+        { "value": "FAT32", "class": "flat" }
+      ]
+    }
+  ]
+}
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "tests": [
+    { "browser": "Edge", "filesystem": "NTFS" },
+    { "browser": "Edge", "filesystem": "FAT32" },
+    { "browser": "Firefox", "filesystem": "NTFS" },
+    { "browser": "Chrome", "filesystem": "FAT32" },
+    { "browser": "Chrome", "filesystem": "NTFS" },
+    { "browser": "Firefox", "filesystem": "FAT32" }
+  ],
+  "uncoveredCount": 0,
+  "omittedUncovered": 0,
+  "negativeTests": [],
+  "coverage": 1,
+  "uncovered": [],
+  "stats": {
+    "totalTuples": 6,
+    "coveredTuples": 6,
+    "testCount": 6
+  },
+  "classCoverage": {
+    "totalClassTuples": 4,
+    "coveredClassTuples": 4,
+    "classCoverageRatio": 1
+  },
+  "suggestions": [],
+  "warnings": [],
+  "strength": 2
+}
+```
+
+クラスカバレッジは、クラスを宣言したパラメータだけを対象に、モデルの強度をその個数で頭打ちにして測ります。上のモデルはどちらのパラメータも 2 クラスなので、クラス側の必要タプル集合は 2·2 = 4 組、`stats` が数える値のペアは 3·2 = 6 組になります。
+
+### 異常系テストとテスト件数
+
+`stats.testCount` はポジティブと異常系のケースを合算した件数です。一方 `stats.totalTuples` と `stats.coveredTuples` はポジティブなスイートだけを表します。無効値を 1 つ持つモデルで違いが見えます。
+
+```json
+{
+  "parameters": [
+    { "name": "os", "values": ["Windows", "Linux"] },
+    { "name": "browser", "values": ["Chrome", "Firefox", { "value": "IE", "invalid": true }] }
+  ]
+}
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "tests": [
+    { "os": "Linux", "browser": "Chrome" },
+    { "os": "Windows", "browser": "Firefox" },
+    { "os": "Windows", "browser": "Chrome" },
+    { "os": "Linux", "browser": "Firefox" }
+  ],
+  "uncoveredCount": 0,
+  "omittedUncovered": 0,
+  "negativeTests": [
+    { "os": "Windows", "browser": "IE" },
+    { "os": "Linux", "browser": "IE" }
+  ],
+  "negativeCoverage": {
+    "totalTuples": 2,
+    "coveredTuples": 2,
+    "omittedTuples": 0,
+    "coverageRatio": 1
+  },
+  "coverage": 1,
+  "uncovered": [],
+  "stats": {
+    "totalTuples": 4,
+    "coveredTuples": 4,
+    "testCount": 6
+  },
+  "suggestions": [],
+  "warnings": [],
+  "strength": 2
+}
+```
+
+`testCount` は 6 で、`tests` の 4 行と `negativeTests` の 2 行の合計です。`totalTuples` は有効値だけで数えた 2·2 = 4 組です。実行規模を `testCount` から見積もる場合は両方のスイートを数えており、カバレッジを比べる場合はポジティブなスイートだけを読んでいることになります。
+
+### error オブジェクト
+
+`generate` や `extend` の実行が失敗した場合もレポートは書き出され、末尾に `error` オブジェクトが付きます。同時には成り立たない 2 つの制約がその例です。
+
+```json
+{
+  "parameters": [
+    { "name": "os", "values": ["Windows", "macOS", "Linux"] },
+    { "name": "browser", "values": ["Chrome", "Firefox", "Safari"] }
+  ],
+  "constraints": [
+    "os = Windows",
+    "os != Windows"
+  ]
+}
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "tests": [],
+  "uncoveredCount": 0,
+  "omittedUncovered": 0,
+  "negativeTests": [],
+  "coverage": 0,
+  "uncovered": [],
+  "stats": {
+    "totalTuples": 0,
+    "coveredTuples": 0,
+    "testCount": 0
+  },
+  "suggestions": [],
+  "warnings": [
+    "Constraints are unsatisfiable: No complete assignment using valid values satisfies all constraints"
+  ],
+  "strength": 2,
+  "error": {
+    "code": 1,
+    "message": "Constraints are unsatisfiable: No complete assignment using valid values satisfies all constraints"
+  }
+}
+```
+
+同じテキストは `error: ` を前置して標準エラーにも出力され、実行は終了コード `1` で終わります。
+
+`error.code` は JavaScript や Python のサーフェスが使う文字列の語彙ではなく**数値**です。`1` が制約エラー、`2` がカバレッジ不足、`3` が入力不正、`4` がタプル数の爆発です。プロセスの終了コードと同じ数値になりますが、タプル数の爆発だけは例外で、CLI は終了コード `3` を返します。
+
+実行が失敗したときは `error.message` を、成功したときは `warnings` を読んでください。失敗時は両方に同じテキストが入るため、`warnings` だけを読む利用側でもどちらの場合も診断を得られます。成功か失敗かで分岐する利用側は `error` を読み、`warnings` は参考情報として扱ってください。
+
+## 終了コード
+
+| コード | 意味 |
+|-------|------|
+| `0` | コマンドが完了しました。`generate`・`analyze`・`extend` ではカバレッジが 100% に達したことも意味します。`stats` と `--help` ではカバレッジの意味を持ちません。 |
+| `1` | 制約エラー。式が解析できないか、有効値のどの割り当てでも制約を満たせません。 |
+| `2` | カバレッジ不足。理由は問いません。`maxTests` の上限、実現不能なタプル、ペアを取りこぼしたスイートのいずれでもこの値になります。 |
+| `3` | 入力不正、呼び出し方の誤り、または標準出力への書き込み失敗。 |
+
+終了コード `3` はモデルの不正だけではありません。呼び出し方が誤っている場合も `3` です。`analyze` はモデルが記述していない行がスイートに含まれるとき `3` を返します。標準出力への書き込みが失敗した場合、つまりパイプを閉じた読み手、ディスクの空き容量切れ、閉じられたディスクリプタなどでは、`error: cannot write to standard output` を出して `3` で終わります。
+
 ## 入力の上限
 
-どのコマンドも、読み込む入力に同じ上限を適用します。いずれかを超えた場合は終了コード `3` です。
-
-| 項目 | 上限 |
-|------|------|
-| 1 モデルのパラメータ数 | 1,024 |
-| 1 パラメータの値の数 | 16,384 |
-| `tests`・`seeds`・`existing` 配列の行数 | 100,000 |
-| 制約式の数 | 256 |
-| 1 つの文字列の UTF-8 バイト数 | 65,536（64 KiB） |
-| モデル中の文字列の合計 UTF-8 バイト数 | 1,048,576（1 MiB） |
-| ファイルまたは標準入力から読み込む 1 つの JSON 文書のバイト数 | 67,108,864（64 MiB） |
-
-合計バイト数の予算はコマンド 1 回につき 1 つで、コマンドが読むすべての文字列が、読まれた場所で
-そこへ 1 度ずつ計上されます。パラメータ名、値、エイリアス、クラス名、制約式、サブモデルの
-パラメータ名、`weights` オブジェクトが書き出す名前、そして `tests`・`seeds`・`existing` 配列の
-各行の値が対象です。
-
-行は**値**が計上され、キーは計上されません。キーはパラメータ名であり、モデルの文字列として既に
-1 度計上されているためです。行ごとに計上すると同じテキストを行数ぶん数えることになります。
-計上されるのは**文字列**の値だけで、数値や真偽値の行の値は予算を消費しません。
-
-**多くのモデルでは、行数の上限より先にバイト数の予算が効きます。** 100,000 行は上限であって、
-その規模のスイートが受理されるという約束ではありません。1 MiB を 100,000 行に配分すると 1 行
-あたり約 10.5 バイトしか残らず、これに収まるのは極端に幅の狭いモデルだけです。値が 5 バイトの
-文字列で、1 行につき各パラメータの値が 1 つの場合、2 つの上限は次の位置で交わります。
-
-| 1 行あたりのパラメータ数 | 受理される行数 |
-|--------------------------|----------------|
-| 2 | 100,000（行数の上限が先に効く） |
-| 3 | 69,902 |
-| 10 | 20,969 |
-| 100 | 2,094 |
-
-上限は 2 つの次元の関数なので、この数値はモデル自身の文字列が行に比べて十分小さいことを前提と
-しています。名前が長いモデルや値の多いモデルは同じ予算の一部を使うため、この数値は下がります。
-予算超過は終了コード `3` と `Input strings exceed 1048576 UTF-8 bytes` になります。メッセージは
-行数ではなく予算を名指しするため、100,000 行にはるかに満たない位置での拒否はこの上限によるもので
-あって不具合ではありません。値の名前を短くすればそのぶん行数を確保でき、予算に収まらないスイートは
-分割して分析する必要があります。
-
-**文書のバイト数は 3 つ目の上限で、通常は他の 2 つよりはるかに外側にあります。** これはファイルや
-標準入力を読み込む時点、つまり内容をパースする前に適用されるため、波括弧・引用符・コロン・行ごとに
-繰り返されるキーといった JSON の構文も数えます。一方バイト数の予算が数えるのは呼び出し側が与えた
-テキストだけです。幅の広いモデルでは構文が支配的になります。100 パラメータ × 100,002 行は約
-133 MiB の JSON になりますが、そこに含まれる行のテキストは 1 MiB にはるかに届きません。この文書は
-上記のどちらの上限でもなく `file '<path>' exceeds the maximum of 67108864 bytes` で拒否されます。
-これが、呼び出し側が文書のバイト数に先に到達する唯一の形です。メッセージは行ではなく文書を名指し
-するので、スイートについての言明ではなく「このファイルは読み込むには大きすぎる」と読んでください。
-
-パラメータ数の上限は、制約の充足可能性探索を有限に保つためのものです。探索は 1 階層につき 1 パラメータを進むため、探索の深さを抑えるものはパラメータ数のほかにありません。
-
-文書のバイト数は、ファイルの読み込みや標準入力の読み切りに対するメモリ保護であって、CLI が受け付ける入力の条件ではありません。暴走した入力や途切れない入力を際限なくメモリへ読み込むことを防ぎます。通常の幅のモデルであれば他の上限よりはるかに外側にあるため、実際の入力は先にそのいずれかへ到達し、超えた上限そのものを理由に拒否されます。例外は上で述べた形で、幅の広いモデルでは行のテキストがバイト数の予算に十分収まっていても、JSON の構文が文書のバイト数へ先に到達します。
+どのコマンドも、読み込む入力に同じ上限を適用します。いずれかを超えた場合は終了コード `3` です。上限の一覧、どれが先に効くかを決める計算、それぞれのメッセージは[入力上限](limits.md)にまとめてあります。
 
 ## パイプ
 
-標準的な Unix パイプが入力側・出力側とも使えます。入力 path の代わりに `-` を渡すと、その JSON を標準入力から読み込みます。
+標準的な Unix パイプが入力側・出力側とも使えます。入力パスの代わりに `-` を渡すと、その JSON を標準入力から読み込みます。
 
 ```bash
-# 生成して件数を確認
+# Generate and count the suite
 coverwise generate input.json | jq '.tests | length'
 
-# 他のツールに連携
+# Feed output to another tool
 coverwise generate input.json | my-test-runner --from-stdin
 
-# モデルをその場で組み立てて生成
+# Build a model on the fly and generate from it
 jq '{parameters: .matrix}' config.json | coverwise generate -
 
-# 中間ファイルなしで生成結果を測定
+# Measure a generated suite without an intermediate file
 coverwise generate input.json | coverwise analyze --params input.json --tests -
 ```
 
-標準入力は一度しか読めないため、1 つのコマンドの両方の入力に `-` を渡した場合は、空として読むのではなくエラーになります。
+標準入力は一度しか読めないため、1 つのコマンドの両方の入力に `-` を渡した場合は、空として読むのではなく拒否されます。
+
+読み手が途中で止まると、実行は終了コード `3` で終わります。`coverwise generate big.json | head -c 200`、最初の一致で終了する `jq -e`、`q` で抜ける `less` は、いずれもレポートを書いている最中にパイプを閉じます。CLI はこれを `error: cannot write to standard output` と終了コード `3` として報告します。行単位で読む `head` そのものは該当しません。CLI は文書を 1 行で書き出すため、読み手が最初に見る改行がそのまま出力の終わりだからです。パイプラインで `3` を受け取ったときは、入力の誤りより先に、出力を書き切れなかった可能性を疑ってください。
 
 ## 使用例
 
 ```bash
-# 基本的なペアワイズ生成
+# Basic pairwise generation
 coverwise generate input.json
 
-# 3-wise カバレッジ分析
+# 3-wise coverage analysis
 coverwise analyze --params params.json --tests tests.json --strength 3
 
-# 制約付きで既存テストを拡張
-coverwise extend --existing current.json input.json > updated.json
+# Extend an existing suite against a model
+coverwise extend --existing tests.json input.json > updated.json
 
-# モデルサイズの簡易チェック
+# Quick model size check
 coverwise stats input.json | jq '.totalTuples'
 ```
+
+## 次に読むもの
+
+- [はじめかた](getting-started.md) — 各サーフェスでのインストールと、最初のスイート生成
+- [制約構文](constraints.md) — `constraints` 配列が受け付ける式の言語
+- [入力上限](limits.md) — CLI が受け付ける範囲と、上限に達したときの報告
+- [Python API](python-api.md) — 同じ実行ファイルを Python から駆動する方法
+- [C++ API](cpp-api.md) — 実行ファイルを起動する代わりにエンジンをリンクする方法
+- [用語集](glossary.md) — このページが使う語彙
