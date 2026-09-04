@@ -124,22 +124,34 @@ const DelegatedDocument kDocumentsCheckedElsewhere[] = {
 /// root cannot drop it out of coverage the way a `README*.md` pattern would --
 /// it stays enumerated under its new name, or its entry below stops resolving.
 /// Either way the change is announced rather than silent.
-/// @brief Whether a root-level file is written for a reader of the project.
 ///
-/// An instruction file directs how the repository is worked on. The project
-/// publishes it nowhere, the repository does not even keep it under version
-/// control, and it is present in some working copies and not others -- so a
-/// gate that read one would reach a different verdict on a developer's machine
-/// than on a clean checkout. Naming the two spellings costs a line each and is
-/// the whole of what the walk below has to know; the documents themselves stay
-/// discovered rather than listed.
-bool IsInstructionFile(const std::string& filename) {
-  return filename == "CLAUDE.md" || filename == "AGENTS.md" || filename == "AGENT.md";
+/// A file the repository declares it does not keep is passed over. Such a file
+/// is present in some working copies and absent from others, so reading one
+/// would let the gate reach a different verdict on a developer's machine than
+/// on a clean checkout. Which names those are is the repository's own
+/// statement, read from its ignore file rather than repeated here.
+std::set<std::string> UntrackedRootNames() {
+  std::set<std::string> names;
+  std::ifstream ignore_file(std::filesystem::path(COVERWISE_REPO_ROOT) / ".gitignore");
+  std::string line;
+  while (std::getline(ignore_file, line)) {
+    const size_t begin = line.find_first_not_of(" \t\r");
+    if (begin == std::string::npos) continue;
+    const std::string entry = line.substr(begin, line.find_last_not_of(" \t\r") - begin + 1);
+    if (entry.front() == '#' || entry.front() == '!') continue;
+    // Only a bare name is taken. A line carrying a separator or a wildcard
+    // describes a path or a family of them rather than one root-level file, and
+    // reading it as a name would be reading it as something it does not say.
+    if (entry.find_first_of("/*?[") != std::string::npos) continue;
+    names.insert(entry);
+  }
+  return names;
 }
 
 std::vector<std::string> ShippedDocuments() {
   namespace fs = std::filesystem;
   const fs::path root(COVERWISE_REPO_ROOT);
+  const std::set<std::string> untracked = UntrackedRootNames();
   std::vector<std::string> documents;
   std::error_code ec;
   for (fs::directory_iterator it(root, ec), end; it != end; it.increment(ec)) {
@@ -147,7 +159,7 @@ std::vector<std::string> ShippedDocuments() {
     if (!it->is_regular_file()) continue;
     if (it->path().extension() != ".md") continue;
     const std::string filename = it->path().filename().generic_string();
-    if (IsInstructionFile(filename)) continue;
+    if (untracked.count(filename) != 0) continue;
     documents.push_back(filename);
   }
   for (fs::recursive_directory_iterator it(root / "docs", ec), end; it != end; it.increment(ec)) {
