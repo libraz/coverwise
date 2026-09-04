@@ -124,13 +124,38 @@ const DelegatedDocument kDocumentsCheckedElsewhere[] = {
 /// root cannot drop it out of coverage the way a `README*.md` pattern would --
 /// it stays enumerated under its new name, or its entry below stops resolving.
 /// Either way the change is announced rather than silent.
-// What the repository ships is what it tracks, so the build derives this list
-// from the git index rather than from a walk of the working copy: an untracked
-// file -- an agent instruction file, a local draft -- is not a document the
-// project publishes, and a gate that read one would reach a different verdict
-// on a developer's machine than on a clean checkout.
+/// @brief Whether a root-level file is written for a reader of the project.
+///
+/// An instruction file directs how the repository is worked on. The project
+/// publishes it nowhere, the repository does not even keep it under version
+/// control, and it is present in some working copies and not others -- so a
+/// gate that read one would reach a different verdict on a developer's machine
+/// than on a clean checkout. Naming the two spellings costs a line each and is
+/// the whole of what the walk below has to know; the documents themselves stay
+/// discovered rather than listed.
+bool IsInstructionFile(const std::string& filename) {
+  return filename == "CLAUDE.md" || filename == "AGENTS.md" || filename == "AGENT.md";
+}
+
 std::vector<std::string> ShippedDocuments() {
-  std::vector<std::string> documents = {COVERWISE_SHIPPED_DOCUMENTS};
+  namespace fs = std::filesystem;
+  const fs::path root(COVERWISE_REPO_ROOT);
+  std::vector<std::string> documents;
+  std::error_code ec;
+  for (fs::directory_iterator it(root, ec), end; it != end; it.increment(ec)) {
+    if (ec) break;
+    if (!it->is_regular_file()) continue;
+    if (it->path().extension() != ".md") continue;
+    const std::string filename = it->path().filename().generic_string();
+    if (IsInstructionFile(filename)) continue;
+    documents.push_back(filename);
+  }
+  for (fs::recursive_directory_iterator it(root / "docs", ec), end; it != end; it.increment(ec)) {
+    if (ec) break;
+    if (!it->is_regular_file()) continue;
+    if (it->path().extension() != ".md") continue;
+    documents.push_back(fs::relative(it->path(), root).generic_string());
+  }
   std::sort(documents.begin(), documents.end());
   return documents;
 }
