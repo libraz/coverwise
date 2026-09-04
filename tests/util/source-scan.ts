@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -93,149 +94,68 @@ export interface Discovery {
   unclassified: string[];
 }
 
-/** One `.gitignore` line, as a match against a repository-relative path. */
-interface IgnoreRule {
-  negated: boolean;
-  directoryOnly: boolean;
-  pattern: RegExp;
-}
-
 /**
- * Translate a `.gitignore` glob into an anchored regular expression.
- *
- * Bracket expressions carry over as they are, which is what they mean in both
- * notations. An unbalanced bracket produces an invalid expression and throws,
- * which is the direction to fail in: a pattern silently read as something else
- * would drop files from the scan.
- */
-function globToRegExp(glob: string): RegExp {
-  let source = '';
-  for (let index = 0; index < glob.length; index += 1) {
-    const char = glob[index];
-    if (char === '*') {
-      if (glob[index + 1] === '*') {
-        source += '.*';
-        index += 1;
-      } else {
-        source += '[^/]*';
-      }
-      continue;
-    }
-    if (char === '?') {
-      source += '[^/]';
-      continue;
-    }
-    source += char.replace(/[.+^${}()|\\]/, '\\$&');
-  }
-  return new RegExp(`^${source}$`);
-}
-
-/**
- * The repository's own ignore rules.
+ * The repository-relative path of every file the repository tracks.
  *
  * Build trees, vendored dependencies and generated output leave the scan
- * because the repository ignores them, not because a second list here repeats
- * them. Nothing can be dropped from the scan without also being dropped from
- * the repository.
- *
- * The subset of the format the file uses: comments, negations, a trailing
- * slash for directory-only, a leading slash or an interior slash for a rule
- * anchored at the root, and otherwise a match against a name at any depth. Only
- * the root file is read, so a rule written deeper leaves its files in the scan
- * rather than out of it -- the direction that reports too much rather than too
- * little.
+ * because the repository does not track them, not because a second list here
+ * repeats them. Nothing can be dropped from the scan without also being dropped
+ * from the repository.
  */
-function parseIgnoreRules(): IgnoreRule[] {
-  const ignorePath = path.join(REPO_ROOT, '.gitignore');
-  if (!existsSync(ignorePath)) {
-    return [];
-  }
-  const rules: IgnoreRule[] = [];
-  for (const rawLine of readFileSync(ignorePath, 'utf8').split('\n')) {
-    const line = rawLine.trim();
-    if (line.length === 0 || line.startsWith('#')) {
-      continue;
-    }
-    const negated = line.startsWith('!');
-    let glob = negated ? line.slice(1) : line;
-    const directoryOnly = glob.endsWith('/');
-    glob = glob.replace(/\/$/, '');
-    const anchored = glob.startsWith('/') || glob.includes('/');
-    glob = glob.replace(/^\//, '');
-    const body = globToRegExp(glob).source.replace(/^\^|\$$/g, '');
-    rules.push({
-      negated,
-      directoryOnly,
-      pattern: new RegExp(anchored ? `^${body}$` : `^(?:.*/)?${body}$`),
-    });
-  }
-  return rules;
-}
-
-/** Whether the rules ignore a repository-relative path. Later rules win. */
-function isIgnored(
-  rules: readonly IgnoreRule[],
-  relativePath: string,
-  isDirectory: boolean,
-): boolean {
-  const posix = relativePath.split(path.sep).join('/');
-  let ignored = false;
-  for (const rule of rules) {
-    if (rule.directoryOnly && !isDirectory) {
-      continue;
-    }
-    if (rule.pattern.test(posix)) {
-      ignored = !rule.negated;
-    }
-  }
-  return ignored;
+function trackedFiles(): string[] {
+  const listing = execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '-z'], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return listing.split('\0').filter((entry) => entry !== '');
 }
 
 /**
  * Every program source in the repository.
  *
- * Dot-prefixed entries are tool and editor state rather than shipped source;
- * everything else is walked unless the repository ignores it, so a directory
- * added at any depth is scanned without being named anywhere.
+ * The file set is what the repository tracks, taken from the git index rather
+ * than from a walk of the working copy. A walk would take in whatever a
+ * checkout happens to hold beside the sources -- a downloaded uploader and its
+ * signature on a CI runner, a scratch file on a developer's machine -- and a
+ * scan reporting on those reaches a different verdict in each place it runs.
+ * Tracking is also the same answer the documentation gate derives its own file
+ * set from, so the two agree on what the repository ships.
+ *
+ * Dot-prefixed entries are tool and editor state rather than shipped source and
+ * stay out. Everything else follows from being tracked, so a directory added at
+ * any depth is scanned without being named anywhere.
  */
 export function discoverSources(root: string = REPO_ROOT): Discovery {
-  const rules = parseIgnoreRules();
   const programs: ProgramSource[] = [];
   const unclassified: string[] = [];
 
-  const walk = (directory: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (entry.name.startsWith('.')) {
-        continue;
-      }
-      const absolutePath = path.join(directory, entry.name);
-      const relativePath = path.relative(REPO_ROOT, absolutePath);
-      if (isIgnored(rules, relativePath, entry.isDirectory())) {
-        continue;
-      }
-      if (entry.isDirectory()) {
-        walk(absolutePath);
-        continue;
-      }
-      if (!entry.isFile()) {
-        continue;
-      }
-      const extension = path.extname(entry.name).replace(/^\./, '');
-      const family = PROGRAM_EXTENSIONS.get(extension);
-      if (family !== undefined) {
-        programs.push({
-          relativePath: path.relative(root, absolutePath),
-          absolutePath,
-          extension,
-          family,
-        });
-      } else if (!DATA_EXTENSIONS.has(extension)) {
-        unclassified.push(path.relative(root, absolutePath));
-      }
+  for (const relativePath of trackedFiles()) {
+    if (relativePath.split('/').some((segment) => segment.startsWith('.'))) {
+      continue;
     }
-  };
+    const absolutePath = path.join(REPO_ROOT, relativePath);
+    if (!absolutePath.startsWith(path.resolve(root))) {
+      continue;
+    }
+    // A tracked path can be absent from the working copy mid-rebase or in a
+    // sparse checkout; it holds no text to scan either way.
+    if (!existsSync(absolutePath)) {
+      continue;
+    }
+    const extension = path.extname(relativePath).replace(/^\./, '');
+    const family = PROGRAM_EXTENSIONS.get(extension);
+    if (family !== undefined) {
+      programs.push({
+        relativePath: path.relative(root, absolutePath),
+        absolutePath,
+        extension,
+        family,
+      });
+    } else if (!DATA_EXTENSIONS.has(extension)) {
+      unclassified.push(path.relative(root, absolutePath));
+    }
+  }
 
-  walk(root);
   programs.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
   unclassified.sort();
   return { programs, unclassified };
