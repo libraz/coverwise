@@ -67,6 +67,12 @@ unchanged for valid models and seeds.**
 - The pure TypeScript engine reports a tuple count past 2^53 exactly and
   saturates at the same ceiling the core does, instead of rounding and then
   growing without bound.
+- A decimal outside double's range parses to the same value on either C++
+  parsing backend. The backend used where `std::from_chars` is unavailable for
+  floating point read an overflow as the largest representable double and an
+  underflow to zero as a parsed zero, rather than as the infinity and the
+  rejected literal the other backend produces; both are now decided from the
+  decimal itself.
 - A boundary parameter whose metadata length disagrees with its value list is
   refused in the order the C++ layer checks; the CLI never reports an unmapped
   failure as success; a negative-coverage warning is raised only when a
