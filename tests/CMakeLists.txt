@@ -70,9 +70,34 @@ coverwise_add_test(benchmark_test integration/benchmark_test.cpp)
 
 # Documentation contract test: reads the shipped markdown and the sources it
 # describes, so it needs the source tree rather than the build tree.
+#
+# What the repository ships is what it tracks. Walking the source tree instead
+# would take in whatever a working copy happens to hold -- an agent instruction
+# file, a local draft -- and put the gate's verdict at the mercy of untracked
+# files, so the document list comes from git and is regenerated whenever the
+# index changes.
+find_package(Git REQUIRED)
+execute_process(
+  COMMAND "${GIT_EXECUTABLE}" -C "${PROJECT_SOURCE_DIR}" ls-files "*.md"
+  OUTPUT_VARIABLE coverwise_tracked_documents
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  COMMAND_ERROR_IS_FATAL ANY)
+string(REPLACE "\n" ";" coverwise_tracked_documents "${coverwise_tracked_documents}")
+set(COVERWISE_SHIPPED_DOCUMENTS "")
+foreach(document IN LISTS coverwise_tracked_documents)
+  # docs/ and the repository root are where the documents a reader is given
+  # live; a README inside a binding is that package's own and is checked there.
+  if(document MATCHES "^docs/" OR NOT document MATCHES "/")
+    string(APPEND COVERWISE_SHIPPED_DOCUMENTS "\"${document}\",")
+  endif()
+endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${PROJECT_SOURCE_DIR}/.git/index")
+
 coverwise_add_test(docs_contract_test integration/docs_contract_test.cpp)
 target_compile_definitions(docs_contract_test
-  PRIVATE COVERWISE_REPO_ROOT="${PROJECT_SOURCE_DIR}")
+  PRIVATE COVERWISE_REPO_ROOT="${PROJECT_SOURCE_DIR}"
+          COVERWISE_SHIPPED_DOCUMENTS=${COVERWISE_SHIPPED_DOCUMENTS})
 
 # CLI integration test drives the built coverwise binary via popen.
 # Requires the CLI target, which only exists for native (non-WASM) builds.

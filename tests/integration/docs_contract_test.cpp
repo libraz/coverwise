@@ -96,9 +96,6 @@ const UncheckedDocument kDocumentsWithoutCheckableClaims[] = {
      "about the code as it stands now, which is the only thing a document can "
      "be measured against here. It restates no limit value and no acceptance "
      "rule."},
-    {"CLAUDE.md",
-     "Directs how this repository is worked on rather than describing the "
-     "product to a user, and is shipped in no package."},
     {"SECURITY.md",
      "States how to report a vulnerability and which versions are supported. "
      "Nothing in it is derived from the engine."},
@@ -127,23 +124,13 @@ const DelegatedDocument kDocumentsCheckedElsewhere[] = {
 /// root cannot drop it out of coverage the way a `README*.md` pattern would --
 /// it stays enumerated under its new name, or its entry below stops resolving.
 /// Either way the change is announced rather than silent.
+// What the repository ships is what it tracks, so the build derives this list
+// from the git index rather than from a walk of the working copy: an untracked
+// file -- an agent instruction file, a local draft -- is not a document the
+// project publishes, and a gate that read one would reach a different verdict
+// on a developer's machine than on a clean checkout.
 std::vector<std::string> ShippedDocuments() {
-  namespace fs = std::filesystem;
-  const fs::path root(COVERWISE_REPO_ROOT);
-  std::vector<std::string> documents;
-  std::error_code ec;
-  for (fs::directory_iterator it(root, ec), end; it != end; it.increment(ec)) {
-    if (ec) break;
-    if (!it->is_regular_file()) continue;
-    if (it->path().extension() != ".md") continue;
-    documents.push_back(it->path().filename().generic_string());
-  }
-  for (fs::recursive_directory_iterator it(root / "docs", ec), end; it != end; it.increment(ec)) {
-    if (ec) break;
-    if (!it->is_regular_file()) continue;
-    if (it->path().extension() != ".md") continue;
-    documents.push_back(fs::relative(it->path(), root).generic_string());
-  }
+  std::vector<std::string> documents = {COVERWISE_SHIPPED_DOCUMENTS};
   std::sort(documents.begin(), documents.end());
   return documents;
 }
