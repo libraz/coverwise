@@ -1,21 +1,18 @@
 name: CI
 
+# Every path is gated. Filtering documentation out would be wrong twice over:
+# the suite checks the documents against the code, so a docs-only change is
+# exactly the kind that can break it; and a filter applies to the head commit
+# of a push, so a batch whose last commit happens to be documentation is
+# skipped whole, taking every code commit under it with it.
 on:
   push:
     # develop is where work lands; main only receives release promotions, so
     # gating on main alone would first exercise a change at release time.
     branches: [main, develop]
     tags-ignore: ['**']
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
