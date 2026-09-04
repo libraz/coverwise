@@ -98,6 +98,14 @@ struct DecimalParse {
 /// @param end One past the last character of the field.
 DecimalParse ParseDecimal(const char* begin, const char* end) {
   DecimalParse parsed;
+  // Which range a decimal can leave follows from the decimal itself, not from
+  // the flag a backend raised: only one whose order is negative can round to a
+  // subnormal or all the way to zero, and only one whose order is not can
+  // overflow. Both branches below decide against this rather than against a
+  // stored value, because what each backend leaves behind on a range error
+  // differs between them and between standard libraries.
+  const std::string_view field(begin, static_cast<size_t>(end - begin));
+  const bool may_underflow = !field.empty() && HasNegativeDecimalOrder(field);
 #if COVERWISE_HAS_FLOAT_FROM_CHARS
   const auto result = std::from_chars(begin, end, parsed.value, std::chars_format::general);
   if (result.ptr != end ||
@@ -111,29 +119,31 @@ DecimalParse ParseDecimal(const char* begin, const char* end) {
 #else
   // num_get reports malformed input and out-of-range values through the same
   // failbit, so the syntax check is what separates them.
-  const std::string field(begin, end);
-  if (!IsNumeric(field)) return parsed;
-  std::istringstream stream(field);
+  const std::string field_text(field);
+  if (!IsNumeric(field_text)) return parsed;
+  std::istringstream stream(field_text);
   stream.imbue(std::locale::classic());
   stream >> parsed.value;
-  if (!stream.fail()) {
+  // An underflow all the way to zero need not raise failbit at all: a standard
+  // library is free to let strtod's ERANGE pass and report a plain success
+  // storing zero. Reading that as a parsed zero would accept a decimal
+  // from_chars calls out of range, so the decimal's own order overrules the
+  // flag here.
+  if (!stream.fail() && !(parsed.value == 0.0 && may_underflow)) {
     parsed.complete = true;
     return parsed;
   }
 #endif
   // The field is out of range for at least one of the two backends, and they
   // do not agree on what that means: an underflow that still rounds to a
-  // subnormal is a range error for num_get (which nevertheless stores the
-  // correctly rounded value) but an ordinary result for from_chars. That is the
-  // one case a stored value may be kept, and the decimal's own order is what
-  // identifies it. A finite non-zero leftover does not, because an overflow can
-  // leave one too: num_get is specified to store the largest representable
-  // double there, so accepting any such leftover would parse a decimal past the
-  // range as that maximum on one backend and as an infinity on the other.
-  // Deciding from the decimal alone keeps every platform and build
-  // configuration on the same answer.
-  if (std::isfinite(parsed.value) && parsed.value != 0.0 &&
-      HasNegativeDecimalOrder(std::string_view(begin, static_cast<size_t>(end - begin)))) {
+  // subnormal is a range error for num_get, which nevertheless stores the
+  // correctly rounded value, but an ordinary result for from_chars. That is the
+  // one case a stored value may be kept. A finite non-zero leftover does not
+  // identify it on its own, because an overflow leaves one too: num_get is
+  // specified to store the largest representable double there, so accepting any
+  // such leftover would parse a decimal past the range as that maximum on one
+  // backend and as an infinity on the other.
+  if (may_underflow && std::isfinite(parsed.value) && parsed.value != 0.0) {
     parsed.complete = true;
     return parsed;
   }
