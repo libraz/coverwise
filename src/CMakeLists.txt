@@ -6,6 +6,7 @@ set(COVERWISE_SOURCES
   model/options_validation.cpp
   model/test_case.cpp
   model/constraint_ast.cpp
+  model/constraint_lexer.cpp
   model/constraint_parser.cpp
 
   # util

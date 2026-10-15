@@ -770,9 +770,9 @@ std::vector<std::string> BracedBody(const std::vector<std::string>& lines,
   return body;
 }
 
-/// @brief Collect every string literal compared in the parser's keyword table.
+/// @brief Collect every string literal compared in the lexer's keyword table.
 std::set<std::string> ParserKeywords() {
-  const auto lines = SplitLines(ReadRepoFile("src/model/constraint_parser.cpp"));
+  const auto lines = SplitLines(ReadRepoFile("src/model/constraint_lexer.cpp"));
   const std::string marker = "upper == \"";
   std::set<std::string> keywords;
   for (const auto& line : BracedBody(lines, "TokenType ClassifyKeyword(")) {
