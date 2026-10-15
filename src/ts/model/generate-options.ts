@@ -217,12 +217,14 @@ function validateStringBudget(options: GenerateOptions, params: Parameter[]): Er
       }
     }
   }
-  for (const [paramName, valueWeights] of Object.entries(options.weights.entries)) {
+  // Charged in the core's std::map key order, so a refusal names the same
+  // budget on every surface whatever order the object literal listed keys in.
+  for (const paramName of Object.keys(options.weights.entries).sort(compareUtf8)) {
     let error = account(paramName, chargedStringContext.weightParameterName);
     if (error.code !== ErrorCode.Ok) {
       return error;
     }
-    for (const valueName of Object.keys(valueWeights)) {
+    for (const valueName of Object.keys(options.weights.entries[paramName]).sort(compareUtf8)) {
       error = account(valueName, chargedStringContext.weightValueName);
       if (error.code !== ErrorCode.Ok) {
         return error;
@@ -426,18 +428,7 @@ export function expandBoundaries(
  * point.
  */
 export function validateGenerateOptions(options: GenerateOptions): ErrorInfo {
-  const params = options.parameters.map((input) => {
-    const param = input.invalid
-      ? new Parameter(input.name, input.values, input.invalid)
-      : new Parameter(input.name, input.values);
-    if (input.aliases) {
-      param.setAliases(input.aliases);
-    }
-    if (input.equivalenceClasses) {
-      param.setEquivalenceClasses(input.equivalenceClasses);
-    }
-    return param;
-  });
+  const params = optionsParameters(options);
   const budgetError = validateStringBudget(options, params);
   if (budgetError.code !== ErrorCode.Ok) {
     return budgetError;
