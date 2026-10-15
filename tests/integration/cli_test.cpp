@@ -1524,6 +1524,36 @@ TEST(CliGenerateTest, RejectsASeedRowCarryingAnUndeclaredMember) {
       << result.stdout_text;
 }
 
+TEST(CliGenerateTest, ChargesAnOversizedUnknownSeedValueBeforeRejectingItsKey) {
+  std::string model = R"({"parameters":[{"name":"a","values":["x","y"]},)"
+                      R"({"name":"b","values":["1","2"]}],"seeds":[{"a":"x",)"
+                      R"("b":"1","note":")";
+  model.append(coverwise::model::kMaxStringBytes + 1, 'z');
+  model += R"("}]})";
+  const std::string path = TempPath("seed_oversized_unknown_value.json");
+  WriteFile(path, model);
+
+  const std::string expected =
+      coverwise::model::StringBudgetExceededMessage(coverwise::model::ChargedStringContext(
+          coverwise::model::ChargedString::kRowValue, {"seeds", 0}));
+  const auto result = RunCliCaptureStderr("generate " + path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(expected), std::string::npos) << result.stdout_text;
+  EXPECT_EQ(result.stdout_text.find("unknown parameter 'note'"), std::string::npos)
+      << result.stdout_text;
+}
+
+TEST(CliGenerateTest, ReorderedSeedMembersKeepParameterOrderForValueErrors) {
+  const std::string path = TempPath("seed_reordered_parameter_error.json");
+  WriteFile(path, R"({"parameters":[{"name":"a","values":["x","y"]},)"
+                  R"({"name":"b","values":["1","2"]}],)"
+                  R"("seeds":[{"b":{},"a":"unknown"}]})");
+
+  const auto result = RunCliStderrOnly("generate " + path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+  EXPECT_EQ(result.stdout_text, "error: seeds 0 parameter 'a' has unknown value 'unknown'\n");
+}
+
 // Integer expansion steps by one, so any other step describes a value set the
 // engine will not produce.
 TEST(CliGenerateTest, RejectsAnIntegerBoundaryStepOtherThanOne) {
@@ -1597,6 +1627,45 @@ TEST(CliAnalyzeTest, ReportsARowMissingAParameterInInvalidTests) {
   EXPECT_NE(result.stdout_text.find(R"("coverageRatio":0.25)"), std::string::npos)
       << result.stdout_text;
   EXPECT_NE(result.stdout_text.find(R"("invalidTests":[{"testIndex":0)"), std::string::npos)
+      << result.stdout_text;
+}
+
+TEST(CliAnalyzeTest, ReorderedMembersAndRecordedUnknownKeysStillResolveByName) {
+  const std::string params_path = TempPath("analyze_params_reordered.json");
+  WriteFile(params_path, R"({"parameters":[{"name":"a","values":["x","y"]},)"
+                         R"({"name":"b","values":["1","2"]}]})");
+  const std::string tests_path = TempPath("analyze_tests_reordered.json");
+  WriteFile(tests_path, R"([{"b":"1","note":true,"a":"x"},)"
+                        R"({"a":"y","b":"2"}])");
+
+  const auto result = RunCliCaptureStderr("analyze --params " + params_path + " --tests " +
+                                          tests_path + " --strength 1");
+  EXPECT_EQ(result.exit_code, 0) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(R"("coverageRatio":1)"), std::string::npos)
+      << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(R"("invalidTests":[])"), std::string::npos)
+      << result.stdout_text;
+}
+
+TEST(CliAnalyzeTest, ExplicitNullAndMissingMembersAreBothRecordedAsUnassigned) {
+  const std::string params_path = TempPath("analyze_params_null_missing.json");
+  WriteFile(params_path, R"({"parameters":[{"name":"a","values":["x","y"]},)"
+                         R"({"name":"b","values":["1","2"]}]})");
+  const std::string tests_path = TempPath("analyze_tests_null_missing.json");
+  WriteFile(tests_path, R"([{"a":"x","b":null},{"a":"y"}])");
+
+  const auto result =
+      RunCliCaptureStderr("analyze --params " + params_path + " --tests " + tests_path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(R"("testIndex":0)"), std::string::npos) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(R"("testIndex":1)"), std::string::npos) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(R"("invalidTests":[)"), std::string::npos)
+      << result.stdout_text;
+  const std::string missing_reason = R"("reason":"missing value for parameter b")";
+  const size_t first_reason = result.stdout_text.find(missing_reason);
+  ASSERT_NE(first_reason, std::string::npos) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(missing_reason, first_reason + missing_reason.size()),
+            std::string::npos)
       << result.stdout_text;
 }
 

@@ -26,6 +26,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -1048,6 +1050,14 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
     error = std::string(field) + " exceed maximum of " + std::to_string(kMaxTests);
     return false;
   }
+
+  std::unordered_map<std::string_view, size_t> parameter_indices;
+  parameter_indices.reserve(params.size());
+  for (size_t pi = 0; pi < params.size(); ++pi) {
+    parameter_indices.emplace(params[pi].name, pi);
+  }
+  std::vector<const JsonValue*> members(params.size());
+
   for (size_t i = 0; i < json.array_val.size(); ++i) {
     const auto& t = json.array_val[i];
     if (t.type != JsonType::kObject) {
@@ -1076,21 +1086,19 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
       }
       budget.Charge(member.string_val.size());
     }
-    if (policy == TestRowPolicy::kSeed) {
-      for (const auto& key : t.object_keys) {
-        bool declared = false;
-        for (const auto& param : params) {
-          if (param.name == key) {
-            declared = true;
-            break;
-          }
-        }
-        if (!declared) {
+    std::fill(members.begin(), members.end(), nullptr);
+    for (size_t member_index = 0; member_index < t.object_keys.size(); ++member_index) {
+      const auto& key = t.object_keys[member_index];
+      const auto found = parameter_indices.find(key);
+      if (found == parameter_indices.end()) {
+        if (policy == TestRowPolicy::kSeed) {
           error =
               std::string(field) + " " + std::to_string(i) + " has unknown parameter '" + key + "'";
           return false;
         }
+        continue;
       }
+      members[found->second] = &t.object_vals[member_index];
     }
 
     coverwise::model::TestCase tc;
@@ -1104,8 +1112,8 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
     };
 
     for (size_t pi = 0; pi < params.size(); ++pi) {
-      const auto& val = t[params[pi].name];
-      if (val.IsNull()) {
+      const JsonValue* val = members[pi];
+      if (val == nullptr || val->IsNull()) {
         if (policy == TestRowPolicy::kRecorded) continue;
         error = std::string(field) + " " + std::to_string(i) + " missing parameter '" +
                 params[pi].name + "'";
@@ -1113,12 +1121,12 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
       }
       // Convert value to string for lookup.
       std::string val_str;
-      if (val.type == JsonType::kString) {
-        val_str = val.string_val;
-      } else if (val.type == JsonType::kNumber) {
-        val_str = coverwise::util::JsNumberToString(val.number_val);
-      } else if (val.type == JsonType::kBool) {
-        val_str = val.bool_val ? "true" : "false";
+      if (val->type == JsonType::kString) {
+        val_str = val->string_val;
+      } else if (val->type == JsonType::kNumber) {
+        val_str = coverwise::util::JsNumberToString(val->number_val);
+      } else if (val->type == JsonType::kBool) {
+        val_str = val->bool_val ? "true" : "false";
       } else {
         // A non-scalar member is structurally malformed on every policy: there
         // is no value to record, drifted or otherwise.
