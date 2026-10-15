@@ -351,10 +351,8 @@ export class CoverageEngine {
         return false; // Stop; universe is not fully classified.
       }
       const globalIndex = this.combinationOffsets_[ci] + vi;
-      if (!witness && !this.covered_.test(globalIndex)) {
-        this.covered_.set(globalIndex);
-        ++this.invalidTuples_;
-        ++this.coveredBits_;
+      if (!witness) {
+        this.excludeTuple(globalIndex);
       }
       return true;
     });
@@ -372,12 +370,7 @@ export class CoverageEngine {
     this.forEachTuple((ci, vi, combo, valueIndices) => {
       for (let j = 0; j < combo.length; ++j) {
         if (this.params_[combo[j]].isInvalid(valueIndices[j])) {
-          const globalIndex = this.combinationOffsets_[ci] + vi;
-          if (!this.covered_.test(globalIndex)) {
-            this.covered_.set(globalIndex);
-            ++this.invalidTuples_;
-            ++this.coveredBits_;
-          }
+          this.excludeTuple(this.combinationOffsets_[ci] + vi);
           return;
         }
       }
@@ -402,10 +395,8 @@ export class CoverageEngine {
             !allowedValues[pi][valueIndices[j]],
         );
       const globalIndex = this.combinationOffsets_[ci] + vi;
-      if (excluded && !this.covered_.test(globalIndex)) {
-        this.covered_.set(globalIndex);
-        ++this.invalidTuples_;
-        ++this.coveredBits_;
+      if (excluded) {
+        this.excludeTuple(globalIndex);
       }
     });
   }
@@ -415,10 +406,8 @@ export class CoverageEngine {
     this.forEachTuple((ci, vi, combo, valueIndices) => {
       const contains = combo.some((pi, j) => pi === paramIndex && valueIndices[j] === valueIndex);
       const globalIndex = this.combinationOffsets_[ci] + vi;
-      if (!contains && !this.covered_.test(globalIndex)) {
-        this.covered_.set(globalIndex);
-        ++this.invalidTuples_;
-        ++this.coveredBits_;
+      if (!contains) {
+        this.excludeTuple(globalIndex);
       }
     });
   }

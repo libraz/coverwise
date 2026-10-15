@@ -505,11 +505,7 @@ void CoverageEngine::ExcludeInvalidTuples(const std::vector<model::Constraint>& 
       return false;  // Stop; universe is not fully classified.
     }
 
-    if (invalid && !covered_.Test(global_index)) {
-      covered_.Set(global_index);
-      ++invalid_tuples_;
-      ++covered_bits_;
-    }
+    if (invalid) ExcludeTuple(global_index);
     return true;
   });
 }
@@ -528,11 +524,7 @@ void CoverageEngine::ExcludeInvalidValues() {
       }
     }
 
-    if (contains_invalid && !covered_.Test(global_index)) {
-      covered_.Set(global_index);
-      ++invalid_tuples_;
-      ++covered_bits_;
-    }
+    if (contains_invalid) ExcludeTuple(global_index);
   });
 }
 
@@ -554,11 +546,7 @@ void CoverageEngine::ExcludeTuplesOutsideMask(
         excluded = true;
       }
     }
-    if (excluded && !covered_.Test(global_index)) {
-      covered_.Set(global_index);
-      ++invalid_tuples_;
-      ++covered_bits_;
-    }
+    if (excluded) ExcludeTuple(global_index);
   });
 }
 
@@ -572,11 +560,7 @@ void CoverageEngine::ExcludeTuplesNotContaining(uint32_t param_index, uint32_t v
         break;
       }
     }
-    if (!contains && !covered_.Test(global_index)) {
-      covered_.Set(global_index);
-      ++invalid_tuples_;
-      ++covered_bits_;
-    }
+    if (!contains) ExcludeTuple(global_index);
   });
 }
 
