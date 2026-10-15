@@ -199,8 +199,6 @@ ConstraintResult IfThenElseNode::Evaluate(const std::vector<uint32_t>& assignmen
 
 // --- RelationalNode ---
 
-namespace {}  // namespace
-
 NumericValueCachePtr BuildNumericValueCache(const std::vector<std::string>& values) {
   auto cache = std::make_shared<NumericValueCache>();
   cache->numeric.resize(values.size());
