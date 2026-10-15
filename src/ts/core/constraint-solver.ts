@@ -187,6 +187,99 @@ function search(
   }
 }
 
+function isAllowedValueMaskValid(
+  params: readonly Parameter[],
+  allowedValues: readonly (readonly boolean[])[],
+): boolean {
+  return (
+    allowedValues.length === params.length &&
+    !allowedValues.some((allowed, pi) => allowed.length !== params[pi].size)
+  );
+}
+
+function hasValidPinnedValues(
+  params: readonly Parameter[],
+  values: readonly number[],
+  allowedValues: readonly (readonly boolean[])[] | null,
+): boolean {
+  for (let pi = 0; pi < params.length; ++pi) {
+    const vi = values[pi] ?? UNASSIGNED;
+    if (vi === UNASSIGNED) {
+      continue;
+    }
+    if (
+      vi < 0 ||
+      vi >= params[pi].size ||
+      (allowedValues === null ? params[pi].isInvalid(vi) : !allowedValues[pi][vi])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function normalizeUnassignedValues(values: number[]): void {
+  for (let pi = 0; pi < values.length; ++pi) {
+    values[pi] ??= UNASSIGNED;
+  }
+}
+
+/**
+ * Complete an assignment in its existing values buffer using an allowed-value
+ * mask. `assignment.values` must have exactly one slot per parameter. The
+ * buffer is scratch on failure: caller-provided pins remain, while values
+ * assigned by the search are restored to `UNASSIGNED`.
+ */
+export function completeAssignmentInPlace(
+  params: readonly Parameter[],
+  constraints: readonly ConstraintNode[],
+  allowedValues: readonly (readonly boolean[])[],
+  assignment: TestCase,
+  budget?: SolveBudget,
+  parameterOrder?: SolveParameterOrder,
+  stack?: SolveStack,
+): boolean {
+  if (
+    assignment.values.length !== params.length ||
+    !isAllowedValueMaskValid(params, allowedValues) ||
+    !hasValidPinnedValues(params, assignment.values, allowedValues)
+  ) {
+    return false;
+  }
+  normalizeUnassignedValues(assignment.values);
+
+  const b = budget ?? createSolveBudget();
+  const order = parameterOrder ?? buildAllowedSolveParameterOrder(params, allowedValues);
+  return search(params, constraints, assignment.values, order, 0, allowedValues, b, stack ?? []);
+}
+
+/**
+ * Complete an assignment in its existing values buffer using valid parameter
+ * values. `assignment.values` must have exactly one slot per parameter. The
+ * buffer is scratch on failure: caller-provided pins remain, while values
+ * assigned by the search are restored to `UNASSIGNED`.
+ */
+export function completeValidAssignmentInPlace(
+  params: readonly Parameter[],
+  constraints: readonly ConstraintNode[],
+  assignment: TestCase,
+  budget?: SolveBudget,
+  parameterOrder?: SolveParameterOrder,
+  stack?: SolveStack,
+): boolean {
+  if (
+    assignment.values.length !== params.length ||
+    !hasValidPinnedValues(params, assignment.values, null)
+  ) {
+    return false;
+  }
+  normalizeUnassignedValues(assignment.values);
+
+  const b = budget ?? createSolveBudget();
+  const order = parameterOrder ?? buildValidSolveParameterOrder(params);
+  return search(params, constraints, assignment.values, order, 0, null, b, stack ?? []);
+}
+
 /**
  * Complete a partial assignment using a caller-provided allowed-value mask.
  *
@@ -205,27 +298,20 @@ export function completeAssignment(
   parameterOrder?: SolveParameterOrder,
   stack?: SolveStack,
 ): TestCase | null {
-  if (
-    allowedValues.length !== params.length ||
-    allowedValues.some((allowed, pi) => allowed.length !== params[pi].size)
-  ) {
-    return null;
-  }
-  const assignment = new Array<number>(params.length).fill(UNASSIGNED);
+  const assignment = { values: new Array<number>(params.length) };
   for (let pi = 0; pi < params.length; ++pi) {
-    const vi = partial.values[pi] ?? UNASSIGNED;
-    assignment[pi] = vi;
-    if (vi === UNASSIGNED) {
-      continue;
-    }
-    if (vi < 0 || vi >= params[pi].size || !allowedValues[pi][vi]) {
-      return null;
-    }
+    assignment.values[pi] = partial.values[pi] ?? UNASSIGNED;
   }
-  const b = budget ?? createSolveBudget();
-  const order = parameterOrder ?? buildAllowedSolveParameterOrder(params, allowedValues);
-  return search(params, constraints, assignment, order, 0, allowedValues, b, stack ?? [])
-    ? { values: assignment }
+  return completeAssignmentInPlace(
+    params,
+    constraints,
+    allowedValues,
+    assignment,
+    budget,
+    parameterOrder,
+    stack,
+  )
+    ? assignment
     : null;
 }
 
@@ -241,20 +327,18 @@ export function completeValidAssignment(
   parameterOrder?: SolveParameterOrder,
   stack?: SolveStack,
 ): TestCase | null {
-  const assignment = new Array<number>(params.length).fill(UNASSIGNED);
+  const assignment = { values: new Array<number>(params.length) };
   for (let pi = 0; pi < params.length; ++pi) {
-    const vi = partial.values[pi] ?? UNASSIGNED;
-    assignment[pi] = vi;
-    if (vi === UNASSIGNED) {
-      continue;
-    }
-    if (vi < 0 || vi >= params[pi].size || params[pi].isInvalid(vi)) {
-      return null;
-    }
+    assignment.values[pi] = partial.values[pi] ?? UNASSIGNED;
   }
-  const b = budget ?? createSolveBudget();
-  const order = parameterOrder ?? buildValidSolveParameterOrder(params);
-  return search(params, constraints, assignment, order, 0, null, b, stack ?? [])
-    ? { values: assignment }
+  return completeValidAssignmentInPlace(
+    params,
+    constraints,
+    assignment,
+    budget,
+    parameterOrder,
+    stack,
+  )
+    ? assignment
     : null;
 }

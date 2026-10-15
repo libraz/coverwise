@@ -7,7 +7,9 @@ import { MAX_PARAMETERS, Parameter } from '../model/parameter.js';
 import { UNASSIGNED } from '../model/test-case.js';
 import {
   completeAssignment,
+  completeAssignmentInPlace,
   completeValidAssignment,
+  completeValidAssignmentInPlace,
   createSolveBudget,
   createSolveStack,
   type SolveBudget,
@@ -154,6 +156,156 @@ describe('completeValidAssignment', () => {
     expect(witness).toBeNull();
     expect(budget.exceeded).toBe(true);
     expect(budget.remaining).toBe(0);
+  });
+});
+
+describe('in-place assignment completion', () => {
+  function parityExpression(terms: string[]): string {
+    if (terms.length === 1) {
+      return terms[0];
+    }
+    const midpoint = Math.floor(terms.length / 2);
+    const left = parityExpression(terms.slice(0, midpoint));
+    const right = parityExpression(terms.slice(midpoint));
+    return `((${left} AND NOT (${right})) OR (NOT (${left}) AND (${right})))`;
+  }
+
+  it('reuses an unmasked assignment buffer across success, failure, and success', () => {
+    const params = binaryParams(3);
+    const assignment = { values: new Array<number>(params.length).fill(UNASSIGNED) };
+    const stack = createSolveStack();
+
+    expect(
+      completeValidAssignmentInPlace(
+        params,
+        singleConstraint('P1="b"', params),
+        assignment,
+        undefined,
+        undefined,
+        stack,
+      ),
+    ).toBe(true);
+    expect(assignment.values).toEqual([0, 1, 0]);
+
+    assignment.values[0] = 1;
+    assignment.values[1] = UNASSIGNED;
+    assignment.values[2] = UNASSIGNED;
+    const impossible = [
+      ...singleConstraint('P2="a"', params),
+      ...singleConstraint('P2="b"', params),
+    ];
+
+    expect(
+      completeValidAssignmentInPlace(params, impossible, assignment, undefined, undefined, stack),
+    ).toBe(false);
+    expect(assignment.values).toEqual([1, UNASSIGNED, UNASSIGNED]);
+
+    assignment.values[0] = UNASSIGNED;
+    expect(
+      completeValidAssignmentInPlace(
+        params,
+        singleConstraint('P0="b"', params),
+        assignment,
+        undefined,
+        undefined,
+        stack,
+      ),
+    ).toBe(true);
+    expect(assignment.values).toEqual([1, 0, 0]);
+  });
+
+  it('uses the allowed-value mask and leaves invalid input unchanged', () => {
+    const params = binaryParams(3);
+    const allowedValues = [
+      [false, true],
+      [true, true],
+      [true, true],
+    ];
+    const assignment = { values: new Array<number>(params.length).fill(UNASSIGNED) };
+
+    expect(
+      completeAssignmentInPlace(
+        params,
+        singleConstraint('P0="b"', params),
+        allowedValues,
+        assignment,
+      ),
+    ).toBe(true);
+    expect(assignment.values).toEqual([1, 0, 0]);
+
+    assignment.values[0] = 0;
+    assignment.values[1] = UNASSIGNED;
+    assignment.values[2] = UNASSIGNED;
+    const before = [...assignment.values];
+
+    expect(completeAssignmentInPlace(params, [], allowedValues, assignment)).toBe(false);
+    expect(assignment.values).toEqual(before);
+  });
+
+  it('rejects assignment buffers whose length does not match the model', () => {
+    const params = binaryParams(3);
+    const short = { values: [UNASSIGNED, UNASSIGNED] };
+    const long = { values: [UNASSIGNED, UNASSIGNED, UNASSIGNED, 0] };
+    const allowedValues = params.map(() => [true, true]);
+    const shortBefore = [...short.values];
+    const longBefore = [...long.values];
+
+    expect(completeValidAssignmentInPlace(params, [], short)).toBe(false);
+    expect(completeAssignmentInPlace(params, [], allowedValues, long)).toBe(false);
+    expect(short.values).toEqual(shortBefore);
+    expect(long.values).toEqual(longBefore);
+  });
+
+  it('preserves pins and unwinds search assignments when the budget expires', () => {
+    const parameterCount = 12;
+    const params = binaryParams(parameterCount);
+    const values = new Array<number>(parameterCount).fill(UNASSIGNED);
+    values[0] = 1;
+    const assignment = { values };
+    const budget: SolveBudget = { remaining: 1_000, exceeded: false };
+    const parity = parityExpression(params.map((param) => `${param.name}="b"`));
+    const impossible = [
+      ...singleConstraint(parity, params),
+      ...singleConstraint(`NOT (${parity})`, params),
+    ];
+
+    expect(
+      completeValidAssignmentInPlace(
+        params,
+        impossible,
+        assignment,
+        budget,
+        undefined,
+        createSolveStack(),
+      ),
+    ).toBe(false);
+    expect(budget.exceeded).toBe(true);
+    expect(budget.remaining).toBe(0);
+    expect(assignment.values).toEqual([
+      1,
+      ...new Array<number>(parameterCount - 1).fill(UNASSIGNED),
+    ]);
+  });
+
+  it('keeps immutable wrappers from changing their partial assignments', () => {
+    const params = binaryParams(3);
+    const partial = { values: [UNASSIGNED, 0, UNASSIGNED] };
+    const originalValues = [...partial.values];
+    const constraints = singleConstraint('P0="b"', params);
+
+    const validWitness = completeValidAssignment(params, constraints, partial);
+    const maskWitness = completeAssignment(
+      params,
+      constraints,
+      params.map(() => [true, true]),
+      partial,
+    );
+
+    expect(validWitness).not.toBeNull();
+    expect(maskWitness).not.toBeNull();
+    expect(validWitness?.values).not.toBe(partial.values);
+    expect(maskWitness?.values).not.toBe(partial.values);
+    expect(partial.values).toEqual(originalValues);
   });
 });
 
