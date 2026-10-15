@@ -79,8 +79,9 @@ Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& con
   std::vector<size_t> non_numeric_indices;
   for (size_t i = 0; i < param.values.size(); ++i) {
     const auto& v = param.values[i];
-    const double numeric = IsNumeric(v) ? ToDouble(v) : 0.0;
-    if (IsNumeric(v) && std::isfinite(numeric)) {
+    const bool is_numeric = IsNumeric(v);
+    const double numeric = is_numeric ? ToDouble(v) : 0.0;
+    if (is_numeric && std::isfinite(numeric)) {
       numeric_values.emplace(numeric, i);
     } else {
       non_numeric_indices.push_back(i);

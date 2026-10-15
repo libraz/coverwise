@@ -171,13 +171,13 @@ export class Parameter {
 
   /** Returns the distinct class names (in first-seen order). */
   uniqueClasses(): string[] {
-    const result: string[] = [];
+    const classes = new Set<string>();
     for (const c of this.equivalenceClasses_) {
-      if (c.length > 0 && !result.includes(c)) {
-        result.push(c);
+      if (c.length > 0) {
+        classes.add(c);
       }
     }
-    return result;
+    return [...classes];
   }
 
   /** Set the equivalence class for each value. */

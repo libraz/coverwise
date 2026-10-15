@@ -80,7 +80,7 @@ export function expandBoundaryValues(param: Parameter, config: BoundaryConfig): 
   for (let i = 0; i < param.values.length; ++i) {
     const v = param.values[i];
     const numeric = isNumeric(v) ? Number(v) : Number.NaN;
-    if (isNumeric(v) && Number.isFinite(numeric)) {
+    if (Number.isFinite(numeric)) {
       if (!numericValues.has(numeric)) {
         numericValues.set(numeric, i);
       }
