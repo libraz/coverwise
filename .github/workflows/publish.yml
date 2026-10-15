@@ -118,10 +118,11 @@ jobs:
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
-          for attempt in 1 2 3 4 5; do
-            published="$(npm view "@libraz/coverwise@$version" version 2>/dev/null || true)"
+          # The registry can take minutes to serve a fresh publish, so poll for about five.
+          for attempt in $(seq 1 30); do
+            published="$(npm view --prefer-online "@libraz/coverwise@$version" version 2>/dev/null || true)"
             [[ "$published" == "$version" ]] && exit 0
-            sleep 5
+            sleep 10
           done
           echo "Published package @libraz/coverwise@$version was not visible in the registry" >&2
           exit 1
