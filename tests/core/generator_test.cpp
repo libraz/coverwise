@@ -1810,6 +1810,90 @@ TEST(GeneratorAcceptanceTest, SeedRowsAddressTheDeclaredValueSpace) {
   EXPECT_EQ(result.tests[0].values[1], 1u);
   // The seed took part in coverage rather than being reported as unusable.
   EXPECT_TRUE(result.warnings.empty()) << result.warnings[0];
+  // Remapping is internal to the accepted input; it must not rewrite the
+  // caller's options object.
+  EXPECT_EQ(opts.seeds[0].values, (std::vector<uint32_t>{0, 1}));
+}
+
+TEST(GeneratorAcceptanceTest, BoundaryExpansionDoesNotMakeAnInvalidSeedIndexValid) {
+  GenerateOptions opts;
+  opts.parameters = {Parameter("n", {"5"}), Parameter("os", {"win", "mac"})};
+  opts.boundary_configs["n"] = {coverwise::model::BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+  opts.strength = 2;
+  opts.seeds = {TestCase{{1, 0}}};
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Seed test 0 ignored: value index 1 is out of range for parameter n"),
+            result.warnings.end());
+  EXPECT_EQ(opts.seeds[0].values, (std::vector<uint32_t>{1, 0}));
+}
+
+TEST(GeneratorAcceptanceTest, BoundaryExpansionPreservesSeedDiagnosticOrder) {
+  GenerateOptions opts;
+  opts.parameters = {Parameter("A", {"bad", "good"}, {true, false}), Parameter("n", {"5"})};
+  opts.boundary_configs["n"] = {coverwise::model::BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+  opts.strength = 2;
+  opts.seeds = {TestCase{{0, 1}}};
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Seed test 0 ignored: value A=bad is marked invalid"),
+            result.warnings.end());
+}
+
+TEST(GeneratorAcceptanceTest, BoundaryExpansionDoesNotValidateAgainstAnEmptyDeclaredDomain) {
+  GenerateOptions opts;
+  opts.parameters = {Parameter("n", {}), Parameter("os", {"win", "mac"})};
+  opts.boundary_configs["n"] = {coverwise::model::BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+  opts.strength = 2;
+  opts.seeds = {TestCase{{0, 0}}};
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Seed test 0 ignored: value index 0 is out of range for parameter n"),
+            result.warnings.end());
+  EXPECT_EQ(opts.seeds[0].values, (std::vector<uint32_t>{0, 0}));
+}
+
+TEST(GeneratorAcceptanceTest, StrictExtensionPreservesOutOfRangeAndUnassignedRows) {
+  GenerateOptions opts;
+  opts.parameters = {Parameter("n", {"5"}), Parameter("os", {"win", "mac"})};
+  opts.boundary_configs["n"] = {coverwise::model::BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+  opts.strength = 2;
+  const std::vector<TestCase> existing = {TestCase{{1, 0}},
+                                          TestCase{{coverwise::model::kUnassigned, 1}},
+                                          TestCase{{0, coverwise::model::kUnassigned}}};
+
+  auto result = Extend(existing, opts, ExtendMode::kStrict);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  ASSERT_GE(result.tests.size(), existing.size());
+  for (size_t i = 0; i < 2; ++i) {
+    EXPECT_EQ(result.tests[i].values, existing[i].values);
+    EXPECT_EQ(result.tests[i].unresolved, existing[i].unresolved);
+  }
+  const uint32_t five = coverwise::model::ResolveValueName(result.parameters[0], "5");
+  ASSERT_NE(five, coverwise::model::kUnassigned);
+  EXPECT_EQ(result.tests[2].values, (std::vector<uint32_t>{five, coverwise::model::kUnassigned}));
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Existing test 0 preserved but excluded from coverage: value index 1 is out "
+                      "of range for parameter n"),
+            result.warnings.end());
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Existing test 1 preserved but excluded from coverage: no value recorded for "
+                      "parameter n"),
+            result.warnings.end());
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Existing test 2 preserved but excluded from coverage: no value recorded for "
+                      "parameter os"),
+            result.warnings.end());
 }
 
 // Whether a value is a number is decided by the shared decimal grammar. The

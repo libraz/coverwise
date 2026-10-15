@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iterator>
 #include <set>
 #include <string>
 #include <utility>
@@ -75,10 +74,22 @@ struct EngineShape {
 /// parameter combination in common either.
 bool ShapesOverlap(const EngineShape& a, const EngineShape& b) {
   if (a.strength != b.strength) return false;
-  std::vector<uint32_t> shared;
-  std::set_intersection(a.params.begin(), a.params.end(), b.params.begin(), b.params.end(),
-                        std::back_inserter(shared));
-  return shared.size() >= a.strength;
+  if (a.strength == 0) return true;
+  size_t shared = 0;
+  size_t ai = 0;
+  size_t bi = 0;
+  while (ai < a.params.size() && bi < b.params.size()) {
+    if (a.params[ai] == b.params[bi]) {
+      if (++shared >= a.strength) return true;
+      ++ai;
+      ++bi;
+    } else if (a.params[ai] < b.params[bi]) {
+      ++ai;
+    } else {
+      ++bi;
+    }
+  }
+  return false;
 }
 
 /// @brief Check if all engines are complete.
@@ -94,12 +105,13 @@ bool AllComplete(const CoverageEngine& global, const std::vector<CoverageEngine>
 ///
 /// Everything a hot loop would otherwise rebuild per iteration is owned here and
 /// borrowed by the loop: the greedy construction buffers and the feasibility
-/// solver's parameter order. The order depends only on the allowed-value mask,
-/// so it is rebuilt exactly when that mask changes — once for the positive
-/// phase, once per invalid value in the negative phase — and never per witness.
+/// solver's parameter order and frame stack. The order depends only on the
+/// allowed-value mask, so it changes once per phase (or invalid value) and never
+/// per witness.
 struct GenerationScratch {
   algo::GreedyScratch greedy;
   SolveParameterOrder solve_order;
+  SolveStack solve_stack;
 };
 
 /// @brief Build an allowed_values mask that only permits valid values.
@@ -116,34 +128,69 @@ std::vector<std::vector<bool>> BuildValidOnlyMask(const std::vector<model::Param
   return mask;
 }
 
-/// @brief Validate that a seed can participate in positive coverage.
-std::string ValidatePositiveSeed(const model::TestCase& seed,
-                                 const std::vector<model::Parameter>& params,
-                                 const std::vector<model::Constraint>& constraints) {
+/// @brief Validate a seed's row shape against a declared parameter set.
+std::string ValidateSeedShape(const model::TestCase& seed,
+                              const std::vector<model::Parameter>& params) {
   if (seed.values.size() != params.size()) {
     return "expected " + std::to_string(params.size()) + " value(s), got " +
            std::to_string(seed.values.size());
   }
+  return {};
+}
+
+/// @brief Validate one seed index against a declared parameter set.
+std::string ValidateSeedIndex(const model::TestCase& seed,
+                              const std::vector<model::Parameter>& params, uint32_t pi) {
+  const uint32_t vi = seed.values[pi];
+  if (vi < params[pi].size()) return {};
+  // A row the caller recorded is described back to them in their own terms.
+  // The index here is kUnassigned whenever the row drifted from the model,
+  // and printing that sentinel tells the caller nothing about which part of
+  // what they submitted no longer fits.
+  if (pi < seed.unresolved.size() && !seed.unresolved[pi].empty()) {
+    return "value '" + seed.unresolved[pi] + "' is not declared by parameter " + params[pi].name;
+  }
+  if (vi == model::kUnassigned) {
+    return "no value recorded for parameter " + params[pi].name;
+  }
+  // Reached only through the embedding API, which supplies indices itself,
+  // so the index is the caller's own input rather than an internal one.
+  return "value index " + std::to_string(vi) + " is out of range for parameter " + params[pi].name;
+}
+
+/// @brief Validate seed shape and indices against the declared value space.
+SeedValidationSnapshot CaptureSeedValidation(const model::TestCase& seed,
+                                             const std::vector<model::Parameter>& params) {
+  SeedValidationSnapshot validation;
+  validation.error = ValidateSeedShape(seed, params);
+  if (!validation.error.empty()) return validation;
+  for (uint32_t pi = 0; pi < static_cast<uint32_t>(params.size()); ++pi) {
+    const std::string index_error = ValidateSeedIndex(seed, params, pi);
+    if (!index_error.empty()) {
+      validation.parameter_index = pi;
+      validation.error = index_error;
+      return validation;
+    }
+  }
+  return validation;
+}
+
+/// @brief Validate that a seed can participate in positive coverage.
+std::string ValidatePositiveSeed(const model::TestCase& seed,
+                                 const std::vector<model::Parameter>& params,
+                                 const std::vector<model::Constraint>& constraints,
+                                 const SeedValidationSnapshot* original = nullptr) {
+  if (original != nullptr && !original->error.empty() && !original->parameter_index) {
+    return original->error;
+  }
+  const std::string shape_error = ValidateSeedShape(seed, params);
+  if (!shape_error.empty()) return shape_error;
 
   for (uint32_t pi = 0; pi < static_cast<uint32_t>(params.size()); ++pi) {
-    uint32_t vi = seed.values[pi];
-    if (vi >= params[pi].size()) {
-      // A row the caller recorded is described back to them in their own terms.
-      // The index here is kUnassigned whenever the row drifted from the model,
-      // and printing that sentinel tells the caller nothing about which part of
-      // what they submitted no longer fits.
-      if (pi < seed.unresolved.size() && !seed.unresolved[pi].empty()) {
-        return "value '" + seed.unresolved[pi] + "' is not declared by parameter " +
-               params[pi].name;
-      }
-      if (vi == model::kUnassigned) {
-        return "no value recorded for parameter " + params[pi].name;
-      }
-      // Reached only through the embedding API, which supplies indices itself,
-      // so the index is the caller's own input rather than an internal one.
-      return "value index " + std::to_string(vi) + " is out of range for parameter " +
-             params[pi].name;
-    }
+    if (original != nullptr && original->parameter_index == pi) return original->error;
+    const std::string index_error = ValidateSeedIndex(seed, params, pi);
+    if (!index_error.empty()) return index_error;
+    const uint32_t vi = seed.values[pi];
     if (params[pi].is_invalid(vi)) {
       return "value " + params[pi].name + "=" + params[pi].values[vi] + " is marked invalid";
     }
@@ -231,7 +278,7 @@ model::Error GenerateNegativeTests(const std::vector<model::Parameter>& params,
         model::TestCase witness{std::move(uncovered.assignment)};
         SolveBudget budget;
         if (!CompleteAssignment(params, constraints, neg_mask, witness, &budget,
-                                &scratch.solve_order)) {
+                                &scratch.solve_order, &scratch.solve_stack)) {
           if (budget.exceeded) {
             return {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
                     "A negative coverage witness could not be found within the search budget"};
@@ -306,8 +353,9 @@ std::vector<std::vector<double>> ResolveWeights(const std::vector<model::Paramet
 ///
 /// Seed rows address values by index into the value list the caller declared,
 /// while boundary expansion sorts and inserts values, so every index that still
-/// names a declared value is looked up again by value identity. An index that
-/// no longer names anything is left alone for seed validation to describe.
+/// names a declared value is looked up again by value identity. A position with
+/// an invalid index is left alone for validation to describe; valid positions
+/// still retain their declared value identity when another position is invalid.
 void RemapSeedValueIndices(const std::vector<model::Parameter>& declared,
                            GenerateOptions& options) {
   for (auto& test : options.seeds) {
@@ -351,15 +399,25 @@ model::GenerateResult RejectedResult(const std::vector<model::Parameter>& parame
 AcceptedEngineInput AcceptEngineInput(GenerateOptions options, size_t preserved_seed_count) {
   // The declared value list is only needed to remap seed rows, and only
   // expansion can move a value's index, so it is copied for that case alone.
+  const bool has_boundary_expansion = !options.boundary_configs.empty();
+  const bool has_seeds = !options.seeds.empty();
   std::vector<model::Parameter> declared;
-  if (!options.seeds.empty() && !options.boundary_configs.empty()) {
+  std::vector<SeedValidationSnapshot> original_seed_validations;
+  if (has_seeds && has_boundary_expansion) {
     declared = options.parameters;
   }
   auto accepted = model::AcceptOptions(std::move(options), model::ChargedText::None());
   if (!accepted.ok()) return AcceptedEngineInput(accepted.error());
   GenerateOptions engine_options = accepted->get();
-  if (!declared.empty()) RemapSeedValueIndices(declared, engine_options);
-  return AcceptedEngineInput(EngineInput(std::move(engine_options), preserved_seed_count));
+  if (has_seeds && has_boundary_expansion) {
+    original_seed_validations.reserve(engine_options.seeds.size());
+    for (const auto& seed : engine_options.seeds) {
+      original_seed_validations.push_back(CaptureSeedValidation(seed, declared));
+    }
+    RemapSeedValueIndices(declared, engine_options);
+  }
+  return AcceptedEngineInput(EngineInput(std::move(engine_options), preserved_seed_count,
+                                         std::move(original_seed_validations)));
 }
 
 model::GenerateResult GenerateImpl(const EngineInput& input) {
@@ -432,6 +490,12 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
     constraints.push_back(std::move(parse_result.constraint));
   }
 
+  // The valid-value order is used by the initial satisfiability check, positive
+  // completion, and suggestions. The same order and frame stack serve each
+  // feasibility search over this model.
+  GenerationScratch scratch;
+  scratch.solve_order = BuildValidSolveParameterOrder(opts.parameters);
+
   // Reject a contradictory model before tuple accounting or generation. This
   // also supplies the same valid-value semantics used by tuple feasibility.
   // The search is node-bounded; an exhausted budget is reported explicitly
@@ -440,7 +504,8 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
     model::TestCase witness;
     witness.values.assign(opts.parameters.size(), model::kUnassigned);
     SolveBudget budget;
-    if (!CompleteValidAssignment(opts.parameters, constraints, witness, &budget)) {
+    if (!CompleteValidAssignment(opts.parameters, constraints, witness, &budget,
+                                 &scratch.solve_order, &scratch.solve_stack)) {
       if (budget.exceeded) {
         result.error = {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
                         "The constraint model is too complex to solve within the search budget"};
@@ -489,13 +554,17 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
   // prefix is retained byte-for-byte even when it no longer matches the model;
   // invalid preserved rows are excluded from coverage accounting.
   bool dropped_for_max_tests = false;
+  const auto& original_seed_validations = input.original_seed_validations();
   for (size_t si = 0; si < opts.seeds.size(); ++si) {
     const auto& seed_test = opts.seeds[si];
     if (opts.max_tests > 0 && result.tests.size() >= static_cast<size_t>(opts.max_tests)) {
       dropped_for_max_tests = true;
       break;
     }
-    auto seed_error = ValidatePositiveSeed(seed_test, opts.parameters, constraints);
+    const SeedValidationSnapshot* original =
+        si < original_seed_validations.size() ? &original_seed_validations[si] : nullptr;
+    const std::string seed_error =
+        ValidatePositiveSeed(seed_test, opts.parameters, constraints, original);
     if (!seed_error.empty()) {
       if (si < preserved_seed_count) {
         result.tests.push_back(seed_test);
@@ -520,7 +589,6 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
   }
 
   // Scratch borrowed by the construction and completion loops below.
-  GenerationScratch scratch;
   scratch.greedy.Reserve(opts.parameters);
 
   // Scoring callbacks are passed to GreedyConstruct as template arguments, so
@@ -577,16 +645,12 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
   // as a shortfall. This runs after greedy so the common case keeps a small
   // suite while completeness is still guaranteed for every feasible tuple.
   bool completion_budget_exceeded = false;
-  // The mask this order derives from is fixed for the whole positive phase, so
-  // it is built once instead of once per uncovered tuple.
-  scratch.solve_order = has_invalid ? BuildAllowedSolveParameterOrder(opts.parameters, valid_mask)
-                                    : BuildValidSolveParameterOrder(opts.parameters);
   auto complete_partial = [&](model::TestCase& witness) {
     SolveBudget budget;
     bool ok = has_invalid ? CompleteAssignment(opts.parameters, constraints, valid_mask, witness,
-                                               &budget, &scratch.solve_order)
+                                               &budget, &scratch.solve_order, &scratch.solve_stack)
                           : CompleteValidAssignment(opts.parameters, constraints, witness, &budget,
-                                                    &scratch.solve_order);
+                                                    &scratch.solve_order, &scratch.solve_stack);
     if (budget.exceeded) completion_budget_exceeded = true;
     return ok;
   };
@@ -706,7 +770,10 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
       for (const auto& [pi, vi] : ut.indices) {
         if (pi < witness.values.size()) witness.values[pi] = vi;
       }
-      if (!CompleteValidAssignment(opts.parameters, constraints, witness)) continue;
+      if (!CompleteValidAssignment(opts.parameters, constraints, witness, nullptr,
+                                   &scratch.solve_order, &scratch.solve_stack)) {
+        continue;
+      }
       model::Suggestion suggestion;
       suggestion.description = "Add test: " + ut.ToString();
       suggestion.test_case = std::move(witness);
@@ -835,32 +902,31 @@ ModelStats EstimateModelImpl(const EngineInput& input) {
   // Compute the raw global + sub-model tuple upper bound using the same engine
   // definitions and combined allocation budget as generation. Constraints are
   // intentionally not subtracted because estimation does not solve the model.
-  auto shared_params = CoverageEngine::ShareParameters(opts.parameters);
-  auto [coverage, err] = CoverageEngine::CreateShared(shared_params, opts.strength);
+  auto [global_tuples, err] = CoverageEngine::CountTuples(opts.parameters, opts.strength);
   if (!err.ok()) {
     stats.error = err;
     return stats;
   }
-  stats.total_tuples = coverage.TotalTuples();
+  stats.total_tuples = global_tuples;
   for (const auto& sm : opts.sub_models) {
     auto [indices, resolve_error] = ResolveParamNames(sm.parameter_names, opts.parameters);
     if (!resolve_error.empty()) {
       stats.error = {model::Error::Code::kInvalidInput, resolve_error, ""};
       return stats;
     }
-    auto [sub_coverage, sub_error] =
-        CoverageEngine::CreateShared(shared_params, indices, sm.strength);
+    auto [sub_tuples, sub_error] =
+        CoverageEngine::CountTuples(opts.parameters, indices, sm.strength);
     if (!sub_error.ok()) {
       stats.error = sub_error;
       return stats;
     }
-    if (sub_coverage.TotalTuples() > model::kMaxTuples - stats.total_tuples) {
+    if (sub_tuples > model::kMaxTuples - stats.total_tuples) {
       stats.error = {model::Error::Code::kTupleExplosion,
                      "Combined global and sub-model tuple count exceeds safe limit",
                      "limit=" + std::to_string(model::kMaxTuples)};
       return stats;
     }
-    stats.total_tuples += sub_coverage.TotalTuples();
+    stats.total_tuples += sub_tuples;
   }
 
   // Estimate the suite size. When every parameter fits in one tuple the exact

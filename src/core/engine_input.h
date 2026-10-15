@@ -6,7 +6,9 @@
 
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "model/error.h"
 #include "model/generate_options.h"
@@ -15,6 +17,15 @@ namespace coverwise {
 namespace core {
 
 class AcceptedEngineInput;
+
+/// @brief Seed shape/index errors against the caller's declared value space.
+///
+/// The parameter position is retained so expanded-value validation can keep
+/// its original interleaved range/invalid-value diagnostic priority.
+struct SeedValidationSnapshot {
+  std::string error;
+  std::optional<size_t> parameter_index;
+};
 
 /// @brief Options that reached the engine through the acceptance gate.
 ///
@@ -39,15 +50,28 @@ class EngineInput {
   /// past this prefix is an ordinary seed and is dropped with a warning.
   size_t preserved_seed_count() const { return preserved_seed_count_; }
 
+  /// @brief Shape/index errors against the caller's declared value space.
+  ///
+  /// Populated only when boundary expansion ran. Expansion can make an
+  /// originally out-of-range index name a generated value, so those errors
+  /// survive acceptance with their parameter position for ordered validation.
+  const std::vector<SeedValidationSnapshot>& original_seed_validations() const {
+    return original_seed_validations_;
+  }
+
  private:
   friend AcceptedEngineInput AcceptEngineInput(model::GenerateOptions options,
                                                size_t preserved_seed_count);
 
-  EngineInput(model::GenerateOptions options, size_t preserved_seed_count)
-      : options_(std::move(options)), preserved_seed_count_(preserved_seed_count) {}
+  EngineInput(model::GenerateOptions options, size_t preserved_seed_count,
+              std::vector<SeedValidationSnapshot> original_seed_validations)
+      : options_(std::move(options)),
+        preserved_seed_count_(preserved_seed_count),
+        original_seed_validations_(std::move(original_seed_validations)) {}
 
   model::GenerateOptions options_;
   size_t preserved_seed_count_ = 0;
+  std::vector<SeedValidationSnapshot> original_seed_validations_;
 };
 
 /// @brief Expected<EngineInput, Error> for the engine's acceptance path.

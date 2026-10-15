@@ -42,9 +42,11 @@ import {
   completeAssignment,
   completeValidAssignment,
   createSolveBudget,
+  createSolveStack,
   type SolveParameterOrder,
+  type SolveStack,
 } from './constraint-solver.js';
-import { CoverageEngine } from './coverage-engine.js';
+import { CoverageEngine, countTuples } from './coverage-engine.js';
 
 /// Resolve parameter names to sorted indices.
 /// Returns indices array and error message (empty string on success).
@@ -98,6 +100,9 @@ function shapesOverlap(a: EngineShape, b: EngineShape): boolean {
   while (i < a.params.length && j < b.params.length) {
     if (a.params[i] === b.params[j]) {
       ++shared;
+      if (shared >= a.strength) {
+        return true;
+      }
       ++i;
       ++j;
     } else if (a.params[i] < b.params[j]) {
@@ -106,7 +111,7 @@ function shapesOverlap(a: EngineShape, b: EngineShape): boolean {
       ++j;
     }
   }
-  return shared >= a.strength;
+  return a.strength === 0;
 }
 
 /// Identity key of a tuple: (parameter index, value index) pairs in ascending
@@ -132,12 +137,13 @@ function allComplete(global: CoverageEngine, subEngines: CoverageEngine[]): bool
 ///
 /// Everything a hot loop would otherwise rebuild per iteration is owned here and
 /// borrowed by the loop: the greedy construction buffers and the feasibility
-/// solver's parameter order. The order depends only on the allowed-value mask,
-/// so it is rebuilt exactly when that mask changes — once for the positive
-/// phase, once per invalid value in the negative phase — and never per witness.
+/// solver's parameter order and frame stack. The order depends only on the
+/// allowed-value mask, so it changes once per phase (or invalid value) and never
+/// per witness.
 interface GenerationScratch {
   greedy: GreedyScratch;
   solveOrder: SolveParameterOrder;
+  solveStack: SolveStack;
 }
 
 /// Build an allowedValues mask that only permits valid values.
@@ -152,34 +158,85 @@ function buildValidOnlyMask(params: Parameter[]): boolean[][] {
   return mask;
 }
 
+/// Validate a seed's row shape against a declared parameter set.
+function validateSeedShape(seed: TestCase, params: Parameter[]): string {
+  if (seed.values.length !== params.length) {
+    return `expected ${params.length} value(s), got ${seed.values.length}`;
+  }
+  return '';
+}
+
+/// Validate one seed index against a declared parameter set.
+function validateSeedIndex(seed: TestCase, params: Parameter[], pi: number): string {
+  const vi = seed.values[pi];
+  if (Number.isInteger(vi) && vi >= 0 && vi < params[pi].size) {
+    return '';
+  }
+  // A row the caller recorded is described back to them in their own terms.
+  // The index here is UNASSIGNED whenever the row drifted from the model,
+  // and printing that sentinel tells the caller nothing about which part of
+  // what they submitted no longer fits.
+  const supplied = seed.unresolved?.[pi];
+  if (supplied) {
+    return `value '${supplied}' is not declared by parameter ${params[pi].name}`;
+  }
+  if (vi === UNASSIGNED) {
+    return `no value recorded for parameter ${params[pi].name}`;
+  }
+  // Reached only through direct engine use, where the caller supplies
+  // indices itself, so the index is the caller's own input.
+  return `value index ${vi} is out of range for parameter ${params[pi].name}`;
+}
+
+interface SeedValidationSnapshot {
+  error: string;
+  parameterIndex: number | null;
+}
+
+/// Validate seed shape and indices against the declared value space.
+function captureSeedValidation(seed: TestCase, params: Parameter[]): SeedValidationSnapshot {
+  const validation: SeedValidationSnapshot = {
+    error: validateSeedShape(seed, params),
+    parameterIndex: null,
+  };
+  if (validation.error.length > 0) {
+    return validation;
+  }
+  for (let pi = 0; pi < params.length; ++pi) {
+    const indexError = validateSeedIndex(seed, params, pi);
+    if (indexError.length > 0) {
+      validation.parameterIndex = pi;
+      validation.error = indexError;
+      return validation;
+    }
+  }
+  return validation;
+}
+
 /// Validate that a seed can participate in positive coverage.
 function validatePositiveSeed(
   seed: TestCase,
   params: Parameter[],
   constraints: readonly ConstraintNode[],
+  original?: SeedValidationSnapshot,
 ): string {
-  if (seed.values.length !== params.length) {
-    return `expected ${params.length} value(s), got ${seed.values.length}`;
+  if (original && original.error.length > 0 && original.parameterIndex === null) {
+    return original.error;
+  }
+  const shapeError = validateSeedShape(seed, params);
+  if (shapeError.length > 0) {
+    return shapeError;
   }
 
   for (let pi = 0; pi < params.length; ++pi) {
-    const vi = seed.values[pi];
-    if (!Number.isInteger(vi) || vi < 0 || vi >= params[pi].size) {
-      // A row the caller recorded is described back to them in their own terms.
-      // The index here is UNASSIGNED whenever the row drifted from the model,
-      // and printing that sentinel tells the caller nothing about which part of
-      // what they submitted no longer fits.
-      const supplied = seed.unresolved?.[pi];
-      if (supplied) {
-        return `value '${supplied}' is not declared by parameter ${params[pi].name}`;
-      }
-      if (vi === UNASSIGNED) {
-        return `no value recorded for parameter ${params[pi].name}`;
-      }
-      // Reached only through direct engine use, where the caller supplies
-      // indices itself, so the index is the caller's own input.
-      return `value index ${vi} is out of range for parameter ${params[pi].name}`;
+    if (original?.parameterIndex === pi) {
+      return original.error;
     }
+    const indexError = validateSeedIndex(seed, params, pi);
+    if (indexError.length > 0) {
+      return indexError;
+    }
+    const vi = seed.values[pi];
     if (params[pi].isInvalid(vi)) {
       return `value ${params[pi].name}=${params[pi].values[vi]} is marked invalid`;
     }
@@ -288,6 +345,7 @@ function generateNegativeTests(
           { values: uncovered.assignment },
           budget,
           scratch.solveOrder,
+          scratch.solveStack,
         );
         if (witness === null) {
           if (budget.exceeded) {
@@ -378,9 +436,10 @@ function resolveWeights(params: Parameter[], config: WeightConfig): number[][] {
 ///
 /// Rows address values by index into the value list the caller declared, while
 /// boundary expansion sorts and inserts values, so every index that still names
-/// a declared value is looked up again by value identity. An index that no
-/// longer names anything is left alone for seed validation to describe. Mirrors
-/// RemapSeedValueIndices in the C++ core.
+/// a declared value is looked up again by value identity. An invalid index is
+/// left alone for validation to describe; valid positions retain their identity
+/// even when another position is invalid. Mirrors RemapSeedValueIndices in the
+/// C++ core.
 function remapSeedValueIndices(
   declared: Parameter[],
   expanded: Parameter[],
@@ -433,6 +492,7 @@ class EngineInput {
       options: GenerateOptions;
       params: Parameter[];
       preservedSeedCount: number;
+      originalSeedValidations: SeedValidationSnapshot[];
     },
   ) {}
 
@@ -455,6 +515,12 @@ class EngineInput {
     return this.accepted.preservedSeedCount;
   }
 
+  /// Shape/index errors against the caller's declared value space, populated
+  /// only when boundary expansion ran.
+  get originalSeedValidations(): readonly SeedValidationSnapshot[] {
+    return this.accepted.originalSeedValidations;
+  }
+
   /// Submit options to the acceptance gate and mint the engine's only input.
   ///
   /// The gate itself is model::acceptOptions, so every rule about what an
@@ -467,18 +533,31 @@ class EngineInput {
     options: GenerateOptions,
     preservedSeedCount: number,
   ): { input: EngineInput | null; error: ErrorInfo } {
+    const hasBoundaryExpansion = hasBoundaryConfigs(options);
     const gate = acceptOptions(options);
     if (gate.error.code !== ErrorCode.Ok) {
       return { input: null, error: gate.error };
     }
     const accepted = gate.options;
+    // Check caller indices only after the model gate accepts. The gate carries
+    // seed rows through unchanged, while its parameter list has expanded.
+    const declared =
+      hasBoundaryExpansion && options.seeds.length > 0 ? optionsParameters(options) : [];
+    const originalSeedValidations = hasBoundaryExpansion
+      ? options.seeds.map((seed) => captureSeedValidation(seed, declared))
+      : [];
     // Only expansion can move a value's index, so the rows are rebuilt for that
     // case alone; otherwise they already address the value space in hand.
-    accepted.seeds = hasBoundaryConfigs(options)
-      ? remapSeedValueIndices(optionsParameters(options), gate.params, options.seeds)
+    accepted.seeds = hasBoundaryExpansion
+      ? remapSeedValueIndices(declared, gate.params, options.seeds)
       : options.seeds.map((seed) => ({ values: [...seed.values], unresolved: seed.unresolved }));
     return {
-      input: new EngineInput({ options: accepted, params: gate.params, preservedSeedCount }),
+      input: new EngineInput({
+        options: accepted,
+        params: gate.params,
+        preservedSeedCount,
+        originalSeedValidations,
+      }),
       error: okError(),
     };
   }
@@ -578,6 +657,11 @@ function generateImpl(input: EngineInput): GenerateResult {
     constraints.push(parseResult.constraint);
   }
 
+  // This valid-value order serves the initial satisfiability check, positive
+  // completion, and suggestions. The frame stack is reused for every search.
+  const solveOrder = buildValidSolveParameterOrder(params);
+  const solveStack = createSolveStack();
+
   if (constraints.length > 0) {
     const budget = createSolveBudget();
     const witness = completeValidAssignment(
@@ -585,6 +669,8 @@ function generateImpl(input: EngineInput): GenerateResult {
       constraints,
       { values: new Array(params.length).fill(UNASSIGNED) },
       budget,
+      solveOrder,
+      solveStack,
     );
     if (witness === null) {
       result.error = budget.exceeded
@@ -642,13 +728,15 @@ function generateImpl(input: EngineInput): GenerateResult {
   // prefix even when a row no longer matches the model, but such rows do not
   // contribute to coverage.
   let droppedForMaxTests = false;
+  const originalSeedValidations = input.originalSeedValidations;
   for (let si = 0; si < options.seeds.length; ++si) {
     const seedTest = options.seeds[si];
     if (options.maxTests > 0 && result.tests.length >= options.maxTests) {
       droppedForMaxTests = true;
       break;
     }
-    const seedError = validatePositiveSeed(seedTest, params, constraints);
+    const originalSeedValidation = originalSeedValidations[si];
+    const seedError = validatePositiveSeed(seedTest, params, constraints, originalSeedValidation);
     if (seedError.length > 0) {
       if (si < preservedSeedCount) {
         result.tests.push(seedTest);
@@ -676,7 +764,8 @@ function generateImpl(input: EngineInput): GenerateResult {
   // Scratch borrowed by the construction and completion loops below.
   const scratch: GenerationScratch = {
     greedy: createGreedyScratch(params),
-    solveOrder: [],
+    solveOrder,
+    solveStack,
   };
 
   // Build scoring function that sums across all engines.
@@ -745,11 +834,6 @@ function generateImpl(input: EngineInput): GenerateResult {
   // infeasible and is excluded from the coverage target so it no longer counts
   // as a shortfall.
   let completionBudgetExceeded = false;
-  // The mask this order derives from is fixed for the whole positive phase, so
-  // it is built once instead of once per uncovered tuple.
-  scratch.solveOrder = hasInvalid
-    ? buildAllowedSolveParameterOrder(params, validMask)
-    : buildValidSolveParameterOrder(params);
   const completePartial = (partial: number[]): TestCase | null => {
     const budget = createSolveBudget();
     const witness = hasInvalid
@@ -760,6 +844,7 @@ function generateImpl(input: EngineInput): GenerateResult {
           { values: partial },
           budget,
           scratch.solveOrder,
+          scratch.solveStack,
         )
       : completeValidAssignment(
           params,
@@ -767,6 +852,7 @@ function generateImpl(input: EngineInput): GenerateResult {
           { values: partial },
           budget,
           scratch.solveOrder,
+          scratch.solveStack,
         );
     if (budget.exceeded) {
       completionBudgetExceeded = true;
@@ -907,7 +993,14 @@ function generateImpl(input: EngineInput): GenerateResult {
           partial[pi] = vi;
         }
       }
-      const witness = completeValidAssignment(params, constraints, { values: partial });
+      const witness = completeValidAssignment(
+        params,
+        constraints,
+        { values: partial },
+        undefined,
+        scratch.solveOrder,
+        scratch.solveStack,
+      );
       if (witness === null) {
         continue;
       }
@@ -1065,24 +1158,24 @@ function estimateModelImpl(input: EngineInput): ModelStats {
 
   // Raw global + sub-model upper bound before constraint exclusion, using the
   // same combined allocation budget as generation.
-  const createResult = CoverageEngine.create(params, options.strength);
-  if (createResult.error.code !== ErrorCode.Ok) {
-    stats.error = createResult.error;
+  const globalCount = countTuples(params, null, options.strength);
+  if (globalCount.error.code !== ErrorCode.Ok) {
+    stats.error = globalCount.error;
     return stats;
   }
-  stats.totalTuples = createResult.engine.totalTuples;
+  stats.totalTuples = globalCount.totalTuples;
   for (const subModel of options.subModels) {
     const resolved = resolveParamNames(subModel.parameterNames, params);
     if (resolved.error.length > 0) {
       stats.error = { code: ErrorCode.InvalidInput, message: resolved.error, detail: '' };
       return stats;
     }
-    const subResult = CoverageEngine.createFromSubset(params, resolved.indices, subModel.strength);
-    if (subResult.error.code !== ErrorCode.Ok) {
-      stats.error = subResult.error;
+    const subCount = countTuples(params, resolved.indices, subModel.strength);
+    if (subCount.error.code !== ErrorCode.Ok) {
+      stats.error = subCount.error;
       return stats;
     }
-    if (subResult.engine.totalTuples > MAX_TUPLES - stats.totalTuples) {
+    if (subCount.totalTuples > MAX_TUPLES - stats.totalTuples) {
       stats.error = {
         code: ErrorCode.TupleExplosion,
         message: 'Combined global and sub-model tuple count exceeds safe limit',
@@ -1090,7 +1183,7 @@ function estimateModelImpl(input: EngineInput): ModelStats {
       };
       return stats;
     }
-    stats.totalTuples += subResult.engine.totalTuples;
+    stats.totalTuples += subCount.totalTuples;
   }
 
   // Estimate the suite size. When every parameter fits in one tuple the exact

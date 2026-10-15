@@ -778,23 +778,116 @@ describe('semantic validation', () => {
 
 describe('boundary expansion', () => {
   it('returns the effective parameters and remaps seed indices by value identity', () => {
-    const result = generate(
-      createGenerateOptions({
-        parameters: [
-          { name: 'score', values: ['50', '0'] },
-          { name: 'status', values: ['pass', 'fail'] },
-        ],
-        boundaryConfigs: {
-          score: { type: BoundaryType.Integer, minValue: 0, maxValue: 100, step: 1 },
-        },
-        seeds: [{ values: [0, 0] }],
-      }),
-    );
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'score', values: ['50', '0'] },
+        { name: 'status', values: ['pass', 'fail'] },
+      ],
+      boundaryConfigs: {
+        score: { type: BoundaryType.Integer, minValue: 0, maxValue: 100, step: 1 },
+      },
+      seeds: [{ values: [0, 0] }],
+    });
+    const result = generate(opts);
 
     expect(result.error.code).toBe(ErrorCode.Ok);
     const remapped = resolveValueName(result.parameters[0], '50');
     expect(result.tests[0].values[0]).toBe(remapped);
     expect(result.parameters[0].values[result.tests[0].values[0]]).toBe('50');
+    expect(opts.seeds).toEqual([{ values: [0, 0] }]);
+  });
+
+  it('does not let expansion make an out-of-range declared seed index valid', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'n', values: ['5'] },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+      boundaryConfigs: {
+        n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 },
+      },
+      strength: 2,
+      seeds: [{ values: [1, 0] }],
+    });
+
+    const result = generate(opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.warnings).toContain(
+      'Seed test 0 ignored: value index 1 is out of range for parameter n',
+    );
+    expect(opts.seeds).toEqual([{ values: [1, 0] }]);
+  });
+
+  it('preserves seed diagnostic order when expansion snapshots a later bad index', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['bad', 'good'], invalid: [true, false] },
+        { name: 'n', values: ['5'] },
+      ],
+      boundaryConfigs: {
+        n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 },
+      },
+      strength: 2,
+      seeds: [{ values: [0, 1] }],
+    });
+
+    const result = generate(opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.warnings).toContain('Seed test 0 ignored: value A=bad is marked invalid');
+  });
+
+  it('keeps an out-of-range seed invalid when the declared domain is empty', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'n', values: [] },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+      boundaryConfigs: {
+        n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 },
+      },
+      strength: 2,
+      seeds: [{ values: [0, 0] }],
+    });
+
+    const result = generate(opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.warnings).toContain(
+      'Seed test 0 ignored: value index 0 is out of range for parameter n',
+    );
+    expect(opts.seeds).toEqual([{ values: [0, 0] }]);
+  });
+
+  it('preserves strict existing rows that expansion cannot validate', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'n', values: ['5'] },
+        { name: 'os', values: ['win', 'mac'] },
+      ],
+      boundaryConfigs: {
+        n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 },
+      },
+      strength: 2,
+    });
+    const existing = [{ values: [1, 0] }, { values: [UNASSIGNED, 1] }, { values: [0, UNASSIGNED] }];
+
+    const result = extend(existing, opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.tests.slice(0, 2)).toEqual(existing.slice(0, 2));
+    expect(result.parameters[0].values[result.tests[2].values[0]]).toBe('5');
+    expect(result.tests[2].values[1]).toBe(UNASSIGNED);
+    expect(result.warnings).toContain(
+      'Existing test 0 preserved but excluded from coverage: value index 1 is out of range for parameter n',
+    );
+    expect(result.warnings).toContain(
+      'Existing test 1 preserved but excluded from coverage: no value recorded for parameter n',
+    );
+    expect(result.warnings).toContain(
+      'Existing test 2 preserved but excluded from coverage: no value recorded for parameter os',
+    );
   });
 
   it('decides value identity by the shared numeric grammar, not by coercion', () => {
