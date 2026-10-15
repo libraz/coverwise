@@ -329,7 +329,8 @@ function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
   // Public TypeScript callers can only construct the union in `types.ts`, but
   // JavaScript callers may still pass arbitrary objects at runtime.
   const raw = p as PublicParameter & { type?: unknown; range?: unknown; step?: unknown };
-  if (raw.type === undefined && raw.range === undefined && raw.step === undefined) {
+  // Own fields only, as the input validator and the WASM binding test them.
+  if (!Object.hasOwn(raw, 'type') && !Object.hasOwn(raw, 'range') && !Object.hasOwn(raw, 'step')) {
     return null;
   }
   if (raw.type !== 'integer' && raw.type !== 'float') {
