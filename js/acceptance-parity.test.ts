@@ -24,6 +24,11 @@ import * as pure from './pure/index.js';
 import type { CoverwiseError, GenerateInput, Parameter, TestCase } from './types.js';
 import { validateParameters as validateParameterShape } from './validation.js';
 
+/// Ceiling on a hang, not a performance budget: these cases drive inputs sized to
+/// the published ceilings, and CI runs them under coverage instrumentation on a
+/// shared runner, where a default unit-test timeout does not apply.
+const MEASUREMENT_TIMEOUT_MS = 120_000;
+
 beforeAll(async () => {
   await wasm.init();
 });
@@ -457,7 +462,9 @@ describe('seed rows', () => {
 // same suite; it used to stop around a third of it because of a byte cap that
 // no published limit mentioned.
 describe('a suite at the documented row limit', () => {
-  it('is accepted, and measured identically on both surfaces', () => {
+  it('is accepted, and measured identically on both surfaces', {
+    timeout: MEASUREMENT_TIMEOUT_MS,
+  }, () => {
     const parameters: Parameter[] = [
       { name: 'a', values: ['x', 'y'] },
       { name: 'b', values: ['1', '2'] },
@@ -901,7 +908,7 @@ describe('the documented byte budgets', () => {
   // would be half the published one for anyone who uses seeds. Calibrating the
   // same model with and without the seed measures how many times its text was
   // charged, rather than asserting one arrangement of bytes happens to fit.
-  it('charges a seed row once, where it is read', () => {
+  it('charges a seed row once, where it is read', { timeout: MEASUREMENT_TIMEOUT_MS }, () => {
     const withSeed = (bytes: number): Model => {
       const built = model(bytes);
       const tail = (built.parameters[2].values as string[])[2];

@@ -17,6 +17,11 @@ import {
 } from './constraint-solver.js';
 import { generate } from './generator.js';
 
+/// Ceiling on a hang, not a performance budget: the case below spends the whole
+/// search budget, and CI runs it under coverage instrumentation on a shared
+/// runner, where a default unit-test timeout does not apply.
+const MEASUREMENT_TIMEOUT_MS = 120_000;
+
 /**
  * Constraint that stays undecided until every parameter is assigned. Nothing
  * can be pruned before a complete assignment, and the only satisfying one is
@@ -141,7 +146,9 @@ describe('completeValidAssignment', () => {
     expect(budget.exceeded).toBe(false);
   });
 
-  it('reports an exhausted budget instead of an unsatisfiable model', () => {
+  it('reports an exhausted budget instead of an unsatisfiable model', {
+    timeout: MEASUREMENT_TIMEOUT_MS,
+  }, () => {
     const parameterCount = 24;
     const params = binaryParams(parameterCount);
     const budget = createSolveBudget();
