@@ -483,16 +483,14 @@ std::vector<coverwise::model::SubModel> ParseSubModels(const JsArray& js_sub_mod
     for (uint32_t j = 0; j < name_count; ++j) {
       sm.parameter_names.push_back(js_names.RequireNonEmptyStringAt(j, message));
     }
-    if (auto js_strength = js_sm.OptionalScalar("strength", message)) {
-      // Validate as a positive integer; a fractional or zero strength would
-      // otherwise be silently truncated (e.g. 0 → no-op sub-model).
-      const double strength = js_strength->RequireNumber(message);
-      if (!std::isfinite(strength) || std::floor(strength) != strength || strength < 1.0 ||
-          strength > static_cast<double>(std::numeric_limits<uint32_t>::max())) {
-        throw std::runtime_error(message);
-      }
-      sm.strength = static_cast<uint32_t>(strength);
+    // Required, as on every other surface. Validated as a positive integer; a
+    // fractional or zero strength would otherwise be silently truncated.
+    const double strength = js_sm.RequireScalar("strength", message).RequireNumber(message);
+    if (!std::isfinite(strength) || std::floor(strength) != strength || strength < 1.0 ||
+        strength > static_cast<double>(std::numeric_limits<uint32_t>::max())) {
+      throw std::runtime_error(message);
     }
+    sm.strength = static_cast<uint32_t>(strength);
     sub_models.push_back(std::move(sm));
   }
   return sub_models;

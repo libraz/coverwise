@@ -97,7 +97,7 @@ EM_JS_DEPS(coverwise_js_value, "$Emval,$UTF8ToString");
 //   - JsValue's classifiers — TryScalar's isString/isNumber/isTrue/isFalse,
 //     IsNullish, and the typeOf in TryObject — are `typeof` tests and handle
 //     comparisons. A Proxy has no trap for either.
-//   - The key list in ForEachEntry and FieldCount is read directly for its
+//   - The key list in ForEachEntry is read directly for its
 //     length and its elements, because it is the array Object.keys returned to
 //     this layer a moment earlier rather than anything the caller supplied.
 // Whatever comes back out of a read, on the other hand, is the caller's again,
@@ -506,11 +506,6 @@ class JsObject {
       emscripten::val value = detail::ReadKey(value_, key, name);
       visit(std::move(name), JsValue(std::move(value)));
     }
-  }
-
-  /// @brief Number of own enumerable keys.
-  uint32_t FieldCount(const emscripten::val& object_ctor) const {
-    return detail::ReadOwnKeys(object_ctor, value_)["length"].as<uint32_t>();
   }
 
  private:
