@@ -27,6 +27,12 @@ struct SeedValidationSnapshot {
   std::optional<size_t> parameter_index;
 };
 
+/// @brief Validate that a seed can participate in positive coverage.
+std::string ValidatePositiveSeed(const model::TestCase& seed,
+                                 const std::vector<model::Parameter>& params,
+                                 const std::vector<model::Constraint>& constraints,
+                                 const SeedValidationSnapshot* original = nullptr);
+
 /// @brief Options that reached the engine through the acceptance gate.
 ///
 /// AcceptEngineInput() is the only thing that can produce one — the constructor

@@ -22,6 +22,7 @@ set(COVERWISE_SOURCES
   # core
   core/constraint_solver.cpp
   core/coverage_engine.cpp
+  core/engine_input.cpp
   core/generator.cpp
 
   # validator
