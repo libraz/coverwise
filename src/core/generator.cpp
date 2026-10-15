@@ -280,8 +280,6 @@ model::GenerateResult RejectedResult(const std::vector<model::Parameter>& parame
   return result;
 }
 
-}  // namespace
-
 model::GenerateResult GenerateImpl(const EngineInput& input) {
   const GenerateOptions& opts = input.options();
   const size_t preserved_seed_count = input.preserved_seed_count();
@@ -384,6 +382,7 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
   bool exclude_budget_exceeded = false;
   coverage.ExcludeInvalidTuples(constraints, {}, &exclude_budget_exceeded);
   for (auto& eng : sub_engines) {
+    if (exclude_budget_exceeded) break;
     eng.ExcludeInvalidTuples(constraints, {}, &exclude_budget_exceeded);
   }
   if (exclude_budget_exceeded) {
@@ -692,6 +691,8 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
   return result;
 }
 
+}  // namespace
+
 model::GenerateResult Generate(const GenerateOptions& options) {
   auto accepted = AcceptEngineInput(options, 0);
   if (!accepted.ok()) return RejectedResult(options.parameters, accepted.error());
@@ -728,6 +729,8 @@ model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
   if (!accepted.ok()) return RejectedResult(options.parameters, accepted.error());
   return GenerateImpl(*accepted);
 }
+
+namespace {
 
 ModelStats EstimateModelImpl(const EngineInput& input) {
   const GenerateOptions& opts = input.options();
@@ -827,6 +830,8 @@ ModelStats EstimateModelImpl(const EngineInput& input) {
 
   return stats;
 }
+
+}  // namespace
 
 ModelStats EstimateModel(const GenerateOptions& options) {
   auto accepted = AcceptEngineInput(options, 0);

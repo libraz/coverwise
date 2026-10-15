@@ -467,6 +467,9 @@ function generateImpl(input: EngineInput): GenerateResult {
   const excludeBudgetExceeded = { value: false };
   coverage.excludeInvalidTuples(constraints, [], excludeBudgetExceeded);
   for (const eng of subEngines) {
+    if (excludeBudgetExceeded.value) {
+      break;
+    }
     eng.excludeInvalidTuples(constraints, [], excludeBudgetExceeded);
   }
   if (excludeBudgetExceeded.value) {
