@@ -9,6 +9,38 @@ Generation is deterministic: the same model and seed produce the same suite.
 Entries below call out the releases where that output changed, so a pinned
 version can be upgraded knowingly.
 
+## [1.6.1] - 2026-10-15
+
+Seeds, sub-models and generation options are now accepted the same way on every
+surface, and estimating a model no longer builds coverage engines. Generated
+suites are unchanged for valid models and seeds.
+
+### Fixed
+
+- A seed whose value index lies past a parameter's declared values is refused
+  even when boundary expansion adds enough values for the index to land on a
+  generated one.
+- The compiled WASM module refuses a sub-model without `strength`, as the
+  published types, the JavaScript wrapper and the CLI already do, instead of
+  defaulting it.
+- The pure TypeScript surface detects boundary parameters by own `type`, `range`
+  and `step` fields, as the validator and the WASM binding do, so an inherited
+  field no longer expands boundary values on that surface alone.
+- The pure TypeScript option validation charges weight names against the string
+  budget in the order the core walks them, so an oversized key listed first no
+  longer masks the aggregate refusal, and an all-empty alias list reads the same
+  during validation as during generation.
+
+### Changed
+
+- `estimateModel` counts tuples without building coverage engines, and a run
+  whose global exclusion sweep has spent its search budget fails without
+  sweeping each sub-model first.
+- The feasibility solver completes assignments in place and shares one solve
+  order and frame stack across the satisfiability check, completion and
+  suggestions; the CLI resolves a row's members through a name index built once
+  per row.
+
 ## [1.6.0] - 2026-09-04
 
 Nothing a caller supplies can leave an entry point as anything but a documented
@@ -291,6 +323,7 @@ First release.
   mirroring the C++ architecture.
 - Bilingual documentation and the publish workflow.
 
+[1.6.1]: https://github.com/libraz/coverwise/releases/tag/v1.6.1
 [1.6.0]: https://github.com/libraz/coverwise/releases/tag/v1.6.0
 [1.5.0]: https://github.com/libraz/coverwise/releases/tag/v1.5.0
 [1.4.0]: https://github.com/libraz/coverwise/releases/tag/v1.4.0
