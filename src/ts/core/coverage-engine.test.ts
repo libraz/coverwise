@@ -3,7 +3,7 @@ import { ErrorCode } from '../model/error.js';
 import { Parameter, UNASSIGNED } from '../model/parameter.js';
 import type { TestCase } from '../model/test-case.js';
 import { MAX_DIAGNOSTIC_TUPLES } from '../model/tuning-limits.js';
-import { CoverageEngine } from './coverage-engine.js';
+import { CoverageEngine, countTuples } from './coverage-engine.js';
 
 describe('CoverageEngine', () => {
   describe('create()', () => {
@@ -126,6 +126,73 @@ describe('CoverageEngine', () => {
       expect(result.error.detail).toBe(
         'Total tuples: 18446744073709551615, limit: 16000000. Reduce strength or parameter count.',
       );
+    });
+  });
+
+  describe('countTuples()', () => {
+    it('matches full, subset, zero-strength, and empty-domain engines', () => {
+      const params = [
+        new Parameter('A', ['a0', 'a1']),
+        new Parameter('B', ['b0', 'b1', 'b2']),
+        new Parameter('C', ['c0', 'c1', 'c2', 'c3']),
+      ];
+
+      const full = countTuples(params, null, 2);
+      const fullEngine = CoverageEngine.create(params, 2);
+      expect(full.error.code).toBe(ErrorCode.Ok);
+      expect(full.totalTuples).toBe(26);
+      expect(fullEngine.error.code).toBe(ErrorCode.Ok);
+      expect(full.totalTuples).toBe(fullEngine.engine.totalTuples);
+
+      const subset = countTuples(params, [0, 2], 2);
+      const subsetEngine = CoverageEngine.createFromSubset(params, [0, 2], 2);
+      expect(subset.error.code).toBe(ErrorCode.Ok);
+      expect(subset.totalTuples).toBe(8);
+      expect(subsetEngine.error.code).toBe(ErrorCode.Ok);
+      expect(subset.totalTuples).toBe(subsetEngine.engine.totalTuples);
+
+      const zeroStrength = countTuples(params, null, 0);
+      const zeroStrengthEngine = CoverageEngine.create(params, 0);
+      expect(zeroStrength.error.code).toBe(ErrorCode.Ok);
+      expect(zeroStrength.totalTuples).toBe(0);
+      expect(zeroStrengthEngine.error.code).toBe(ErrorCode.Ok);
+      expect(zeroStrength.totalTuples).toBe(zeroStrengthEngine.engine.totalTuples);
+
+      const emptyDomainParams = [
+        new Parameter('Empty', []),
+        new Parameter('B', ['b0', 'b1', 'b2']),
+        new Parameter('C', ['c0', 'c1']),
+      ];
+      const emptyDomain = countTuples(emptyDomainParams, null, 2);
+      const emptyDomainEngine = CoverageEngine.create(emptyDomainParams, 2);
+      expect(emptyDomain.error.code).toBe(ErrorCode.Ok);
+      expect(emptyDomain.totalTuples).toBe(6);
+      expect(emptyDomainEngine.error.code).toBe(ErrorCode.Ok);
+      expect(emptyDomain.totalTuples).toBe(emptyDomainEngine.engine.totalTuples);
+
+      const largeValues = Array.from({ length: 20_000 }, () => 'v');
+      const trailingEmptyDomainParams = [
+        new Parameter('A', largeValues),
+        new Parameter('B', largeValues),
+        new Parameter('Empty', []),
+      ];
+      const trailingEmptyDomain = countTuples(trailingEmptyDomainParams, null, 3);
+      const trailingEmptyDomainEngine = CoverageEngine.create(trailingEmptyDomainParams, 3);
+      expect(trailingEmptyDomain.error.code).toBe(ErrorCode.Ok);
+      expect(trailingEmptyDomain.totalTuples).toBe(0);
+      expect(trailingEmptyDomainEngine.error.code).toBe(ErrorCode.Ok);
+      expect(trailingEmptyDomainEngine.engine.totalTuples).toBe(trailingEmptyDomain.totalTuples);
+    });
+
+    it('preserves the engine tuple-explosion error without materializing an engine', () => {
+      const values = Array.from({ length: 100 }, (_, i) => `v${i}`);
+      const params = Array.from({ length: 10 }, (_, i) => new Parameter(`P${i}`, values));
+      const count = countTuples(params, null, 5);
+      const engine = CoverageEngine.create(params, 5);
+
+      expect(count.totalTuples).toBe(0);
+      expect(count.error).toEqual(engine.error);
+      expect(count.error.code).toBe(ErrorCode.TupleExplosion);
     });
   });
 
@@ -410,9 +477,39 @@ describe('CoverageEngine', () => {
       // A tuple of a size the engine does not enumerate is never one of its own.
       expect(global.needsTuple([0, 1, 2], [1, 1, 1])).toBe(false);
     });
+
+    it('binary-searches first, middle, and last combinations safely', () => {
+      const params = Array.from({ length: 5 }, (_, i) => new Parameter(`P${i}`, ['v0', 'v1']));
+      const global = CoverageEngine.create(params, 2).engine;
+      expect(global.needsTuple([0, 1], [0, 1])).toBe(true);
+      expect(global.needsTuple([1, 3], [0, 1])).toBe(true);
+      expect(global.needsTuple([3, 4], [0, 1])).toBe(true);
+
+      const subset = CoverageEngine.createFromSubset(params, [0, 2, 4], 2).engine;
+      expect(subset.needsTuple([0, 3], [0, 1])).toBe(false);
+      expect(subset.needsTuple([1, 3], [0, 1])).toBe(false);
+      expect(subset.needsTuple([4, 5], [0, 1])).toBe(false);
+      expect(subset.needsTuple([0, 4], [0, 2])).toBe(false);
+      expect(subset.needsTuple([0, 4], [0])).toBe(false);
+    });
   });
 
   describe('createFromSubset()', () => {
+    it('treats an empty subset as no parameters even if the model explodes', () => {
+      const values = Array.from({ length: 10 }, (_, i) => `v${i}`);
+      const params = Array.from({ length: 50 }, (_, i) => new Parameter(`P${i}`, values));
+
+      const created = CoverageEngine.createFromSubset(params, [], 3);
+      const counted = countTuples(params, [], 3);
+      const fullCount = countTuples(params, null, 3);
+
+      expect(created.error.code).toBe(ErrorCode.Ok);
+      expect(created.engine.totalTuples).toBe(0);
+      expect(counted.error.code).toBe(ErrorCode.Ok);
+      expect(counted.totalTuples).toBe(0);
+      expect(fullCount.error.code).toBe(ErrorCode.TupleExplosion);
+    });
+
     it('tracks tuples only for the specified parameter subset', () => {
       const params = [
         new Parameter('os', ['win', 'mac']),

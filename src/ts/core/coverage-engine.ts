@@ -11,8 +11,8 @@ import { checkedBinomial, generateCombinationsFlat } from '../util/combinatorics
 import {
   buildAllowedSolveParameterOrder,
   buildValidSolveParameterOrder,
-  completeAssignment,
-  completeValidAssignment,
+  completeAssignmentInPlace,
+  completeValidAssignmentInPlace,
   createSolveBudget,
   createSolveStack,
 } from './constraint-solver.js';
@@ -20,6 +20,12 @@ import {
 /// Result of CoverageEngine.create() factory method.
 export interface CreateResult {
   engine: CoverageEngine;
+  error: ErrorInfo;
+}
+
+/// Result of counting tuple coverage without creating an engine.
+export interface CountTuplesResult {
+  totalTuples: number;
   error: ErrorInfo;
 }
 
@@ -37,13 +43,14 @@ export class CoverageEngine {
   private covered_: DynamicBitset = new DynamicBitset(0);
 
   /// Mapping from local param index to global param index.
-  /// Empty means identity mapping (all params, no subset).
+  /// For subset engines, maps local parameter indices to global indices. It may
+  /// be empty when the selected subset is empty.
   private paramSubset_: number[] = [];
 
   /// Pre-computed C(n, t) parameter index combinations, stored flat with stride
   /// strength_ (combo ci occupies [ci*strength_, (ci+1)*strength_)). A flat
   /// buffer avoids one small array per combination near the cap and mirrors the
-  /// C++ layout. When paramSubset_ is set, these contain GLOBAL param indices.
+  /// C++ layout. For subset engines, these contain GLOBAL param indices.
   private paramCombinations_: number[] = [];
   private numCombinations_ = 0;
   private combinationOffsets_: number[] = [];
@@ -300,7 +307,7 @@ export class CoverageEngine {
       allowedValues.length === 0
         ? buildValidSolveParameterOrder(this.params_)
         : buildAllowedSolveParameterOrder(this.params_, allowedValues);
-    const assignment = new Array<number>(numParams).fill(UNASSIGNED);
+    const assignment: TestCase = { values: new Array<number>(numParams).fill(UNASSIGNED) };
     // One frame buffer for the whole sweep. Every search over this model has the
     // same depth bound, so after the first tuple the buffer never grows again
     // and the sweep costs no frame allocation per tuple.
@@ -309,7 +316,7 @@ export class CoverageEngine {
     this.forEachTuple((ci, vi, combo, valueIndices) => {
       // Build partial assignment with only this tuple's parameters set.
       for (let j = 0; j < combo.length; ++j) {
-        assignment[combo[j]] = valueIndices[j];
+        assignment.values[combo[j]] = valueIndices[j];
       }
 
       // Partial evaluation alone misses tuples made impossible by interacting
@@ -319,24 +326,24 @@ export class CoverageEngine {
       const tupleBudget = createSolveBudget();
       const witness =
         allowedValues.length === 0
-          ? completeValidAssignment(
+          ? completeValidAssignmentInPlace(
               this.params_,
               constraints,
-              { values: assignment },
+              assignment,
               tupleBudget,
               parameterOrder,
               solveStack,
             )
-          : completeAssignment(
+          : completeAssignmentInPlace(
               this.params_,
               constraints,
               allowedValues,
-              { values: assignment },
+              assignment,
               tupleBudget,
               parameterOrder,
               solveStack,
             );
-      assignment.fill(UNASSIGNED);
+      assignment.values.fill(UNASSIGNED);
       if (tupleBudget.exceeded) {
         if (budgetExceeded !== undefined) {
           budgetExceeded.value = true;
@@ -344,7 +351,7 @@ export class CoverageEngine {
         return false; // Stop; universe is not fully classified.
       }
       const globalIndex = this.combinationOffsets_[ci] + vi;
-      if (witness === null && !this.covered_.test(globalIndex)) {
+      if (!witness && !this.covered_.test(globalIndex)) {
         this.covered_.set(globalIndex);
         ++this.invalidTuples_;
         ++this.coveredBits_;
@@ -494,35 +501,61 @@ export class CoverageEngine {
   /// @param params Global parameter indices in ascending order.
   /// @param valueIndices Value index per entry of `params`.
   needsTuple(params: readonly number[], valueIndices: readonly number[]): boolean {
-    if (this.strength_ === 0 || params.length !== this.strength_) {
+    if (
+      this.strength_ === 0 ||
+      params.length !== this.strength_ ||
+      valueIndices.length !== this.strength_
+    ) {
       return false;
     }
-    const combos = this.paramToCombos_[params[0]];
-    if (combos === undefined) {
+    if (params[0] < 0 || params[0] >= this.params_.length) {
       return false;
     }
-    // Combinations are stored with their parameter indices ascending, so the
-    // caller's ascending tuple either matches one of the combinations containing
-    // its first parameter or is not enumerated here at all.
-    for (const ci of combos) {
-      const base = ci * this.strength_;
-      let same = true;
+
+    // Combinations are stored in lexicographic order, so search the flat table
+    // directly instead of scanning every combination containing params[0].
+    let low = 0;
+    let high = this.numCombinations_;
+    while (low < high) {
+      const mid = low + Math.floor((high - low) / 2);
+      const base = mid * this.strength_;
+      let order = 0;
       for (let j = 0; j < this.strength_; ++j) {
-        if (this.paramCombinations_[base + j] !== params[j]) {
-          same = false;
+        if (this.paramCombinations_[base + j] < params[j]) {
+          order = -1;
+          break;
+        }
+        if (this.paramCombinations_[base + j] > params[j]) {
+          order = 1;
           break;
         }
       }
-      if (!same) {
-        continue;
+      if (order < 0) {
+        low = mid + 1;
+      } else {
+        high = mid;
       }
-      let localIndex = 0;
-      for (let j = 0; j < this.strength_; ++j) {
-        localIndex += valueIndices[j] * this.comboMultipliers_[base + j];
-      }
-      return !this.covered_.test(this.combinationOffsets_[ci] + localIndex);
     }
-    return false;
+    if (low >= this.numCombinations_) {
+      return false;
+    }
+
+    const base = low * this.strength_;
+    let localIndex = 0;
+    for (let j = 0; j < this.strength_; ++j) {
+      const paramIndex = this.paramCombinations_[base + j];
+      const valueIndex = valueIndices[j];
+      if (
+        paramIndex !== params[j] ||
+        !Number.isInteger(valueIndex) ||
+        valueIndex < 0 ||
+        valueIndex >= this.params_[paramIndex].size
+      ) {
+        return false;
+      }
+      localIndex += valueIndex * this.comboMultipliers_[base + j];
+    }
+    return !this.covered_.test(this.combinationOffsets_[low] + localIndex);
   }
 
   /// Return the first currently-uncovered tuple as a partial assignment, or null.
@@ -746,11 +779,23 @@ export class CoverageEngine {
       const base = ci * this.strength_;
       this.combinationOffsets_.push(total);
       let product = 1;
+      let exceedsLimit = false;
       for (let j = 0; j < this.strength_; ++j) {
-        product *= this.params_[this.paramCombinations_[base + j]].size;
-        if (product > MAX_TUPLES) {
-          return Math.min(total + product, Number.MAX_SAFE_INTEGER);
+        const radix = this.params_[this.paramCombinations_[base + j]].size;
+        if (radix === 0) {
+          // A zero-sized domain makes this whole combination contribute no
+          // tuples, even if earlier radixes already exceeded the safety limit.
+          product = 0;
+          exceedsLimit = false;
+          break;
         }
+        if (!exceedsLimit) {
+          product *= radix;
+          exceedsLimit = product > MAX_TUPLES;
+        }
+      }
+      if (exceedsLimit) {
+        return Math.min(total + product, Number.MAX_SAFE_INTEGER);
       }
       total += product;
       if (total > MAX_TUPLES) {
@@ -770,8 +815,8 @@ export class CoverageEngine {
 const UINT64_MAX = 2n ** 64n - 1n;
 
 function preflightModel(
-  params: Parameter[],
-  subset: number[] | null,
+  params: readonly Parameter[],
+  subset: readonly number[] | null,
   strength: number,
 ): { total: number; error: ErrorInfo } {
   const n = subset === null ? params.length : subset.length;
@@ -832,6 +877,17 @@ function preflightModel(
   // Every accepted total is at most MAX_TUPLES, well inside what a double holds
   // exactly, so the rest of the engine keeps counting in numbers.
   return { total: Number(total), error: okError() };
+}
+
+/// Count the t-wise tuple universe without creating coverage lookup tables.
+/// A null subset selects the full model; an empty subset selects no parameters.
+export function countTuples(
+  params: readonly Parameter[],
+  subset: readonly number[] | null,
+  strength: number,
+): CountTuplesResult {
+  const result = preflightModel(params, subset, strength);
+  return { totalTuples: result.total, error: result.error };
 }
 
 /// Build an error for when tuple count exceeds the safety limit.

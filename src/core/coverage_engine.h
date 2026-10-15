@@ -49,6 +49,11 @@ class CoverageEngine {
     return CreateShared(ShareParameters(params), strength);
   }
 
+  /// @brief Count the t-wise tuples without building coverage lookup tables.
+  /// @return Tuple count and an error if the count exceeds a safety limit.
+  static std::pair<uint32_t, model::Error> CountTuples(const std::vector<model::Parameter>& params,
+                                                       uint32_t strength);
+
   /// @brief Initialize coverage tracking for a subset of parameters.
   ///
   /// Only the parameters at the given indices are considered for tuple
@@ -62,6 +67,15 @@ class CoverageEngine {
       uint32_t strength) {
     return CreateShared(ShareParameters(all_params), param_subset, strength);
   }
+
+  /// @brief Count tuples for a subset without building coverage lookup tables.
+  /// @param all_params All parameter definitions.
+  /// @param param_subset Indices of parameters to cover (must be sorted).
+  /// @param strength The interaction strength (t).
+  /// @return Tuple count and an error if the count exceeds a safety limit.
+  static std::pair<uint32_t, model::Error> CountTuples(
+      const std::vector<model::Parameter>& all_params, const std::vector<uint32_t>& param_subset,
+      uint32_t strength);
 
   /// @brief Initialize coverage tracking over an already-shared parameter set.
   ///
@@ -267,14 +281,14 @@ class CoverageEngine {
   uint32_t covered_bits_ = 0;
   util::DynamicBitset covered_;
 
-  /// @brief Mapping from local param index to global param index.
-  /// Empty means identity mapping (all params, no subset).
+  /// @brief Global indices selected by a subset engine; may be empty when the
+  /// selected subset contains no parameters.
   std::vector<uint32_t> param_subset_;
 
   /// @brief Pre-computed C(n, t) parameter index combinations, stored flat with
   /// stride strength_ (combo ci occupies [ci*strength_, (ci+1)*strength_)). A
   /// flat buffer avoids ~one small heap block per combination near the cap.
-  /// When param_subset_ is set, these contain GLOBAL param indices.
+  /// For subset engines, these contain GLOBAL param indices.
   std::vector<uint32_t> param_combinations_;
   uint32_t num_combinations_ = 0;
   std::vector<uint32_t> combination_offsets_;

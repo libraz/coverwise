@@ -186,6 +186,116 @@ TEST(CoverageEngineTest, ScoreCandidateCorrectness) {
   EXPECT_EQ(engine.ScoreCandidate(TestCase{{0, 1, 0}}), 2u);
 }
 
+TEST(CoverageEngineTest, CountTuplesMatchesEnginesForFullSubsetAndEmptyDomains) {
+  const std::vector<Parameter> params = {
+      {"A", {"a0", "a1"}, {}},
+      {"B", {"b0", "b1", "b2"}, {}},
+      {"C", {"c0", "c1", "c2", "c3"}, {}},
+  };
+
+  auto [full_count, full_error] = CoverageEngine::CountTuples(params, 2);
+  auto [full_engine, full_engine_error] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(full_error.ok());
+  ASSERT_TRUE(full_engine_error.ok());
+  EXPECT_EQ(full_count, 26u);
+  EXPECT_EQ(full_engine.TotalTuples(), full_count);
+
+  const std::vector<uint32_t> subset = {0, 2};
+  auto [subset_count, subset_error] = CoverageEngine::CountTuples(params, subset, 2);
+  auto [subset_engine, subset_engine_error] = CoverageEngine::Create(params, subset, 2);
+  ASSERT_TRUE(subset_error.ok());
+  ASSERT_TRUE(subset_engine_error.ok());
+  EXPECT_EQ(subset_count, 8u);
+  EXPECT_EQ(subset_engine.TotalTuples(), subset_count);
+
+  auto [zero_strength_count, zero_strength_error] = CoverageEngine::CountTuples(params, 0);
+  auto [zero_strength_engine, zero_strength_engine_error] = CoverageEngine::Create(params, 0);
+  ASSERT_TRUE(zero_strength_error.ok());
+  ASSERT_TRUE(zero_strength_engine_error.ok());
+  EXPECT_EQ(zero_strength_count, 0u);
+  EXPECT_EQ(zero_strength_engine.TotalTuples(), zero_strength_count);
+
+  const std::vector<Parameter> empty_domain_params = {
+      {"Empty", {}, {}},
+      {"B", {"b0", "b1", "b2"}, {}},
+      {"C", {"c0", "c1"}, {}},
+  };
+  auto [empty_domain_count, empty_domain_error] =
+      CoverageEngine::CountTuples(empty_domain_params, 2);
+  auto [empty_domain_engine, empty_domain_engine_error] =
+      CoverageEngine::Create(empty_domain_params, 2);
+  ASSERT_TRUE(empty_domain_error.ok());
+  ASSERT_TRUE(empty_domain_engine_error.ok());
+  EXPECT_EQ(empty_domain_count, 6u);
+  EXPECT_EQ(empty_domain_engine.TotalTuples(), empty_domain_count);
+
+  const std::vector<std::string> large_values(20'000, "v");
+  const std::vector<Parameter> trailing_empty_domain_params = {
+      {"A", large_values, {}},
+      {"B", large_values, {}},
+      {"Empty", {}, {}},
+  };
+  auto [trailing_empty_count, trailing_empty_error] =
+      CoverageEngine::CountTuples(trailing_empty_domain_params, 3);
+  auto [trailing_empty_engine, trailing_empty_engine_error] =
+      CoverageEngine::Create(trailing_empty_domain_params, 3);
+  ASSERT_TRUE(trailing_empty_error.ok());
+  ASSERT_TRUE(trailing_empty_engine_error.ok());
+  EXPECT_EQ(trailing_empty_count, 0u);
+  EXPECT_EQ(trailing_empty_engine.TotalTuples(), trailing_empty_count);
+}
+
+TEST(CoverageEngineTest, CountTuplesPreservesTupleExplosionError) {
+  std::vector<Parameter> params;
+  for (int i = 0; i < 10; ++i) {
+    Parameter p;
+    p.name = "P" + std::to_string(i);
+    for (int j = 0; j < 100; ++j) {
+      p.values.push_back(std::to_string(j));
+    }
+    params.push_back(std::move(p));
+  }
+
+  auto [count, count_error] = CoverageEngine::CountTuples(params, 5);
+  auto [engine, engine_error] = CoverageEngine::Create(params, 5);
+  EXPECT_EQ(count, 0u);
+  EXPECT_EQ(count_error.code, coverwise::model::Error::Code::kTupleExplosion);
+  EXPECT_EQ(count_error.code, engine_error.code);
+  EXPECT_EQ(count_error.message, engine_error.message);
+  EXPECT_EQ(count_error.detail, engine_error.detail);
+}
+
+TEST(CoverageEngineTest, CountTuplesAllocatesLessThanAnEngine) {
+  std::vector<Parameter> params;
+  for (uint32_t pi = 0; pi < 10; ++pi) {
+    std::vector<std::string> values;
+    for (uint32_t vi = 0; vi < 5; ++vi) {
+      values.push_back(std::to_string(vi));
+    }
+    params.push_back({"P" + std::to_string(pi), std::move(values), {}});
+  }
+
+  uint64_t count_allocations = 0;
+  {
+    AllocationCounter counter;
+    const auto result = CoverageEngine::CountTuples(params, 2);
+    count_allocations = counter.Stop();
+    ASSERT_TRUE(result.second.ok());
+    EXPECT_EQ(result.first, 1125u);
+  }
+
+  uint64_t engine_allocations = 0;
+  {
+    AllocationCounter counter;
+    const auto result = CoverageEngine::Create(params, 2);
+    engine_allocations = counter.Stop();
+    ASSERT_TRUE(result.second.ok());
+    EXPECT_EQ(result.first.TotalTuples(), 1125u);
+  }
+
+  EXPECT_LT(count_allocations, engine_allocations);
+}
+
 TEST(CoverageEngineTest, TupleExplosionLimit) {
   // Create parameters that would exceed kMaxTuples (16M).
   // 50 params x 10 values, strength 3: C(50,3)=19600, each 10^3=1000,
@@ -203,6 +313,27 @@ TEST(CoverageEngineTest, TupleExplosionLimit) {
   auto [engine, err] = CoverageEngine::Create(params, 3);
   EXPECT_FALSE(err.ok());
   EXPECT_EQ(err.code, coverwise::model::Error::Code::kTupleExplosion);
+}
+
+TEST(CoverageEngineTest, EmptySubsetDoesNotPreflightTheFullModel) {
+  std::vector<Parameter> params;
+  for (int i = 0; i < 50; ++i) {
+    Parameter p;
+    p.name = "P" + std::to_string(i);
+    for (int j = 0; j < 10; ++j) {
+      p.values.push_back(std::to_string(j));
+    }
+    params.push_back(std::move(p));
+  }
+
+  auto [engine, err] = CoverageEngine::Create(params, {}, 3);
+  EXPECT_TRUE(err.ok()) << err.message << ": " << err.detail;
+  EXPECT_EQ(engine.TotalTuples(), 0u);
+  EXPECT_TRUE(engine.IsComplete());
+
+  auto [count, count_err] = CoverageEngine::CountTuples(params, std::vector<uint32_t>{}, 3);
+  EXPECT_TRUE(count_err.ok()) << count_err.message << ": " << count_err.detail;
+  EXPECT_EQ(count, 0u);
 }
 
 TEST(CoverageEngineTest, CombinationMetadataLimitCheckedBeforeMaterialization) {
@@ -764,4 +895,32 @@ TEST(CoverageEngineDiagnosticTest, NeedsTupleAnswersForATupleAnotherEngineEnumer
   const uint32_t bc_values[] = {1, 1};
   EXPECT_TRUE(global.NeedsTuple(bc_params, bc_values, 2));
   EXPECT_FALSE(sub_ab.NeedsTuple(bc_params, bc_values, 2));
+}
+
+TEST(CoverageEngineDiagnosticTest, NeedsTupleBinarySearchHandlesBoundariesAndMissingCombos) {
+  std::vector<Parameter> params;
+  for (uint32_t pi = 0; pi < 5; ++pi) {
+    params.push_back({"P" + std::to_string(pi), {"v0", "v1"}, {}});
+  }
+  auto [engine, err] = CoverageEngine::Create(params, 2);
+  ASSERT_TRUE(err.ok());
+  const uint32_t first_params[] = {0, 1};
+  const uint32_t middle_params[] = {1, 3};
+  const uint32_t last_params[] = {3, 4};
+  const uint32_t values[] = {0, 1};
+  EXPECT_TRUE(engine.NeedsTuple(first_params, values, 2));
+  EXPECT_TRUE(engine.NeedsTuple(middle_params, values, 2));
+  EXPECT_TRUE(engine.NeedsTuple(last_params, values, 2));
+
+  auto [subset, subset_err] = CoverageEngine::Create(params, {0, 2, 4}, 2);
+  ASSERT_TRUE(subset_err.ok());
+  const uint32_t absent_between_params[] = {0, 3};
+  const uint32_t absent_params[] = {1, 3};
+  const uint32_t out_of_range_params[] = {4, 5};
+  const uint32_t out_of_range_values[] = {0, 2};
+  const uint32_t present_subset_params[] = {0, 2};
+  EXPECT_FALSE(subset.NeedsTuple(absent_between_params, values, 2));
+  EXPECT_FALSE(subset.NeedsTuple(absent_params, values, 2));
+  EXPECT_FALSE(subset.NeedsTuple(out_of_range_params, values, 2));
+  EXPECT_FALSE(subset.NeedsTuple(present_subset_params, out_of_range_values, 2));
 }
