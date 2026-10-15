@@ -16,7 +16,7 @@ import {
   MAX_SEARCH_NODES,
   MAX_TUPLES,
 } from '../model/tuning-limits.js';
-import { checkedBinomial } from '../util/combinatorics.js';
+import { checkedBinomial, generateCombinations } from '../util/combinatorics.js';
 
 /** Coverage validation report with human-readable uncovered tuples. */
 export interface CoverageReport {
@@ -36,33 +36,6 @@ export interface ClassCoverageReport {
   coveredClassTuples: number;
   coverageRatio: number;
   error: ErrorInfo;
-}
-
-/**
- * Generate all C(n, k) combinations of indices [0, n).
- * @returns Array of sorted index arrays. Empty if k == 0 or k > n.
- */
-function generateCombinations(n: number, k: number): number[][] {
-  if (k === 0 || k > n) {
-    return [];
-  }
-
-  const result: number[][] = [];
-  const combo = new Array<number>(k);
-
-  function recurse(start: number, depth: number): void {
-    if (depth === k) {
-      result.push(combo.slice());
-      return;
-    }
-    for (let i = start; i < n; ++i) {
-      combo[depth] = i;
-      recurse(i + 1, depth + 1);
-    }
-  }
-
-  recurse(0, 0);
-  return result;
 }
 
 interface SearchBudget {
