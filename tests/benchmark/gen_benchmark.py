@@ -1,7 +1,6 @@
 """Generate benchmark input files for coverwise performance profiling."""
 
 import json
-import sys
 from pathlib import Path
 
 
