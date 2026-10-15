@@ -1,6 +1,6 @@
 # coverwise CLI tool
 
-add_executable(coverwise main.cpp)
+add_executable(coverwise main.cpp model_reader.cpp report_writer.cpp)
 target_compile_features(coverwise PRIVATE cxx_std_17)
 target_link_libraries(coverwise PRIVATE coverwise::coverwise)
 coverwise_enable_warnings(coverwise)
