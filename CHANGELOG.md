@@ -40,6 +40,8 @@ suites are unchanged for valid models and seeds.
   order and frame stack across the satisfiability check, completion and
   suggestions; the CLI resolves a row's members through a name index built once
   per row.
+- The workflow toolchain matches the repository pins: Node 22.23.3 and Yarn
+  4.18.1.
 
 ## [1.6.0] - 2026-09-04
 
