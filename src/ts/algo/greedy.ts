@@ -10,6 +10,8 @@ import { UNASSIGNED } from '../model/parameter.js';
 import type { TestCase } from '../model/test-case.js';
 import type { Rng } from '../util/rng.js';
 
+const WEIGHT_DRAW_RESOLUTION = 1_000_000;
+
 /// Scoring function: adds the coverage gain of every value of `paramIndex` into
 /// `outScores[valueIndex]`, given the current partial test case. Scoring a whole
 /// parameter at once keeps the work per candidate value constant; scoring values
@@ -89,7 +91,7 @@ function breakTieWithWeights(
     }
     if (totalWeight > 0.0) {
       // Generate a random value in [0, totalWeight).
-      const r = (rng.nextUint32(1000000) / 1000000.0) * totalWeight;
+      const r = (rng.nextUint32(WEIGHT_DRAW_RESOLUTION) / WEIGHT_DRAW_RESOLUTION) * totalWeight;
       let cumulative = 0.0;
       for (const vi of bestValues) {
         cumulative += weights[pi][vi] / maxWeight;

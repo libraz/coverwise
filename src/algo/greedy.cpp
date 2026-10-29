@@ -7,6 +7,11 @@
 
 namespace coverwise {
 namespace algo {
+namespace {
+
+constexpr uint32_t kWeightDrawResolution = 1'000'000;
+
+}  // namespace
 
 void GreedyScratch::Reserve(const std::vector<model::Parameter>& params) {
   order.reserve(params.size());
@@ -39,7 +44,8 @@ uint32_t BreakTieWithWeights(const std::vector<uint32_t>& best_values,
     }
     if (total_weight > 0.0) {
       // Generate a random value in [0, total_weight).
-      double r = static_cast<double>(rng.NextUint32(1000000)) / 1000000.0 * total_weight;
+      double r = static_cast<double>(rng.NextUint32(kWeightDrawResolution)) /
+                 kWeightDrawResolution * total_weight;
       double cumulative = 0.0;
       for (uint32_t vi : best_values) {
         cumulative += weights[pi][vi] / max_weight;
