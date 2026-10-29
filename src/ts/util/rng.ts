@@ -25,22 +25,14 @@ function splitmix32(seed: number): () => number {
 /// Provides deterministic random number generation: same seed always produces
 /// the same sequence of outputs.
 export class Rng {
-  private s0: number;
-  private s1: number;
-  private s2: number;
-  private s3: number;
+  private s0 = 0;
+  private s1 = 0;
+  private s2 = 0;
+  private s3 = 0;
 
   /// Construct a PRNG with the given seed.
   constructor(seed: number = 0) {
-    const init = splitmix32(seed);
-    this.s0 = init();
-    this.s1 = init();
-    this.s2 = init();
-    this.s3 = init();
-    // Ensure state is never all-zero.
-    if ((this.s0 | this.s1 | this.s2 | this.s3) === 0) {
-      this.s0 = 1;
-    }
+    this.seed(seed);
   }
 
   /// Generate the next raw 32-bit value using xoshiro128**.
@@ -70,7 +62,9 @@ export class Rng {
     if (min >= max) {
       return min;
     }
-    const range = (max - min + 1) >>> 0;
+    // Keep 2^32 representable: coercing that width to uint32 would turn it
+    // into zero and make the final remainder NaN.
+    const range = max - min + 1;
     // Use rejection sampling to avoid modulo bias.
     // Standard debiasing: threshold = (2^32 - range) % range = (-range) % range.
     // Values below threshold map unevenly; reject them.

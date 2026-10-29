@@ -36,6 +36,16 @@ describe('Rng', () => {
       }
     });
 
+    it.each([0, -0x80000000])('supports a full uint32-width interval starting at %i', (min) => {
+      const rng = new Rng(42);
+      const reference = new Rng(42);
+      for (let i = 0; i < 100; ++i) {
+        const value = rng.uniformInt(min, min + 0xffffffff);
+        expect(Number.isInteger(value)).toBe(true);
+        expect(value).toBe(reference.nextUint32(0xffffffff) + min);
+      }
+    });
+
     it('returns min when min equals max', () => {
       const rng = new Rng(0);
       expect(rng.uniformInt(5, 5)).toBe(5);
