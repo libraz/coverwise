@@ -22,7 +22,8 @@ import {
 } from './constraint-ast.js';
 import { MAX_AST_DEPTH, type Token, TokenType, tokenize } from './constraint-lexer.js';
 import { ErrorCode, type ErrorInfo, okError } from './error.js';
-import { ValueResolver } from './parameter.js';
+import { MAX_STRING_BYTES } from './limits.js';
+import { UNASSIGNED, ValueResolver } from './parameter.js';
 import { utf8ByteLength } from './utf8.js';
 
 /** Minimal parameter interface required by the constraint parser. */
@@ -50,8 +51,6 @@ export interface ParseOptions {
   caseSensitive: boolean;
 }
 
-const NOT_FOUND = 0xffffffff;
-const MAX_EXPRESSION_BYTES = 64 * 1024;
 const MAX_AST_NODES = 1024;
 
 /// Parse a relational literal, mirroring the C++ `TryParseFiniteDouble`.
@@ -127,7 +126,7 @@ function resolveComparison(
   const paramIdx = rp.paramIndex;
 
   const valIdx = params[paramIdx].findValueIndex(valueName, caseSensitive);
-  if (valIdx === NOT_FOUND) {
+  if (valIdx === UNASSIGNED) {
     const available = params[paramIdx].values.join(', ');
     return {
       paramIndex: 0,
@@ -155,7 +154,7 @@ function resolveValue(
   resolver: ValueResolver,
 ): ResolvedValue {
   const idx = resolver.resolve(valueName);
-  if (idx !== NOT_FOUND) {
+  if (idx !== UNASSIGNED) {
     return { valueIndex: idx, error: okError() };
   }
   const available = params[paramIndex].values.join(', ');
@@ -179,7 +178,7 @@ function isParameterName(name: string, params: Parameter[], caseSensitive: boole
 }
 
 function isValueOfParam(name: string, resolver: ValueResolver): boolean {
-  return resolver.resolve(name) !== NOT_FOUND;
+  return resolver.resolve(name) !== UNASSIGNED;
 }
 
 // --- Recursive descent parser ---
@@ -907,12 +906,12 @@ export function parseConstraint(
       },
     };
   }
-  if (utf8ByteLength(expression) > MAX_EXPRESSION_BYTES) {
+  if (utf8ByteLength(expression) > MAX_STRING_BYTES) {
     return {
       constraint: null,
       error: {
         code: ErrorCode.ConstraintError,
-        message: `Constraint expression byte limit exceeded (maximum ${MAX_EXPRESSION_BYTES})`,
+        message: `Constraint expression byte limit exceeded (maximum ${MAX_STRING_BYTES})`,
         detail: 'Simplify or split the constraint expression',
       },
     };

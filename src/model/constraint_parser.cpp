@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "model/constraint_lexer.h"
+#include "model/limits.h"
 #include "util/string_util.h"
 
 namespace coverwise {
@@ -19,7 +20,6 @@ using detail::TokenType;
 
 namespace {
 
-constexpr size_t kMaxExpressionBytes = 64 * 1024;
 constexpr size_t kMaxAstNodes = 1024;
 
 // --- Name resolution ---
@@ -652,11 +652,11 @@ ParseResult ParseConstraint(const std::string& expression, const std::vector<Par
             {Error::Code::kConstraintError, "Empty constraint expression",
              "Provide a non-empty constraint string"}};
   }
-  if (expression.size() > kMaxExpressionBytes) {
+  if (expression.size() > kMaxStringBytes) {
     return {nullptr,
             {Error::Code::kConstraintError,
              "Constraint expression byte limit exceeded (maximum " +
-                 std::to_string(kMaxExpressionBytes) + ")",
+                 std::to_string(kMaxStringBytes) + ")",
              "Simplify or split the constraint expression"}};
   }
 
