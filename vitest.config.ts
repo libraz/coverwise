@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   resolve: {
     alias: {
-      '../coverwise.js': path.resolve(__dirname, 'dist/coverwise.js'),
+      '../coverwise.js': path.resolve(import.meta.dirname, 'dist/coverwise.js'),
     },
   },
   test: {
