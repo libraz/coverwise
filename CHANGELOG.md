@@ -9,6 +9,20 @@ Generation is deterministic: the same model and seed produce the same suite.
 Entries below call out the releases where that output changed, so a pinned
 version can be upgraded knowingly.
 
+## [1.6.3] - 2026-10-30
+
+**Suites for models with a `type` + `range` boundary parameter differ from
+1.6.2: the two expanded values outside the range now appear only in
+`negativeTests`.**
+
+### Fixed
+
+- Boundary expansion marks the generated values outside `[min, max]` (`min-1`
+  and `max+1`, or `min-step` and `max+step` for floats) as invalid on every
+  surface. They are exercised single-fault in `negativeTests` instead of
+  appearing in the positive suite as inputs the system should accept. A value
+  the caller declares keeps its own `invalid` flag, even outside the range.
+
 ## [1.6.2] - 2026-10-30
 
 The engine, the WASM binding, the pure TypeScript port, the CLI and the Python
@@ -388,6 +402,7 @@ First release.
   mirroring the C++ architecture.
 - Bilingual documentation and the publish workflow.
 
+[1.6.3]: https://github.com/libraz/coverwise/releases/tag/v1.6.3
 [1.6.2]: https://github.com/libraz/coverwise/releases/tag/v1.6.2
 [1.6.1]: https://github.com/libraz/coverwise/releases/tag/v1.6.1
 [1.6.0]: https://github.com/libraz/coverwise/releases/tag/v1.6.0

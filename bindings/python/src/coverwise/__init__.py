@@ -14,4 +14,4 @@ __all__ = [
     "parametrize",
     "run",
 ]
-__version__ = "1.6.2"
+__version__ = "1.6.3"
