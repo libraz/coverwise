@@ -9,6 +9,69 @@ Generation is deterministic: the same model and seed produce the same suite.
 Entries below call out the releases where that output changed, so a pinned
 version can be upgraded knowingly.
 
+## [1.6.2] - 2026-10-30
+
+The engine, the WASM binding, the pure TypeScript port, the CLI and the Python
+package now behave as the documentation describes in the places where they had
+drifted from it. **Negative rows are chosen by coverage gain, so
+`negativeTests` from `generate` and `extend` differ from 1.6.1 for models with
+invalid values, and are usually shorter at the same single-fault coverage.
+Positive suites are unchanged for valid models and seeds.**
+
+### Added
+
+- `model/options_validation.h` is installed with the other public headers, and
+  `core::Extend` takes a defaulted `model::ChargedText` so a caller that already
+  counted the row text against the string budget does not have it counted twice.
+
+### Changed
+
+- **C++ API (breaking):** `TestCase::unresolved` is
+  `std::vector<std::optional<std::string>>`. `std::nullopt` marks a position the
+  row carried no member for, and an empty string is a member the caller wrote as
+  `""`. A `GenerateOptions::seed` above 2^32-1 is rejected instead of being
+  truncated to its low 32 bits.
+- A `LIKE` pattern without a wildcard resolves exactly like `=`: aliases and
+  ASCII case are resolved, and a value the parameter does not declare is a
+  `CONSTRAINT_ERROR` instead of a test that never matches.
+- A string containing an unpaired UTF-16 surrogate is rejected as invalid input
+  on every surface instead of being passed through.
+- `extend` takes its existing rows and seeds in one step under a single
+  100,000-row limit. A preserved row with exactly one invalid value that
+  otherwise satisfies the constraints counts toward negative coverage and is not
+  generated again, and under boundary expansion a preserved index that names no
+  declared value is returned unassigned.
+- The JavaScript surface charges numeric and boolean parameter values against
+  the string budget as their rendered text, drops the undocumented per-row field
+  cap, and accepts any `strength` from 1 to 4294967295 that the model allows.
+- Python: `coverwise.parametrize` passes each value to the test function in its
+  declared type (`int`, `bool`, `float`) rather than as a string, and keeps an
+  explicitly declared alias spelling as written. Both launchers exit `127` with
+  a diagnostic when the native executable cannot be started.
+- Float boundary values are snapped to the precision of `min`, `max` and `step`
+  before de-duplication.
+- Seed remapping after boundary expansion resolves each declared value once,
+  `FirstUncovered` decodes without per-call allocations, and the JavaScript
+  surface builds value resolvers only when there are rows to convert.
+
+### Fixed
+
+- Coverage validation applies the 100,000-row limit, keeps `omitted_uncovered`
+  when its search budget runs out, and counts its aggregate budget in 64 bits.
+  Class coverage enforces the same row limit as value coverage.
+- A weights key spelled as the declared value is accepted wherever it sorts
+  among that value's aliases, and the pure TypeScript port reads an empty
+  `aliases` or `equivalenceClasses` list as metadata, as the core does.
+- `allOf` and `anyOf` build their constraint trees directly, reading each custom
+  condition once instead of calling its own `and()` or `or()`.
+- `Rng.uniformInt` in the pure TypeScript port handles an interval 2^32 wide.
+- `DynamicBitset::NumBlocks` no longer overflows for sizes near `UINT32_MAX`.
+- The CLI accepts subnormal numbers and FIFO inputs, prints parse diagnostics as
+  printable text, and stops keeping rows past the row limit while it reads a
+  document. Its optional unsigned fields reject non-finite numbers.
+- Python: `analyze_coverage` sends `strength` through the model as `generate`
+  does.
+
 ## [1.6.1] - 2026-10-15
 
 Seeds, sub-models and generation options are now accepted the same way on every
@@ -325,6 +388,7 @@ First release.
   mirroring the C++ architecture.
 - Bilingual documentation and the publish workflow.
 
+[1.6.2]: https://github.com/libraz/coverwise/releases/tag/v1.6.2
 [1.6.1]: https://github.com/libraz/coverwise/releases/tag/v1.6.1
 [1.6.0]: https://github.com/libraz/coverwise/releases/tag/v1.6.0
 [1.5.0]: https://github.com/libraz/coverwise/releases/tag/v1.5.0

@@ -1,6 +1,6 @@
 {
   "name": "@libraz/coverwise",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "type": "module",
   "packageManager": "yarn@4.18.1",
   "description": "Combinatorial test coverage engine — analyze, generate, and extend t-wise test suites via WASM",
