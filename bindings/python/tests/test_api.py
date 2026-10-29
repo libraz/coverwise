@@ -932,7 +932,11 @@ def test_negative_tests_hold_one_invalid_value_and_match_a_single_fault_enumerat
                 continue
             others = [n for n in names if n not in (left, right)]
             for completion in itertools.product(*(valid[n] for n in others)):
-                row = {left: left_value, right: right_value, **dict(zip(others, completion))}
+                row = {
+                    left: left_value,
+                    right: right_value,
+                    **dict(zip(others, completion, strict=True)),
+                }
                 if satisfies(row):
                     feasible.add((left, left_value, right, right_value))
                     break
