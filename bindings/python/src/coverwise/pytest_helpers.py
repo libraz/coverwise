@@ -52,15 +52,20 @@ def _decoder(parameter: Mapping[str, Any]) -> Callable[[str], Any]:
 
     The CLI renders every value as text (``3``, ``true``), so a test would
     otherwise receive strings for the numbers and booleans it declared. Cells
-    are matched by declared value rather than guessed from their text; one
-    that matches no declared value (an alias, or a value a boundary range
-    expanded to) is converted by the boundary type, or passed through as is.
+    are matched by declared value rather than guessed from their text. Explicit
+    aliases keep their spelling; a value a boundary range expanded to is
+    converted by the boundary type, or passed through as is.
     """
 
     strings: dict[str, Any] = {}
     numbers: dict[float, Any] = {}
+    aliases: set[str] = set()
     for declared in parameter.get("values", []):
-        value = declared["value"] if isinstance(declared, Mapping) else declared
+        if isinstance(declared, Mapping):
+            value = declared["value"]
+            aliases.update(declared.get("aliases", []))
+        else:
+            value = declared
         if isinstance(value, bool):
             strings["true" if value else "false"] = value
         elif isinstance(value, (int, float)):
@@ -72,6 +77,8 @@ def _decoder(parameter: Mapping[str, Any]) -> Callable[[str], Any]:
     def decode(cell: str) -> Any:
         if cell in strings:
             return strings[cell]
+        if cell in aliases:
+            return cell
         try:
             number = float(cell)
         except ValueError:
