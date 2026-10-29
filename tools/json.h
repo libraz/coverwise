@@ -599,7 +599,7 @@ class JsonWriter {
   /// @brief Begin a JSON array. Must be paired with EndArray().
   void BeginArray() {
     out_ << '[';
-    stack_.push_back({true, true});
+    stack_.push_back({true});
   }
 
   void EndArray() {
@@ -610,7 +610,7 @@ class JsonWriter {
   /// @brief Begin a JSON object. Must be paired with EndObject().
   void BeginObject() {
     out_ << '{';
-    stack_.push_back({false, true});
+    stack_.push_back({true});
   }
 
   void EndObject() {
@@ -638,7 +638,6 @@ class JsonWriter {
 
  private:
   struct StackEntry {
-    bool is_array;
     bool first_element;
   };
   std::ostream& out_;

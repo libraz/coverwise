@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <string>
 #include <string_view>
@@ -39,13 +40,23 @@ coverwise::model::Error ReaderError(std::string message) {
   return {coverwise::model::Error::Code::kInvalidInput, std::move(message), ""};
 }
 
+namespace {
+
+bool IsUint32(const JsonValue& value, uint32_t minimum) {
+  return value.type == JsonType::kNumber && std::isfinite(value.number_val) &&
+         value.number_val == std::floor(value.number_val) &&
+         value.number_val >= static_cast<double>(minimum) &&
+         value.number_val <= std::numeric_limits<uint32_t>::max();
+}
+
+}  // namespace
+
 /// @brief Parse an optional JSON object field as an exact uint32.
 bool ParseOptionalUint32(const JsonValue& object, const std::string& field, uint32_t minimum,
                          uint32_t& output, std::string& error) {
   if (!object.HasKey(field)) return true;
   const auto& value = object[field];
-  if (value.type != JsonType::kNumber || value.number_val != std::floor(value.number_val) ||
-      value.number_val < static_cast<double>(minimum) || value.number_val > 4294967295.0) {
+  if (!IsUint32(value, minimum)) {
     error = field + " must be an integer in [" + std::to_string(minimum) + ", 4294967295]";
     return false;
   }
@@ -500,9 +511,7 @@ bool ParseSubModels(const JsonValue& json, std::vector<coverwise::model::SubMode
     }
     coverwise::model::SubModel sub_model;
     const auto& sm_strength = sm["strength"];
-    if (sm_strength.type != JsonType::kNumber ||
-        sm_strength.number_val != std::floor(sm_strength.number_val) ||
-        sm_strength.number_val < 1 || sm_strength.number_val > 4294967295.0) {
+    if (!IsUint32(sm_strength, 1)) {
       error = "subModel " + std::to_string(i) + " strength must be a positive integer";
       return false;
     }
