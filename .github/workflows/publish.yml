@@ -145,7 +145,7 @@ jobs:
           - arch: x86_64
             runner: ubuntu-latest
           - arch: aarch64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@v7
       - name: Build and repair manylinux wheel
@@ -175,7 +175,7 @@ jobs:
 
   python-macos-wheel:
     needs: verify-release
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
