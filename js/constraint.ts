@@ -520,20 +520,7 @@ export function not(condition: Condition): Condition {
  * // os = "win" AND browser = "chrome"
  */
 export function allOf(...conditions: Condition[]): Condition {
-  return built(() => {
-    if (conditions.length === 0) {
-      throw new CoverwiseError('INVALID_INPUT', 'allOf requires at least one condition');
-    }
-    for (const condition of conditions) {
-      nodeFromCondition(condition, 'allOf()');
-    }
-    if (conditions.length === 1) {
-      return conditions[0];
-    }
-    return conditions
-      .slice(1)
-      .reduce((combined, condition) => combined.and(condition), conditions[0]);
-  });
+  return built(() => combineConditions(conditions, 'and', 'allOf()'));
 }
 
 /**
@@ -544,18 +531,25 @@ export function allOf(...conditions: Condition[]): Condition {
  * // os = "win" OR os = "linux"
  */
 export function anyOf(...conditions: Condition[]): Condition {
-  return built(() => {
-    if (conditions.length === 0) {
-      throw new CoverwiseError('INVALID_INPUT', 'anyOf requires at least one condition');
-    }
-    for (const condition of conditions) {
-      nodeFromCondition(condition, 'anyOf()');
-    }
-    if (conditions.length === 1) {
-      return conditions[0];
-    }
-    return conditions
-      .slice(1)
-      .reduce((combined, condition) => combined.or(condition), conditions[0]);
-  });
+  return built(() => combineConditions(conditions, 'or', 'anyOf()'));
+}
+
+function combineConditions(
+  conditions: Condition[],
+  kind: 'and' | 'or',
+  builder: 'allOf()' | 'anyOf()',
+): Condition {
+  if (conditions.length === 0) {
+    const name = builder === 'allOf()' ? 'allOf' : 'anyOf';
+    throw new CoverwiseError('INVALID_INPUT', `${name} requires at least one condition`);
+  }
+  const nodes = conditions.map((condition) => nodeFromCondition(condition, builder));
+  if (conditions.length === 1) {
+    return conditions[0];
+  }
+  let node = nodes[0];
+  for (let i = 1; i < nodes.length; ++i) {
+    node = { kind, left: node, right: nodes[i] };
+  }
+  return new ConditionImpl(node);
 }

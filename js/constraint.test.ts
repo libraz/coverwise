@@ -1,8 +1,8 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { ConstraintResult } from '../src/ts/model/constraint-ast.js';
 import { parseConstraint } from '../src/ts/model/constraint-parser.js';
 import { Parameter } from '../src/ts/model/parameter.js';
-import { allOf, anyOf, not, when } from './constraint.js';
+import { allOf, anyOf, type Condition, not, when } from './constraint.js';
 import { generate, init } from './index.js';
 import { generate as pureGenerate } from './pure/index.js';
 import type { GenerateInput } from './types.js';
@@ -216,6 +216,31 @@ describe('allOf()', () => {
     expect(() => allOf()).toThrow(CoverwiseError);
     expect(() => allOf()).toThrow('at least one');
   });
+
+  it('reads each custom condition once without delegating composition', () => {
+    const makeCondition = (expression: string): Condition =>
+      ({
+        and: vi.fn(() => when('wrong').eq('and')),
+        or: vi.fn(() => when('wrong').eq('or')),
+        toString: vi.fn(() => expression),
+      }) as unknown as Condition;
+    const first = makeCondition('a = 1');
+    const middle = makeCondition('b = 2');
+    const last = makeCondition('c = 3');
+
+    expect(allOf(first, when('b').eq(2), middle, last).toString()).toBe(
+      '(a = 1) AND b = "2" AND (b = 2) AND (c = 3)',
+    );
+    expect(first.toString).toHaveBeenCalledTimes(1);
+    expect(middle.toString).toHaveBeenCalledTimes(1);
+    expect(last.toString).toHaveBeenCalledTimes(1);
+    expect(first.and).not.toHaveBeenCalled();
+    expect(first.or).not.toHaveBeenCalled();
+    expect(middle.and).not.toHaveBeenCalled();
+    expect(middle.or).not.toHaveBeenCalled();
+    expect(last.and).not.toHaveBeenCalled();
+    expect(last.or).not.toHaveBeenCalled();
+  });
 });
 
 describe('anyOf()', () => {
@@ -232,6 +257,31 @@ describe('anyOf()', () => {
   it('throws a CoverwiseError on empty', () => {
     expect(() => anyOf()).toThrow(CoverwiseError);
     expect(() => anyOf()).toThrow('at least one');
+  });
+
+  it('reads each custom condition once without delegating composition', () => {
+    const makeCondition = (expression: string): Condition =>
+      ({
+        and: vi.fn(() => when('wrong').eq('and')),
+        or: vi.fn(() => when('wrong').eq('or')),
+        toString: vi.fn(() => expression),
+      }) as unknown as Condition;
+    const first = makeCondition('a = 1');
+    const middle = makeCondition('b = 2');
+    const last = makeCondition('c = 3');
+
+    expect(anyOf(first, when('b').eq(2), middle, last).toString()).toBe(
+      '(a = 1) OR b = "2" OR (b = 2) OR (c = 3)',
+    );
+    expect(first.toString).toHaveBeenCalledTimes(1);
+    expect(middle.toString).toHaveBeenCalledTimes(1);
+    expect(last.toString).toHaveBeenCalledTimes(1);
+    expect(first.and).not.toHaveBeenCalled();
+    expect(first.or).not.toHaveBeenCalled();
+    expect(middle.and).not.toHaveBeenCalled();
+    expect(middle.or).not.toHaveBeenCalled();
+    expect(last.and).not.toHaveBeenCalled();
+    expect(last.or).not.toHaveBeenCalled();
   });
 });
 
