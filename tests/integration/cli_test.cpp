@@ -2674,6 +2674,20 @@ TEST(CliExtendTest, HandsBackNestedMembersOfAnExistingRowUnchanged) {
 
 namespace {
 
+// AddressSanitizer's shadow memory and quarantine inflate the resident set, so
+// a peak measured under it says nothing about what the reader holds.
+#if defined(__SANITIZE_ADDRESS__)
+constexpr bool kAddressSanitized = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr bool kAddressSanitized = true;
+#else
+constexpr bool kAddressSanitized = false;
+#endif
+#else
+constexpr bool kAddressSanitized = false;
+#endif
+
 /// @brief What one run of the CLI cost: how it ended and its peak resident set.
 struct MeasuredRun {
   int exit_code = -1;
@@ -2761,9 +2775,11 @@ TEST(CliInputBudgetTest, ReadingAnOverLimitSuiteHoldsAFewTimesTheDocument) {
   EXPECT_EQ(run.exit_code, 3);
   EXPECT_NE(ReadWholeFile(stderr_path).find("tests exceed maximum of 100000"), std::string::npos)
       << ReadWholeFile(stderr_path);
-  EXPECT_LT(run.peak_bytes, static_cast<long long>(14 * document_bytes))
-      << "peak resident set " << run.peak_bytes << " bytes for a " << document_bytes
-      << " byte document";
+  if (!kAddressSanitized) {
+    EXPECT_LT(run.peak_bytes, static_cast<long long>(14 * document_bytes))
+        << "peak resident set " << run.peak_bytes << " bytes for a " << document_bytes
+        << " byte document";
+  }
   std::remove(tests_path.c_str());
 }
 
