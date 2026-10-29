@@ -19,6 +19,7 @@
 using coverwise::model::Parameter;
 using coverwise::model::TestCase;
 using coverwise::test_support::AllocationCounter;
+using coverwise::validator::ComputeClassCoverage;
 using coverwise::validator::ValidateCoverage;
 
 // ---------------------------------------------------------------------------
@@ -1002,6 +1003,48 @@ TEST(CoverageValidatorTest, RowCountAboveTheLimitIsInvalidInputBeforeAnyRowIsRea
                                       std::to_string(coverwise::model::kMaxTests));
   EXPECT_TRUE(report.invalid_tests.empty());
   EXPECT_EQ(report.total_tuples, 0u);
+}
+
+TEST(CoverageValidatorTest, FlatCombinationIterationAvoidsPerCombinationAllocations) {
+  constexpr uint32_t kParameterCount = 24;
+  std::vector<Parameter> params;
+  std::vector<Parameter> class_params;
+  params.reserve(kParameterCount);
+  class_params.reserve(kParameterCount);
+  for (uint32_t i = 0; i < kParameterCount; ++i) {
+    const std::string name = "p" + std::to_string(i);
+    params.emplace_back(name, std::vector<std::string>{"0"}, std::vector<bool>{});
+    Parameter with_class(name, {"0"});
+    with_class.set_equivalence_classes({"only"});
+    class_params.push_back(std::move(with_class));
+  }
+  const std::vector<TestCase> tests = {TestCase{std::vector<uint32_t>(kParameterCount, 0)}};
+
+  const auto count_coverage = [&](uint32_t strength) {
+    AllocationCounter counter;
+    const auto report = ValidateCoverage(params, tests, strength);
+    const auto allocations = counter.Stop();
+    EXPECT_TRUE(report.error.ok()) << report.error.message;
+    EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+    EXPECT_EQ(report.total_tuples, strength == 1 ? kParameterCount : 276u);
+    return allocations;
+  };
+  const auto narrow_coverage = count_coverage(1);
+  const auto broad_coverage = count_coverage(2);
+  EXPECT_EQ(narrow_coverage, broad_coverage);
+
+  const auto count_class_coverage = [&](uint32_t strength) {
+    AllocationCounter counter;
+    const auto report = ComputeClassCoverage(class_params, tests, strength);
+    const auto allocations = counter.Stop();
+    EXPECT_TRUE(report.error.ok()) << report.error.message;
+    EXPECT_DOUBLE_EQ(report.coverage_ratio, 1.0);
+    EXPECT_EQ(report.total_class_tuples, strength == 1 ? kParameterCount : 276u);
+    return allocations;
+  };
+  const auto narrow_classes = count_class_coverage(1);
+  const auto broad_classes = count_class_coverage(2);
+  EXPECT_EQ(narrow_classes, broad_classes);
 }
 
 TEST(CoverageValidatorTest, InvalidTestsIsEmptyWhenEveryRowIsAccepted) {

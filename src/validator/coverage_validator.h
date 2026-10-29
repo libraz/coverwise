@@ -80,8 +80,9 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
 ///         every class tuple excluded as infeasible — reports zero counts with
 ///         coverage_ratio 1.0 and an ok error, so a suite is never penalized for
 ///         a universe with nothing to cover. coverage_ratio is left at 0.0 only
-///         on an error exit (invalid parameters, unsatisfiable constraints, an
-///         exceeded enumeration limit, or an exhausted feasibility budget),
+///         on an error exit (invalid parameters, more than kMaxTests rows,
+///         unsatisfiable constraints, an exceeded enumeration limit, or an
+///         exhausted feasibility budget),
 ///         which is signalled by a non-ok error and where the counts are
 ///         partial. Detect "no classes" via the counts and error, never via
 ///         coverage_ratio == 0.0.

@@ -307,6 +307,28 @@ TEST(EquivalenceClassTest, StrengthOutsideParameterRangeIsAnEmptyUniverse) {
   EXPECT_TRUE(too_high.error.ok()) << too_high.error.message;
 }
 
+TEST(EquivalenceClassTest, EnforcesTheDocumentedTestRowLimit) {
+  const auto max_tests = coverwise::model::kMaxTests;
+  const std::vector<Parameter> params = {
+      MakeClassParam("p", {"0"}, {"only"}),
+  };
+  std::vector<TestCase> tests(max_tests, TestCase{{0}});
+
+  auto accepted = ComputeClassCoverage(params, tests, 1);
+  EXPECT_TRUE(accepted.error.ok()) << accepted.error.message;
+
+  tests.emplace_back(TestCase{{0}});
+  auto over_limit = ComputeClassCoverage(params, tests, 1);
+  EXPECT_EQ(over_limit.error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_EQ(over_limit.error.message, "Test count " + std::to_string(max_tests + 1) +
+                                          " exceeds maximum of " + std::to_string(max_tests));
+
+  const std::vector<Parameter> no_classes = {Parameter("p", {"0"})};
+  auto no_class_over_limit = ComputeClassCoverage(no_classes, tests, 1);
+  EXPECT_EQ(no_class_over_limit.error.code, over_limit.error.code);
+  EXPECT_EQ(no_class_over_limit.error.message, over_limit.error.message);
+}
+
 TEST(EquivalenceClassTest, ConstraintExcludesUnsatisfiableClassTuple) {
   // os = {win(desktop), mac(apple)}, browser = {chrome(modern), ie(legacy)}.
   // Constraint: IF os=mac THEN browser!=ie. The class tuple (apple, legacy) has

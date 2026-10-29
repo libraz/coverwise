@@ -327,6 +327,26 @@ describe('validateCoverage with invalid value indices', () => {
 });
 
 describe('computeClassCoverage', () => {
+  it('applies the row limit before class metadata or row traversal', () => {
+    const parameter = new Parameter('p', ['0']);
+    parameter.setEquivalenceClasses(['only']);
+    const row = { values: [0] };
+    const atLimit = new Array<TestCase>(MAX_TESTS).fill(row);
+    const overLimit = [...atLimit, row];
+
+    expect(computeClassCoverage([parameter], atLimit, 1).error.code).toBe(ErrorCode.Ok);
+    const classReport = computeClassCoverage([parameter], overLimit, 1);
+    expect(classReport.error.code).toBe(ErrorCode.InvalidInput);
+    expect(classReport.error.message).toBe(
+      `Test count ${MAX_TESTS + 1} exceeds maximum of ${MAX_TESTS}`,
+    );
+
+    const noClasses = new Parameter('p', ['0']);
+    const noClassReport = computeClassCoverage([noClasses], overLimit, 1);
+    expect(noClassReport.error.code).toBe(ErrorCode.InvalidInput);
+    expect(noClassReport.error.message).toBe(classReport.error.message);
+  });
+
   it('params with equivalence classes: verify class tuple coverage', () => {
     // os: win and linux are "desktop", mac is "apple"
     // browser: chrome and firefox are "standard", safari is "webkit"

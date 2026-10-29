@@ -42,6 +42,14 @@ struct SearchFrame {
 /// frames once can run any number of searches without touching the heap.
 using SearchStack = std::vector<SearchFrame>;
 
+model::Error ValidateTestCount(size_t test_count) {
+  if (test_count <= model::kMaxTests) return {};
+  return {model::Error::Code::kInvalidInput,
+          "Test count " + std::to_string(test_count) + " exceeds maximum of " +
+              std::to_string(model::kMaxTests),
+          ""};
+}
+
 /// @brief Smallest valid value index at or after @p start, or the domain size.
 uint32_t NextValidValue(const model::Parameter& parameter, uint32_t start) {
   for (uint32_t vi = start; vi < parameter.size(); ++vi) {
@@ -266,13 +274,8 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
 
   // The row bound every surface applies to a tests array, checked before any
   // row is looked at.
-  if (tests.size() > model::kMaxTests) {
-    report.error = {model::Error::Code::kInvalidInput,
-                    "Test count " + std::to_string(tests.size()) + " exceeds maximum of " +
-                        std::to_string(model::kMaxTests),
-                    ""};
-    return report;
-  }
+  report.error = ValidateTestCount(tests.size());
+  if (!report.error.ok()) return report;
 
   report.error = ValidateSatisfiableModel(params, constraints);
   if (!report.error.ok()) return report;
@@ -281,7 +284,7 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
   if (!report.error.ok()) return report;
 
   // Step 1: Generate all C(n, strength) combinations of parameter indices.
-  auto combinations = util::GenerateCombinations(n, strength);
+  const auto combinations = util::GenerateCombinationsFlat(n, strength);
 
   // Reusable assignment buffer for constraint evaluation.
   std::vector<uint32_t> assignment(n, model::kUnassigned);
@@ -304,13 +307,14 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
   SearchStack search_stack;
   search_stack.reserve(n);
 
-  for (const auto& combo : combinations) {
+  for (size_t combo_offset = 0; combo_offset < combinations.size(); combo_offset += strength) {
+    const uint32_t* combo = combinations.data() + combo_offset;
     // Step 2: Enumerate all value tuples (cartesian product) for this combination.
     // Compute the number of tuples for this combination. Accumulate in 64-bit to
     // avoid silently wrapping (and under-counting) for large value counts.
     uint64_t num_tuples = 1;
-    for (uint32_t pi : combo) {
-      num_tuples *= params[pi].size();
+    for (uint32_t j = 0; j < strength; ++j) {
+      num_tuples *= params[combo[j]].size();
     }
 
     // Step 2.5: Project every valid test onto its flat value-tuple index for this
@@ -588,6 +592,9 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
   report.error = model::ValidateParameters(params);
   if (!report.error.ok()) return report;
 
+  report.error = ValidateTestCount(tests.size());
+  if (!report.error.ok()) return report;
+
   report.error = ValidateSatisfiableModel(params, constraints);
   if (!report.error.ok()) return report;
 
@@ -615,7 +622,7 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
   if (!report.error.ok()) return report;
 
   // Generate all C(class_n, effective_strength) combinations of class-enabled parameters.
-  auto combinations = util::GenerateCombinations(class_n, effective_strength);
+  const auto combinations = util::GenerateCombinationsFlat(class_n, effective_strength);
   std::vector<const model::TestCase*> valid_tests;
   valid_tests.reserve(tests.size());
   for (const auto& test : tests) {
@@ -632,7 +639,9 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
   search_stack.reserve(params.size());
 
   // For each combination, enumerate all class tuples.
-  for (const auto& combo : combinations) {
+  for (size_t combo_offset = 0; combo_offset < combinations.size();
+       combo_offset += effective_strength) {
+    const uint32_t* combo = combinations.data() + combo_offset;
     // Resolve the global parameter indices for this class combination once.
     for (uint32_t k = 0; k < effective_strength; ++k) {
       combo_param_indices[k] = class_params[combo[k]];
@@ -641,8 +650,8 @@ ClassCoverageReport ComputeClassCoverage(const std::vector<model::Parameter>& pa
     // Compute the number of class tuples for this combination. Accumulate in
     // 64-bit so a large class product cannot silently wrap.
     uint64_t num_tuples = 1;
-    for (uint32_t index : combo) {
-      num_tuples *= class_domains[index].names.size();
+    for (uint32_t k = 0; k < effective_strength; ++k) {
+      num_tuples *= class_domains[combo[k]].names.size();
     }
 
     // Project every valid test to one class-tuple flag once, instead of

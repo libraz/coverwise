@@ -17,7 +17,7 @@ import {
   MAX_SEARCH_NODES,
   MAX_TUPLES,
 } from '../model/tuning-limits.js';
-import { checkedBinomial, generateCombinations } from '../util/combinatorics.js';
+import { checkedBinomial, generateCombinationsFlat } from '../util/combinatorics.js';
 
 /** Coverage validation report with human-readable uncovered tuples. */
 export interface CoverageReport {
@@ -42,6 +42,16 @@ export interface ClassCoverageReport {
 interface SearchBudget {
   remaining: number;
   exceeded: boolean;
+}
+
+function validateTestCount(testCount: number): ErrorInfo {
+  return testCount > MAX_TESTS
+    ? {
+        code: ErrorCode.InvalidInput,
+        message: `Test count ${testCount} exceeds maximum of ${MAX_TESTS}`,
+        detail: '',
+      }
+    : okError();
 }
 
 /**
@@ -363,12 +373,8 @@ export function validateCoverage(
 
   // The row bound every surface applies to a tests array, checked before any
   // row is looked at.
-  if (tests.length > MAX_TESTS) {
-    report.error = {
-      code: ErrorCode.InvalidInput,
-      message: `Test count ${tests.length} exceeds maximum of ${MAX_TESTS}`,
-      detail: '',
-    };
+  report.error = validateTestCount(tests.length);
+  if (report.error.code !== ErrorCode.Ok) {
     return report;
   }
 
@@ -383,7 +389,7 @@ export function validateCoverage(
   }
 
   // Step 1: Generate all C(n, strength) combinations of parameter indices.
-  const combinations = generateCombinations(n, strength);
+  const combinations = generateCombinationsFlat(n, strength);
 
   // Reusable assignment buffer for constraint evaluation.
   const assignment = new Array<number>(n).fill(UNASSIGNED);
@@ -404,11 +410,12 @@ export function validateCoverage(
   const searchStack = createSearchStack(n);
   let coveredFlags = new Uint8Array(0);
 
-  for (const combo of combinations) {
-    // Step 2: Enumerate all value tuples (cartesian product) for this combination.
+  for (let comboOffset = 0; comboOffset < combinations.length; comboOffset += strength) {
+    // The flat helper stores each combination in place, avoiding one array per
+    // combination.
     let numTuples = 1;
-    for (const pi of combo) {
-      numTuples *= params[pi].size;
+    for (let j = 0; j < strength; ++j) {
+      numTuples *= params[combinations[comboOffset + j]].size;
     }
 
     // Step 2.5: Project every valid test onto its flat value-tuple index for this
@@ -425,7 +432,9 @@ export function validateCoverage(
     for (const test of validTests) {
       let f = 0;
       for (let j = 0; j < strength; ++j) {
-        f = f * params[combo[j]].size + test.values[combo[j]];
+        f =
+          f * params[combinations[comboOffset + j]].size +
+          test.values[combinations[comboOffset + j]];
       }
       coveredFlags[f] = 1;
     }
@@ -435,7 +444,7 @@ export function validateCoverage(
       // Decode flat index into value indices (mixed-radix decomposition).
       let remainder = flat;
       for (let i = strength - 1; i >= 0; --i) {
-        const radix = params[combo[i]].size;
+        const radix = params[combinations[comboOffset + i]].size;
         valueIndices[i] = remainder % radix;
         remainder = Math.trunc(remainder / radix);
       }
@@ -445,7 +454,7 @@ export function validateCoverage(
       // tuples do not count toward totalTuples or the uncovered list.
       let containsInvalidValue = false;
       for (let i = 0; i < strength; ++i) {
-        if (params[combo[i]].isInvalid(valueIndices[i])) {
+        if (params[combinations[comboOffset + i]].isInvalid(valueIndices[i])) {
           containsInvalidValue = true;
           break;
         }
@@ -465,7 +474,7 @@ export function validateCoverage(
       const covered = coveredFlags[flat] !== 0;
       if (!covered && constraints.length > 0) {
         for (let i = 0; i < strength; ++i) {
-          assignment[combo[i]] = valueIndices[i];
+          assignment[combinations[comboOffset + i]] = valueIndices[i];
         }
         const tupleBudget: SearchBudget = { remaining: MAX_SEARCH_NODES, exceeded: false };
         const excluded = !hasSatisfyingCompletion(
@@ -476,7 +485,7 @@ export function validateCoverage(
           tupleBudget,
         );
         for (let i = 0; i < strength; ++i) {
-          assignment[combo[i]] = UNASSIGNED;
+          assignment[combinations[comboOffset + i]] = UNASSIGNED;
         }
         if (tupleBudget.exceeded) {
           report.omittedUncovered = report.uncoveredCount - report.uncovered.length;
@@ -507,7 +516,7 @@ export function validateCoverage(
         const paramNames: string[] = [];
         const indices: Array<[number, number]> = [];
         for (let i = 0; i < strength; ++i) {
-          const pi = combo[i];
+          const pi = combinations[comboOffset + i];
           const vi = valueIndices[i];
           paramNames.push(params[pi].name);
           tuple.push(`${params[pi].name}=${params[pi].values[vi]}`);
@@ -736,8 +745,9 @@ function classTupleHasValidRepresentative(
  *          every class tuple excluded as infeasible — reports zero counts with
  *          coverageRatio 1.0 and an ok error, so a suite is never penalized for
  *          a universe with nothing to cover. coverageRatio is left at 0 only on
- *          an error exit (invalid parameters, unsatisfiable constraints, an
- *          exceeded enumeration limit, or an exhausted feasibility budget),
+ *          an error exit (invalid parameters, more than MAX_TESTS rows,
+ *          unsatisfiable constraints, an exceeded enumeration limit, or an
+ *          exhausted feasibility budget),
  *          which is signalled by a non-ok error and where the counts are
  *          partial. Detect "no classes" via the counts and error, never via
  *          coverageRatio === 0.
@@ -775,6 +785,11 @@ export function computeClassCoverage(
     return report;
   }
 
+  report.error = validateTestCount(tests.length);
+  if (report.error.code !== ErrorCode.Ok) {
+    return report;
+  }
+
   report.error = validateSatisfiableModel(params, constraints);
   if (report.error.code !== ErrorCode.Ok) {
     return report;
@@ -806,7 +821,7 @@ export function computeClassCoverage(
   }
 
   // Generate all C(classN, effectiveStrength) combinations of class-enabled parameters.
-  const combinations = generateCombinations(classN, effectiveStrength);
+  const combinations = generateCombinationsFlat(classN, effectiveStrength);
   const validTests = tests.filter(
     (test) => validatePositiveTest(test, params, constraints).length === 0,
   );
@@ -819,17 +834,17 @@ export function computeClassCoverage(
   const searchStack = createSearchStack(params.length);
   let coveredFlags = new Uint8Array(0);
 
-  // For each combination, enumerate all class tuples.
-  for (const combo of combinations) {
+  // For each combination, enumerate all class tuples from the flat index buffer.
+  for (let comboOffset = 0; comboOffset < combinations.length; comboOffset += effectiveStrength) {
     // Resolve the global parameter indices for this class combination once.
     for (let k = 0; k < effectiveStrength; ++k) {
-      comboParamIndices[k] = classParams[combo[k]];
+      comboParamIndices[k] = classParams[combinations[comboOffset + k]];
     }
 
     // Compute the number of class tuples for this combination.
     let numTuples = 1;
-    for (const index of combo) {
-      numTuples *= classDomains[index].names.length;
+    for (let k = 0; k < effectiveStrength; ++k) {
+      numTuples *= classDomains[combinations[comboOffset + k]].names.length;
     }
 
     if (coveredFlags.length < numTuples) {
@@ -841,8 +856,9 @@ export function computeClassCoverage(
       let projected = 0;
       let inDomain = true;
       for (let k = 0; k < effectiveStrength; ++k) {
-        const domain = classDomains[combo[k]];
-        const classIndex = domain.classIndexByValue[test.values[classParams[combo[k]]]];
+        const domain = classDomains[combinations[comboOffset + k]];
+        const classIndex =
+          domain.classIndexByValue[test.values[classParams[combinations[comboOffset + k]]]];
         if (classIndex === NO_CLASS) {
           inDomain = false;
           break;
@@ -859,7 +875,7 @@ export function computeClassCoverage(
       // Decode flat index into class indices.
       let remainder = flat;
       for (let i = effectiveStrength - 1; i >= 0; --i) {
-        const radix = classDomains[combo[i]].validValueIndices.length;
+        const radix = classDomains[combinations[comboOffset + i]].validValueIndices.length;
         classIndices[i] = remainder % radix;
         remainder = Math.trunc(remainder / radix);
       }
@@ -873,7 +889,8 @@ export function computeClassCoverage(
       const covered = coveredFlags[flat] !== 0;
       if (!covered && constraints.length > 0) {
         for (let k = 0; k < effectiveStrength; ++k) {
-          requiredCandidates[k] = classDomains[combo[k]].validValueIndices[classIndices[k]];
+          requiredCandidates[k] =
+            classDomains[combinations[comboOffset + k]].validValueIndices[classIndices[k]];
         }
         const feasibility = classTupleHasValidRepresentative(
           params,
