@@ -11,7 +11,7 @@ import {
   optionsParameters,
 } from '../model/generate-options.js';
 import { MAX_TESTS } from '../model/limits.js';
-import type { Parameter } from '../model/parameter.js';
+import { type Parameter, ValueResolver } from '../model/parameter.js';
 import { type TestCase, UNASSIGNED } from '../model/test-case.js';
 import { isNumeric, toDouble } from '../util/string_util.js';
 
@@ -187,32 +187,41 @@ function remapSeedValueIndices(
   expanded: Parameter[],
   rows: SeedRow[],
 ): void {
-  for (const row of rows) {
-    const values = row.test.values;
-    for (let pi = 0; pi < values.length && pi < declared.length; ++pi) {
+  for (let pi = 0; pi < declared.length; ++pi) {
+    const oldValues = declared[pi].values;
+    const remapped = new Array<number>(oldValues.length);
+    const resolved = new Uint8Array(oldValues.length);
+    let resolver: ValueResolver | undefined;
+
+    for (const row of rows) {
+      const values = row.test.values;
+      if (pi >= values.length) {
+        continue;
+      }
       const oldIndex = values[pi];
-      if (!Number.isInteger(oldIndex) || oldIndex < 0 || oldIndex >= declared[pi].values.length) {
+      if (!Number.isInteger(oldIndex) || oldIndex < 0 || oldIndex >= oldValues.length) {
         values[pi] = UNASSIGNED;
         continue;
       }
-      const oldValue = declared[pi].values[oldIndex];
-      // Byte equality, not resolveValueName: the name being looked up is the
-      // declared value itself, carried across expansion, not text a caller
-      // wrote, so the only match that means "this is the same value" is the
-      // exact one.
-      let newIndex = expanded[pi].findValueIndex(oldValue, true);
-      // Numeric identity is decided by the shared decimal grammar, never by
-      // Number()'s coercion: coercion also accepts leading whitespace, hex and
-      // the empty string, so a row would be remapped here that the C++ core,
-      // and every rule written against isNumeric, treats as plain text.
-      if (newIndex === UNASSIGNED && isNumeric(oldValue)) {
-        const numeric = toDouble(oldValue);
-        const found = expanded[pi].values.findIndex(
-          (candidate) => isNumeric(candidate) && toDouble(candidate) === numeric,
-        );
-        newIndex = found >= 0 ? found : UNASSIGNED;
+      if (resolved[oldIndex] === 0) {
+        // Case-sensitive: the name is a declared value carried across expansion,
+        // not text a caller wrote.
+        resolver ??= new ValueResolver(expanded[pi], /*caseSensitive=*/ true);
+        const oldValue = oldValues[oldIndex];
+        let newIndex = resolver.resolve(oldValue);
+        // Numeric identity is decided by the shared decimal grammar, never by
+        // Number()'s coercion, and keeps the first matching expanded spelling.
+        if (newIndex === UNASSIGNED && isNumeric(oldValue)) {
+          const numeric = toDouble(oldValue);
+          const found = expanded[pi].values.findIndex(
+            (candidate) => isNumeric(candidate) && toDouble(candidate) === numeric,
+          );
+          newIndex = found >= 0 ? found : UNASSIGNED;
+        }
+        remapped[oldIndex] = newIndex;
+        resolved[oldIndex] = 1;
       }
-      values[pi] = newIndex;
+      values[pi] = remapped[oldIndex];
     }
   }
 }

@@ -6,13 +6,15 @@ import {
   createGenerateOptions,
   ExtendMode,
   type GenerateOptions,
+  NO_CHARGED_TEXT,
 } from '../model/generate-options.js';
-import { Parameter, resolveValueName } from '../model/parameter.js';
+import { Parameter, resolveValueName, ValueResolver } from '../model/parameter.js';
 import { type GenerateResult, UNASSIGNED } from '../model/test-case.js';
 import { MAX_DIAGNOSTIC_TUPLES } from '../model/tuning-limits.js';
 import { validateConstraintReport } from '../validator/constraint-validator.js';
 import { validateCoverage } from '../validator/coverage-validator.js';
 import { CoverageEngine } from './coverage-engine.js';
+import { EngineInput } from './engine-input.js';
 import { estimateModel, extend, generate } from './generator.js';
 
 /// Count constraint violations across a generated suite's positive tests.
@@ -862,6 +864,36 @@ describe('boundary expansion', () => {
     expect(result.tests[0].values[0]).toBe(remapped);
     expect(result.parameters[0].values[result.tests[0].values[0]]).toBe('50');
     expect(opts.seeds).toEqual([{ values: [0, 0] }]);
+  });
+
+  it('remaps repeated seed values with one identity lookup per declared index', () => {
+    const wideValues = Array.from({ length: 1000 }, (_, index) => `v${index}`);
+    const optionsFor = (seedCount: number) =>
+      createGenerateOptions({
+        parameters: [
+          { name: 'n', values: ['5'] },
+          { name: 'wide', values: wideValues },
+        ],
+        boundaryConfigs: {
+          n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 },
+        },
+        strength: 1,
+        seeds: Array.from({ length: seedCount }, () => ({ values: [0, 999] })),
+      });
+    const lookup = vi.spyOn(ValueResolver.prototype, 'resolve');
+
+    const one = EngineInput.accept(optionsFor(1), [], NO_CHARGED_TEXT);
+    expect(one.error.code).toBe(ErrorCode.Ok);
+    const oneRowLookups = lookup.mock.calls.length;
+    expect(oneRowLookups).toBe(2);
+    lookup.mockClear();
+
+    const many = EngineInput.accept(optionsFor(100), [], NO_CHARGED_TEXT);
+    expect(many.error.code).toBe(ErrorCode.Ok);
+    expect(lookup.mock.calls.length).toBe(oneRowLookups);
+    expect(many.input?.seedRows).toHaveLength(100);
+    expect(many.input?.seedRows.every((row) => row.test.values[1] === 999)).toBe(true);
+    lookup.mockRestore();
   });
 
   it('does not let expansion make an out-of-range declared seed index valid', () => {

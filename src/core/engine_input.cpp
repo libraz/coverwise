@@ -3,6 +3,7 @@
 #include "core/engine_input.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -75,31 +76,42 @@ SeedValidationSnapshot CaptureSeedValidation(const model::TestCase& seed,
 void RemapSeedValueIndices(const std::vector<model::Parameter>& declared,
                            const std::vector<model::Parameter>& expanded,
                            std::vector<SeedRow>& rows) {
-  for (auto& row : rows) {
-    auto& values = row.test.values;
-    for (size_t pi = 0; pi < values.size() && pi < declared.size(); ++pi) {
+  for (size_t pi = 0; pi < declared.size(); ++pi) {
+    const auto& old_values = declared[pi].values;
+    std::vector<uint32_t> remapped(old_values.size(), model::kUnassigned);
+    std::vector<bool> resolved(old_values.size(), false);
+    std::optional<model::ValueResolver> resolver;
+
+    for (auto& row : rows) {
+      auto& values = row.test.values;
+      if (pi >= values.size()) continue;
       const uint32_t old_index = values[pi];
-      if (old_index >= declared[pi].size()) {
+      if (old_index >= old_values.size()) {
         values[pi] = model::kUnassigned;
         continue;
       }
-      const auto& old_value = declared[pi].values[old_index];
-      // Byte equality, not ResolveValueName: the name being looked up is the
-      // declared value itself, carried across expansion, not text a caller
-      // wrote, so the only match that means "this is the same value" is the
-      // exact one.
-      uint32_t new_index = expanded[pi].find_value_index(old_value, /*case_sensitive=*/true);
-      if (new_index == model::kUnassigned && util::IsNumeric(old_value)) {
-        const double numeric = util::ToDouble(old_value);
-        for (uint32_t vi = 0; vi < expanded[pi].size(); ++vi) {
-          const auto& candidate = expanded[pi].values[vi];
-          if (util::IsNumeric(candidate) && util::ToDouble(candidate) == numeric) {
-            new_index = vi;
-            break;
+      if (!resolved[old_index]) {
+        // Case-sensitive: the name is a declared value carried across expansion,
+        // not text a caller wrote.
+        if (!resolver) resolver.emplace(expanded[pi], /*case_sensitive=*/true);
+        const auto& old_value = old_values[old_index];
+        uint32_t new_index = resolver->Resolve(old_value);
+        // Numeric identity is decided by the shared decimal grammar. Preserve
+        // the first matching expanded spelling when the exact name disappeared.
+        if (new_index == model::kUnassigned && util::IsNumeric(old_value)) {
+          const double numeric = util::ToDouble(old_value);
+          for (uint32_t vi = 0; vi < expanded[pi].size(); ++vi) {
+            const auto& candidate = expanded[pi].values[vi];
+            if (util::IsNumeric(candidate) && util::ToDouble(candidate) == numeric) {
+              new_index = vi;
+              break;
+            }
           }
         }
+        remapped[old_index] = new_index;
+        resolved[old_index] = true;
       }
-      values[pi] = new_index;
+      values[pi] = remapped[old_index];
     }
   }
 }
