@@ -127,13 +127,20 @@ Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& con
   std::vector<bool> expanded_invalid;
   std::vector<std::vector<std::string>> expanded_aliases;
   std::vector<std::string> expanded_classes;
-  const bool preserve_invalid = !param.invalid().empty();
+  auto out_of_range = [&](double number) {
+    return number < config.min_value || number > config.max_value;
+  };
+  const bool generated_out_of_range =
+      std::any_of(numeric_values.begin(), numeric_values.end(),
+                  [&](const auto& entry) { return !entry.second && out_of_range(entry.first); });
+  const bool preserve_invalid = !param.invalid().empty() || generated_out_of_range;
   const bool preserve_aliases = !param.all_aliases().empty();
   const bool preserve_classes = !param.equivalence_classes().empty();
 
-  auto append_metadata = [&](std::optional<size_t> original) {
+  auto append_metadata = [&](std::optional<size_t> original, double number) {
     if (preserve_invalid) {
-      expanded_invalid.push_back(original ? param.invalid()[*original] : false);
+      expanded_invalid.push_back(original ? !param.invalid().empty() && param.invalid()[*original]
+                                          : out_of_range(number));
     }
     if (preserve_aliases) {
       expanded_aliases.push_back(original ? param.all_aliases()[*original]
@@ -152,17 +159,18 @@ Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& con
     } else {
       expanded_values.push_back(FormatFloat(number));
     }
-    append_metadata(original);
+    append_metadata(original, number);
   }
 
   // Append non-numeric values at the end.
   for (size_t original : non_numeric_indices) {
     expanded_values.push_back(param.values[original]);
-    append_metadata(original);
+    append_metadata(original, 0.0);
   }
 
   // Preserve per-value metadata by the original value's numeric/string identity.
-  // Newly generated boundary values receive the neutral metadata defaults.
+  // Newly generated boundary values receive the neutral defaults, except that
+  // those outside the range are invalid.
   Parameter result(param.name, std::move(expanded_values));
   if (preserve_invalid) result.set_invalid(std::move(expanded_invalid));
   if (preserve_aliases) result.set_aliases(std::move(expanded_aliases));

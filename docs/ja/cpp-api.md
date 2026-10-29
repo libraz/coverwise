@@ -437,7 +437,7 @@ Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&);
 Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&, Error* error);
 ```
 
-境界値展開は、元の値に対して整数では `min-1`、`min`、`min+1`、`max-1`、`max`、`max+1` を、浮動小数点では `1` の代わりに `step` を使って追加します。浮動小数点の値は `min`・`max`・`step` のうち最大の小数桁数にそろえられ、重複を除去して数値順に並びます。生成結果は展開後のパラメータを返すため、`TestCase` の値インデックスは `GenerateResult::parameters` を基準に表示してください。
+境界値展開は、元の値に対して整数では `min-1`、`min`、`min+1`、`max-1`、`max`、`max+1` を、浮動小数点では `1` の代わりに `step` を使って追加します。浮動小数点の値は `min`・`max`・`step` のうち最大の小数桁数にそろえられ、重複を除去して数値順に並びます。生成された値のうち `[min, max]` の外側にあるものは無効値になり、元の値はその値自身のメタデータを保ちます。生成結果は展開後のパラメータを返すため、`TestCase` の値インデックスは `GenerateResult::parameters` を基準に表示してください。
 
 ### `model::TestCase`
 

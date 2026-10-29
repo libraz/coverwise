@@ -25,7 +25,9 @@ struct BoundaryConfig {
 ///
 /// For integer type, adds: min-1, min, min+1, max-1, max, max+1.
 /// For float type, adds: min-step, min, min+step, max-step, max, max+step.
-/// Merges with existing values (dedup) and sorts numerically.
+/// Merges with existing values (dedup) and sorts numerically. The generated
+/// values outside [min, max] are marked invalid, so they feed single-fault
+/// negative tests; a value the caller declared keeps its own metadata.
 ///
 /// @param param The original parameter.
 /// @param config The boundary configuration specifying the range.

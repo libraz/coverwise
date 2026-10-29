@@ -1021,8 +1021,13 @@ describe('WASM / TS compatibility', () => {
       const wasmCounts = new Set(wasmResult.tests.map((t) => String(t.count)));
       const pureCounts = new Set(pureResult.tests.map((t) => String(t.count)));
       expect([...pureCounts].sort()).toEqual([...wasmCounts].sort());
-      // min-1..min+1, max-1..max+1, merged with the original 10.
-      expect([...wasmCounts].sort()).toEqual(['-1', '0', '1', '10', '4', '5', '6'].sort());
+      // min..min+1 and max-1..max, merged with the declared 10, which stays valid
+      // although it lies outside the range; the generated -1 and 6 are negative.
+      expect([...wasmCounts].sort()).toEqual(['0', '1', '10', '4', '5'].sort());
+      const negativeCounts = (tests: TestCase[]) =>
+        [...new Set(tests.map((t) => String(t.count)))].sort();
+      expect(negativeCounts(wasmResult.negativeTests)).toEqual(['-1', '6']);
+      expect(negativeCounts(pureResult.negativeTests)).toEqual(['-1', '6']);
     });
 
     it('WASM and pure-JS agree on coverage for a float boundary parameter', () => {
@@ -1044,8 +1049,11 @@ describe('WASM / TS compatibility', () => {
           .map(String)
           .sort();
       expect(assignedRatios(pureResult.tests)).toEqual(assignedRatios(wasmResult.tests));
-      // The expanded float value set: min-step..min+step, max-step..max+step.
-      expect(assignedRatios(wasmResult.tests)).toEqual(['0.5', '1', '1.5', '2', '2.5'].sort());
+      // The expanded float value set: min-step..min+step, max-step..max+step. The
+      // declared 0.5 keeps its valid flag; the generated 2.5 is a negative input.
+      expect(assignedRatios(wasmResult.tests)).toEqual(['0.5', '1', '1.5', '2'].sort());
+      expect(assignedRatios(wasmResult.negativeTests)).toEqual(['2.5']);
+      expect(assignedRatios(pureResult.negativeTests)).toEqual(['2.5']);
       expect(claimOf(wasmResult)).toEqual(claimOf(pureResult));
     });
   });

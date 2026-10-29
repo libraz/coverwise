@@ -195,11 +195,12 @@ const result = cw.generate({
   ],
 });
 
-result.stats.totalTuples;  // 36 pairs: each range expands to 6 values, so 6 * 6
-result.tests.length;       // 36 rows
+result.stats.totalTuples;    // 16 pairs: 4 in-range values per parameter, so 4 * 4
+result.tests.length;         // 16 rows
+result.negativeTests.length; // 16 rows, one out-of-range value each
 ```
 
-`port` は `0`、`1`、`2`、`65534`、`65535`、`65536` に、`timeout` は `0`、`0.1`、`0.2`、`29.9`、`30`、`30.1` に展開されます。境界値パラメータでも `values` は宣言します。そこに書いた値は置き換えられるのではなく、展開後の集合にマージされます。整数の範囲では `step: 1` しか受け付けません。同じ 4 つのフィールドは CLI のモデル文書でもパラメータの下に置きます。[CLI リファレンス](cli.md)を参照してください。
+`port` は `0`、`1`、`2`、`65534`、`65535`、`65536` に、`timeout` は `0`、`0.1`、`0.2`、`29.9`、`30`、`30.1` に展開されます。範囲の外側にある 2 つの値（`0` と `65536`、`0` と `30.1`）は無効値として扱われ、`tests` には入らず、`invalid` を付けた値と同じく `negativeTests` で単一障害として検証されます。明示的に書いた値は、その値自身の `invalid` 指定に従います。境界値パラメータでも `values` は宣言します。そこに書いた値は置き換えられるのではなく、展開後の集合にマージされます。整数の範囲では `step: 1` しか受け付けません。同じ 4 つのフィールドは CLI のモデル文書でもパラメータの下に置きます。[CLI リファレンス](cli.md)を参照してください。
 
 ## モデル推定
 

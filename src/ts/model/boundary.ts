@@ -73,7 +73,9 @@ function snapToDecimals(value: number, places: number): number {
  *
  * For integer type, adds: min-1, min, min+1, max-1, max, max+1.
  * For float type, adds: min-step, min, min+step, max-step, max, max+step.
- * Merges with existing values (dedup) and sorts numerically.
+ * Merges with existing values (dedup) and sorts numerically. The generated
+ * values outside [min, max] are marked invalid, so they feed single-fault
+ * negative tests; a value the caller declared keeps its own metadata.
  *
  * @param param The original parameter.
  * @param config The boundary configuration specifying the range.
@@ -142,13 +144,19 @@ export function expandBoundaryValues(param: Parameter, config: BoundaryConfig): 
   const expandedInvalid: boolean[] = [];
   const expandedAliases: string[][] = [];
   const expandedClasses: string[] = [];
-  const preserveInvalid = param.invalid.length > 0;
+  const outOfRange = (value: number): boolean => value < config.minValue || value > config.maxValue;
+  const generatedOutOfRange = sortedNums.some(
+    (value) => numericValues.get(value) === null && outOfRange(value),
+  );
+  const preserveInvalid = param.invalid.length > 0 || generatedOutOfRange;
   const preserveAliases = param.allAliases.length > 0;
   const preserveClasses = param.equivalenceClasses.length > 0;
 
-  const appendMetadata = (original: number | null): void => {
+  const appendMetadata = (original: number | null, value: number): void => {
     if (preserveInvalid) {
-      expandedInvalid.push(original === null ? false : param.invalid[original]);
+      expandedInvalid.push(
+        original === null ? outOfRange(value) : param.invalid.length > 0 && param.invalid[original],
+      );
     }
     if (preserveAliases) {
       expandedAliases.push(original === null ? [] : param.allAliases[original]);
@@ -166,13 +174,13 @@ export function expandBoundaryValues(param: Parameter, config: BoundaryConfig): 
     } else {
       expandedValues.push(formatFloat(d));
     }
-    appendMetadata(original);
+    appendMetadata(original, d);
   }
 
   // Append non-numeric values at the end.
   for (const original of nonNumericIndices) {
     expandedValues.push(param.values[original]);
-    appendMetadata(original);
+    appendMetadata(original, 0);
   }
 
   const result = new Parameter(param.name, expandedValues);

@@ -16,7 +16,7 @@ Terms as coverwise uses them, each naming the field or function where the term s
 
 **Equivalence class** — A label grouping values expected to take the same path through the system. Declared in `class` on a value object.
 
-**Boundary value** — A value at or immediately beside the edge of a numeric range. A parameter carrying `type` and `range` expands into six of them: one outside each edge, each edge, and one inside each edge.
+**Boundary value** — A value at or immediately beside the edge of a numeric range. A parameter carrying `type` and `range` expands into six of them: one outside each edge, each edge, and one inside each edge. The two outside the range are invalid values.
 
 **Sub-model** — A named group of parameters given a strength of its own, so one group can be covered more deeply than the rest of the model. Declared in `subModels`.
 

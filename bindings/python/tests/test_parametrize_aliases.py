@@ -26,7 +26,8 @@ def test_numeric_looking_aliases_keep_their_spelling(alias: str) -> None:
 
 @pytest.mark.parametrize(
     ("kind", "seed", "alias"),
-    [("integer", 1, "Infinity"), ("integer", 8, "001"), ("float", 0, "1e100")],
+    # Aliases rotate by row index, so each seed is one whose suite reaches the alias.
+    [("integer", 2, "nan"), ("integer", 0, "001"), ("float", 6, "1e100")],
 )
 def test_parametrize_preserves_boundary_aliases_and_decodes_numbers(
     kind: str, seed: int, alias: str

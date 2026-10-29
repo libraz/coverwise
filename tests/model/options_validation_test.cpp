@@ -199,8 +199,11 @@ TEST(OptionsGateTest, AcceptsABoundaryParameterWhoseOnlyDeclaredValueIsInvalid) 
   ASSERT_TRUE(accepted.ok()) << accepted.error().message;
   const auto& age = accepted->get().parameters[0];
   EXPECT_EQ(age.values, (std::vector<std::string>{"-1", "0", "1", "9", "10", "11", "999"}));
-  EXPECT_EQ(age.valid_count(), 6u);
+  // -1 and 11 lie outside the range, so only the four in-range boundaries are valid.
+  EXPECT_EQ(age.valid_count(), 4u);
   EXPECT_TRUE(age.is_invalid(ResolveValueName(age, "999")));
+  EXPECT_TRUE(age.is_invalid(ResolveValueName(age, "-1")));
+  EXPECT_TRUE(age.is_invalid(ResolveValueName(age, "11")));
   EXPECT_TRUE(accepted->get().boundary_configs.empty());
 }
 

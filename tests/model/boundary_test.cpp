@@ -128,6 +128,28 @@ TEST(BoundaryTest, MergeWithExplicitValues) {
   EXPECT_EQ(result.values[6], "101");
 }
 
+TEST(BoundaryTest, MarksGeneratedValuesOutsideTheRangeInvalid) {
+  Parameter integer_param("n", {});
+  auto integer_result =
+      ExpandBoundaryValues(integer_param, {BoundaryConfig::Type::kInteger, 1, 10, 1.0});
+  EXPECT_EQ(integer_result.values, (std::vector<std::string>{"0", "1", "2", "9", "10", "11"}));
+  EXPECT_EQ(integer_result.invalid(), (std::vector<bool>{true, false, false, false, false, true}));
+
+  Parameter float_param("ratio", {});
+  auto float_result =
+      ExpandBoundaryValues(float_param, {BoundaryConfig::Type::kFloat, 0.1, 0.3, 0.1});
+  EXPECT_EQ(float_result.values, (std::vector<std::string>{"0", "0.1", "0.2", "0.3", "0.4"}));
+  EXPECT_EQ(float_result.invalid(), (std::vector<bool>{true, false, false, false, true}));
+}
+
+TEST(BoundaryTest, DeclaredValueOutsideTheRangeKeepsItsOwnMetadata) {
+  // The caller listed 0 explicitly without marking it invalid, so it stays valid.
+  Parameter param("n", {"0"});
+  auto result = ExpandBoundaryValues(param, {BoundaryConfig::Type::kInteger, 1, 10, 1.0});
+  EXPECT_FALSE(result.is_invalid(ResolveValueName(result, "0")));
+  EXPECT_TRUE(result.is_invalid(ResolveValueName(result, "11")));
+}
+
 TEST(BoundaryTest, PreservesOriginalSpellingAndMetadataByValueIdentity) {
   Parameter param("score", {"1.0", "other"}, {true, false});
   param.set_aliases({{"one"}, {"fallback"}});
@@ -144,7 +166,9 @@ TEST(BoundaryTest, PreservesOriginalSpellingAndMetadataByValueIdentity) {
   EXPECT_EQ(result.equivalence_class(one), "numeric");
   const uint32_t generated = ResolveValueName(result, "-1");
   ASSERT_NE(generated, UINT32_MAX);
-  EXPECT_FALSE(result.is_invalid(generated));
+  // -1 lies below the range, so the generated value is a negative-test input.
+  EXPECT_TRUE(result.is_invalid(generated));
+  EXPECT_FALSE(result.is_invalid(ResolveValueName(result, "0")));
   EXPECT_TRUE(result.aliases(generated).empty());
   EXPECT_TRUE(result.equivalence_class(generated).empty());
 }
@@ -207,15 +231,19 @@ TEST(BoundaryTest, GenerationWithBoundaryValues) {
   EXPECT_EQ(result.parameters[0].values,
             (std::vector<std::string>{"0", "1", "2", "99", "100", "101"}));
 
-  // Verify that expanded params were used: age should have 6 boundary values.
-  // The tests should reference values 0..5 for the age parameter.
+  // The four in-range boundaries (indices 1..4) drive the positive suite; the
+  // out-of-range 0 and 101 (indices 0 and 5) appear only in negative tests.
   std::set<uint32_t> age_values_seen;
   for (const auto& tc : result.tests) {
     ASSERT_GE(tc.values.size(), 2u);
     age_values_seen.insert(tc.values[0]);
   }
-  // All 6 age boundary values should appear.
-  EXPECT_EQ(age_values_seen.size(), 6u);
+  EXPECT_EQ(age_values_seen, (std::set<uint32_t>{1, 2, 3, 4}));
+  std::set<uint32_t> negative_age_values;
+  for (const auto& tc : result.negative_tests) {
+    negative_age_values.insert(tc.values[0]);
+  }
+  EXPECT_EQ(negative_age_values, (std::set<uint32_t>{0, 5}));
 }
 
 TEST(BoundaryTest, GenerationWithBoundaryAndExplicitValues) {

@@ -1610,9 +1610,12 @@ TEST(CliGenerateTest, AcceptsABoundaryParameterWhoseOnlyDeclaredValueIsInvalid) 
 
   const auto result = RunCliCaptureStderr("generate " + path);
   EXPECT_EQ(result.exit_code, 0) << result.stdout_text;
-  EXPECT_NE(result.stdout_text.find(R"("negativeTests":[{"age":"999")"), std::string::npos)
-      << result.stdout_text;
-  EXPECT_NE(result.stdout_text.find(R"("age":"11")"), std::string::npos) << result.stdout_text;
+  // 999 and the out-of-range boundaries -1 and 11 are exercised only as negative tests.
+  const size_t negative_at = result.stdout_text.find(R"("negativeTests":[)");
+  ASSERT_NE(negative_at, std::string::npos) << result.stdout_text;
+  for (const char* age : {R"("age":"999")", R"("age":"-1")", R"("age":"11")"}) {
+    EXPECT_GT(result.stdout_text.find(age), negative_at) << age << "\n" << result.stdout_text;
+  }
 }
 
 // A boundary shape the reader cannot convert is an error on every surface. The

@@ -209,8 +209,9 @@ describe('boundary parameters', () => {
     const results = surfaces.map(({ api }) => api.generate(input));
     for (const result of results) {
       const ages = new Set(result.tests.map((test) => test.age));
-      expect([...ages].sort()).toEqual(['-1', '0', '1', '10', '11', '9']);
-      expect(result.negativeTests.map((test) => test.age)).toContain('999');
+      expect([...ages].sort()).toEqual(['0', '1', '10', '9']);
+      const negativeAges = new Set(result.negativeTests.map((test) => test.age));
+      expect([...negativeAges].sort()).toEqual(['-1', '11', '999']);
     }
     expect(results[0].tests).toEqual(results[1].tests);
   });
@@ -224,8 +225,12 @@ describe('boundary parameters', () => {
     } as unknown as GenerateInput;
 
     for (const { api } of surfaces) {
-      const values = new Set(api.generate(input).tests.map((test) => test.n));
-      expect([...values].sort()).toEqual(['-1', '0', '1', '10', '11', '9']);
+      const result = api.generate(input);
+      const values = new Set(result.tests.map((test) => test.n));
+      expect([...values].sort()).toEqual(['0', '1', '10', '9']);
+      // The neighbours outside the range are exercised as negative tests.
+      const negatives = new Set(result.negativeTests.map((test) => test.n));
+      expect([...negatives].sort()).toEqual(['-1', '11']);
     }
   });
 
@@ -240,19 +245,15 @@ describe('boundary parameters', () => {
       ],
     } as unknown as GenerateInput;
 
-    const suites = surfaces.map(({ api }) => api.generate(input).tests);
-    for (const tests of suites) {
+    const results = surfaces.map(({ api }) => api.generate(input));
+    for (const { tests, negativeTests } of results) {
       const values = new Set(tests.map((test) => test.n));
-      expect([...values].sort()).toEqual([
-        '-1',
-        '0',
-        '1',
-        '9007199254740990',
-        '9007199254740991',
-        '9007199254740992',
-      ]);
+      expect([...values].sort()).toEqual(['0', '1', '9007199254740990', '9007199254740991']);
+      const negatives = new Set(negativeTests.map((test) => test.n));
+      expect([...negatives].sort()).toEqual(['-1', '9007199254740992']);
     }
-    expect(suites[0]).toEqual(suites[1]);
+    expect(results[0].tests).toEqual(results[1].tests);
+    expect(results[0].negativeTests).toEqual(results[1].negativeTests);
   });
 
   // Where the two surfaces can actually disagree is the model layer: the shape
@@ -469,7 +470,10 @@ describe('the compiled module called directly', () => {
     });
     expect(result.error).toBeUndefined();
     const values = new Set((result.tests as Array<{ n: string }>).map((test) => test.n));
-    expect([...values].sort()).toEqual(['-1', '0', '1', '10', '11', '9']);
+    expect([...values].sort()).toEqual(['0', '1', '10', '9']);
+    const { negativeTests } = result as unknown as { negativeTests: Array<{ n: string }> };
+    const negatives = new Set(negativeTests.map((test) => test.n));
+    expect([...negatives].sort()).toEqual(['-1', '11']);
   });
 });
 

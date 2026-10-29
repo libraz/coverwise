@@ -226,7 +226,7 @@ describe('expandBoundaries', () => {
     });
     expect(result.error.code).toBe(ErrorCode.Ok);
     expect(result.params[0].values).toEqual(['-1', '0', '1', '5', '9', '10', '11']);
-    expect(result.params[0].invalid).toEqual([false, false, false, true, false, false, false]);
+    expect(result.params[0].invalid).toEqual([true, false, false, true, false, false, true]);
   });
 
   // Per-value metadata is positional, so a parameter that declares none of its

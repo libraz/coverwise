@@ -195,11 +195,12 @@ const result = cw.generate({
   ],
 });
 
-result.stats.totalTuples;  // 36 pairs: each range expands to 6 values, so 6 * 6
-result.tests.length;       // 36 rows
+result.stats.totalTuples;    // 16 pairs: 4 in-range values per parameter, so 4 * 4
+result.tests.length;         // 16 rows
+result.negativeTests.length; // 16 rows, one out-of-range value each
 ```
 
-`port` expands to `0`, `1`, `2`, `65534`, `65535`, `65536`, and `timeout` to `0`, `0.1`, `0.2`, `29.9`, `30`, `30.1`. A boundary parameter still declares `values`; anything listed there is merged into the expanded set rather than replaced. Integer ranges accept only `step: 1`. The same four fields appear under a parameter in a CLI model document — see [CLI reference](cli.md).
+`port` expands to `0`, `1`, `2`, `65534`, `65535`, `65536`, and `timeout` to `0`, `0.1`, `0.2`, `29.9`, `30`, `30.1`. The two values outside each range (`0` and `65536`, `0` and `30.1`) are invalid: they stay out of `tests` and are exercised single-fault in `negativeTests`, like any value marked `invalid`. A value you list explicitly keeps its own `invalid` flag. A boundary parameter still declares `values`; anything listed there is merged into the expanded set rather than replaced. Integer ranges accept only `step: 1`. The same four fields appear under a parameter in a CLI model document — see [CLI reference](cli.md).
 
 ## Model estimation
 

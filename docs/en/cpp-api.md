@@ -437,7 +437,7 @@ Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&);
 Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&, Error* error);
 ```
 
-Boundary expansion merges, de-duplicates, and numerically sorts the original values with `min-1`, `min`, `min+1`, `max-1`, `max`, and `max+1` for integers; for floats it uses `step` in place of `1`, snaps each float to the largest number of decimal places among `min`, `max` and `step`, and then de-duplicates. Generation returns the expanded parameters, so render `TestCase` value indices against `GenerateResult::parameters`.
+Boundary expansion merges, de-duplicates, and numerically sorts the original values with `min-1`, `min`, `min+1`, `max-1`, `max`, and `max+1` for integers; for floats it uses `step` in place of `1`, snaps each float to the largest number of decimal places among `min`, `max` and `step`, and then de-duplicates. The generated values outside `[min, max]` are marked invalid, while an original value keeps its own metadata. Generation returns the expanded parameters, so render `TestCase` value indices against `GenerateResult::parameters`.
 
 ### `model::TestCase`
 
