@@ -319,12 +319,12 @@ function validateBoundaryConfigs(
     const boundaryValues =
       config.type === BoundaryType.Integer
         ? [
-            config.minValue - 1,
+            config.minValue - INTEGER_BOUNDARY_STEP,
             config.minValue,
-            config.minValue + 1,
-            config.maxValue - 1,
+            config.minValue + INTEGER_BOUNDARY_STEP,
+            config.maxValue - INTEGER_BOUNDARY_STEP,
             config.maxValue,
-            config.maxValue + 1,
+            config.maxValue + INTEGER_BOUNDARY_STEP,
           ]
         : [
             config.minValue - config.step,
@@ -559,14 +559,18 @@ export function validateGenerateOptions(
       }
       // Two keys naming one value carry two weights for it, and only one can
       // apply. A key spelled the way the model declares the value settles that
-      // outright, which is how a weight keyed by an alias keeps working beside
-      // one keyed by the value itself. With no declared spelling among them the
-      // winner would come down to the order the caller's map is walked in, and
-      // that order is not the same on every surface — so the model is refused
-      // instead of weighted differently depending on where it was run.
+      // outright, wherever it sorts among the aliases. With no declared spelling
+      // among them the winner would come down to the order the caller's map is
+      // walked in, and that order is not the same on every surface — so the model
+      // is refused instead of weighted differently depending on where it ran.
       const claimed = claimedBy.get(valueIndex);
       const declared = param.values[valueIndex];
-      if (claimed !== undefined && claimed !== declared && valueName !== declared) {
+      if (
+        claimed !== undefined &&
+        claimed !== declared &&
+        valueName !== declared &&
+        !Object.hasOwn(valueWeights, declared)
+      ) {
         return invalid(
           `Ambiguous value in weights: ${paramName}=${claimed} and ${paramName}=${valueName} name the same value`,
         );
@@ -592,10 +596,10 @@ export function optionsParameters(options: GenerateOptions): Parameter[] {
     const param = p.invalid
       ? new Parameter(p.name, p.values, p.invalid)
       : new Parameter(p.name, p.values);
-    if (p.aliases?.some((a) => a.length > 0)) {
+    if (p.aliases && p.aliases.length > 0) {
       param.setAliases(p.aliases);
     }
-    if (p.equivalenceClasses?.some((c) => c.length > 0)) {
+    if (p.equivalenceClasses && p.equivalenceClasses.length > 0) {
       param.setEquivalenceClasses(p.equivalenceClasses);
     }
     return param;
@@ -608,10 +612,10 @@ function toParameterSpec(param: Parameter): GenerateOptions['parameters'][number
   if (param.invalid.length > 0) {
     spec.invalid = param.invalid;
   }
-  if (param.hasAliases) {
+  if (param.allAliases.length > 0) {
     spec.aliases = param.allAliases;
   }
-  if (param.hasEquivalenceClasses) {
+  if (param.equivalenceClasses.length > 0) {
     spec.equivalenceClasses = param.equivalenceClasses;
   }
   return spec;

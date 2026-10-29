@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { BoundaryType } from './boundary.js';
 import { aggregateBudgetExceeded } from './budget.js';
 import { ErrorCode } from './error.js';
 import {
   acceptOptions,
   createGenerateOptions,
   createWeightConfig,
+  type GenerateOptions,
   validateGenerateOptions,
 } from './generate-options.js';
 import { MAX_AGGREGATE_STRING_BYTES, MAX_STRING_BYTES } from './limits.js';
@@ -39,16 +41,35 @@ describe('string budget walk order', () => {
 });
 
 describe('parameter metadata reading', () => {
-  // An alias list with no aliases in it carries no metadata, and the rule set
-  // must read it the same way whether it is reached directly or through the
-  // acceptance gate.
-  it('treats an all-empty alias list the same through both entry points', () => {
-    const options = createGenerateOptions({
-      parameters: [
-        { name: 'a', values: ['x', 'y'], aliases: [[]] },
-        { name: 'b', values: ['0', '1'] },
-      ],
-    });
-    expect(validateGenerateOptions(options).code).toBe(acceptOptions(options).error.code);
-  });
+  const malformed: Array<{
+    label: string;
+    metadata: Pick<GenerateOptions['parameters'][number], 'aliases' | 'equivalenceClasses'>;
+  }> = [
+    { label: 'short empty aliases', metadata: { aliases: [[]] } },
+    { label: 'long empty aliases', metadata: { aliases: [[], [], []] } },
+    { label: 'short empty classes', metadata: { equivalenceClasses: [''] } },
+    { label: 'long empty classes', metadata: { equivalenceClasses: ['', '', ''] } },
+  ];
+
+  for (const metadata of malformed) {
+    for (const boundary of [false, true]) {
+      it(`rejects ${metadata.label} ${boundary ? 'with' : 'without'} boundary expansion`, () => {
+        const options = createGenerateOptions({
+          parameters: [
+            { name: 'a', values: ['x', 'y'], ...metadata.metadata },
+            { name: 'b', values: ['0', '1'] },
+          ],
+          ...(boundary
+            ? {
+                boundaryConfigs: {
+                  a: { type: BoundaryType.Integer, minValue: 0, maxValue: 2, step: 1 },
+                },
+              }
+            : {}),
+        });
+        expect(validateGenerateOptions(options).code).toBe(ErrorCode.InvalidInput);
+        expect(acceptOptions(options).error.code).toBe(ErrorCode.InvalidInput);
+      });
+    }
+  }
 });

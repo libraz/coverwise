@@ -225,13 +225,19 @@ Error ValidateOptions(const GenerateOptions& options, ChargedText charged) {
   // A boundary-configured parameter may intentionally start empty because the
   // boundary range supplies its value set. Validate all other parameter
   // semantics before expansion by using a temporary placeholder value.
-  auto validation_params = options.parameters;
-  for (auto& param : validation_params) {
+  std::vector<Parameter> placeholder_params;
+  const auto* validation_params = &options.parameters;
+  for (size_t i = 0; i < options.parameters.size(); ++i) {
+    const auto& param = options.parameters[i];
     if (param.values.empty() && options.boundary_configs.count(param.name) > 0) {
-      param.values.push_back("__coverwise_boundary_placeholder__");
+      if (placeholder_params.empty()) {
+        placeholder_params = options.parameters;
+        validation_params = &placeholder_params;
+      }
+      placeholder_params[i].values.push_back("__coverwise_boundary_placeholder__");
     }
   }
-  auto param_error = ValidateParameters(validation_params);
+  auto param_error = ValidateParameters(*validation_params);
   if (!param_error.ok()) return param_error;
   if (options.parameters.empty()) return Invalid("At least one parameter is required");
   if (options.strength == 0 || options.strength > options.parameters.size()) {
@@ -287,14 +293,14 @@ Error ValidateOptions(const GenerateOptions& options, ChargedText charged) {
       }
       // Two keys naming one value carry two weights for it, and only one can
       // apply. A key spelled the way the model declares the value settles that
-      // outright, which is how a weight keyed by an alias keeps working beside
-      // one keyed by the value itself. With no declared spelling among them the
-      // winner would come down to the order the caller's map is walked in, and
-      // that order is not the same on every surface — so the model is refused
-      // instead of weighted differently depending on where it was run.
+      // outright, wherever it sorts among the aliases. With no declared spelling
+      // among them the winner would come down to the order the caller's map is
+      // walked in, and that order is not the same on every surface — so the model
+      // is refused instead of weighted differently depending on where it ran.
       const std::string* claimed = claimed_by[value_index];
       const std::string& declared = param->values[value_index];
-      if (claimed != nullptr && *claimed != declared && value_name != declared) {
+      if (claimed != nullptr && *claimed != declared && value_name != declared &&
+          value_weights.find(declared) == value_weights.end()) {
         return Invalid("Ambiguous value in weights: " + param_name + "=" + *claimed + " and " +
                        param_name + "=" + value_name + " name the same value");
       }

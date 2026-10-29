@@ -1,6 +1,7 @@
 /// Boundary value expansion for numeric parameters.
 
 import { isNumeric, jsNumberToString } from '../util/string_util.js';
+import { DEFAULT_BOUNDARY_STEP, INTEGER_BOUNDARY_STEP } from './boundary-rules.js';
 import { Parameter } from './parameter.js';
 
 /** Boundary value type: integer or float. */
@@ -24,7 +25,7 @@ export function createBoundaryConfig(params?: Partial<BoundaryConfig>): Boundary
     type: params?.type ?? BoundaryType.Integer,
     minValue: params?.minValue ?? 0,
     maxValue: params?.maxValue ?? 0,
-    step: params?.step ?? 1.0,
+    step: params?.step ?? DEFAULT_BOUNDARY_STEP,
   };
 }
 
@@ -82,7 +83,7 @@ export function expandBoundaryValues(param: Parameter, config: BoundaryConfig): 
   // Generate boundary values.
   let boundaryNums: number[];
   if (config.type === BoundaryType.Integer) {
-    const step = 1.0;
+    const step = INTEGER_BOUNDARY_STEP;
     boundaryNums = [
       config.minValue - step,
       config.minValue,

@@ -99,6 +99,51 @@ const aliasedBrowser: Parameter[] = [
   { name: 'os', values: ['win', 'mac'] },
 ];
 
+describe('declared weight keys settle alias collisions on every surface', () => {
+  const cases: Array<{
+    value: string;
+    aliases: string[];
+    weights: Record<string, number>;
+  }> = [
+    { value: 'a', aliases: ['b', 'c'], weights: { a: 1, b: 2, c: 3 } },
+    { value: 'm', aliases: ['a', 'z'], weights: { a: 1, m: 2, z: 3 } },
+    { value: 'z', aliases: ['a', 'b'], weights: { a: 1, b: 2, z: 3 } },
+  ];
+
+  for (const testCase of cases) {
+    it(`accepts the declared value when it sorts ${testCase.value === 'a' ? 'first' : testCase.value === 'm' ? 'between aliases' : 'last'}`, () => {
+      const input: GenerateInput = {
+        parameters: [
+          { name: 'p', values: [{ value: testCase.value, aliases: testCase.aliases }, 'other'] },
+          { name: 'q', values: ['0', '1'] },
+        ],
+        strength: 2,
+        weights: { p: testCase.weights },
+      };
+      const results = surfaces.map(({ api }) => api.generate(input));
+      expect(results[0].tests).toEqual(results[1].tests);
+      expect(results[0].coverage).toBe(1);
+    });
+  }
+
+  it('still rejects two aliases when no declared value key settles them', () => {
+    const input: GenerateInput = {
+      parameters: [
+        { name: 'p', values: [{ value: 'z', aliases: ['a', 'b'] }, 'other'] },
+        { name: 'q', values: ['0', '1'] },
+      ],
+      strength: 2,
+      weights: { p: { a: 1, b: 2 } },
+    };
+    const errors = surfaces.map(({ api }) => capture(() => api.generate(input)));
+    for (const error of errors) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as CoverwiseError).code).toBe('INVALID_INPUT');
+    }
+    expect((errors[0] as Error).message).toBe((errors[1] as Error).message);
+  });
+});
+
 describe('extend hands back the existing rows exactly as they were supplied', () => {
   // Rendering a preserved row from its value index substitutes the primary
   // value for the alias the caller wrote, so a suite fed back to a runner no
