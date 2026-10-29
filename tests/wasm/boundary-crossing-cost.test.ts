@@ -89,7 +89,9 @@ function crossings(run: () => void): Crossings {
   let guarded = 0;
   for (const [name, calls] of byImport) {
     total += calls;
-    if (/\bcoverwise_js_/.test(sourceOf.get(name) ?? '')) {
+    // Recognised by the `thrown` write-back every guarded read carries: some
+    // Emscripten releases emit EM_JS functions anonymously, so the name is gone.
+    if (/HEAPU32\[thrown\s*>>\s*2\]/.test(sourceOf.get(name) ?? '')) {
       guarded += calls;
     }
   }
