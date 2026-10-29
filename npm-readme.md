@@ -145,6 +145,10 @@ WebAssembly is the C++ core compiled, so those two agree by construction, and th
 - **It cannot tell you whether pairwise is strong enough.** Strength is an input. Whether it catches the faults your system actually has is a judgement about your system.
 - **It has no opinion about your test framework.** The output is a list of objects, and no runner, report format or directory layout is assumed.
 
+## For AI coding agents
+
+[coverwise-mcp](https://github.com/libraz/coverwise-mcp) wraps this package as an MCP server, so a coding agent writing tests for a function with several parameters builds a parameter model instead of picking combinations by eye. It installs as a Claude Code plugin (`/plugin marketplace add libraz/coverwise-mcp`, then `/plugin install coverwise-mcp`) and also runs standalone under any MCP client, including Codex CLI, Cursor and Claude Desktop.
+
 ## Documentation
 
 New to combinatorial testing? The [Primer](https://github.com/libraz/coverwise/blob/main/docs/en/primer/index.md) builds the vocabulary the rest of the documentation assumes. Otherwise start at [Introduction](https://github.com/libraz/coverwise/blob/main/docs/en/introduction.md) and [Getting started](https://github.com/libraz/coverwise/blob/main/docs/en/getting-started.md), which index the guides and the reference pages.

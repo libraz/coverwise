@@ -92,6 +92,14 @@ See the [Python API reference](https://github.com/libraz/coverwise/blob/main/doc
 the [CLI reference](https://github.com/libraz/coverwise/blob/main/docs/en/cli.md),
 and the [full project documentation](https://github.com/libraz/coverwise/tree/main/docs/en).
 
+## For AI coding agents
+
+[coverwise-mcp](https://github.com/libraz/coverwise-mcp) exposes the same engine as
+an MCP server, so a coding agent writing tests for a function with several
+parameters builds a parameter model instead of picking combinations by eye. It
+installs as a Claude Code plugin and also runs under any MCP client, including
+Codex CLI, Cursor and Claude Desktop.
+
 ## License
 
 Apache-2.0
