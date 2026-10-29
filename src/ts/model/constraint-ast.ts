@@ -539,37 +539,38 @@ function globMatchCodepoints(patternCodepoints: string[], textCodepoints: string
  * Comparison keys for one parameter's value strings.
  *
  * Entry `i` is the key of value index `i`. Two values compare equal exactly when
- * their keys are equal, so a key pair produced by a single internValuePair()
- * call may only be compared against its partner.
+ * their keys are equal, so keys may only be compared against keys produced by
+ * the same ValueKeyInterner.
  */
-type ValueKeys = Uint32Array;
+export type ValueKeys = Uint32Array;
 
 /**
- * Intern two parameters' value strings into a comparable key pair.
+ * Assigns equal keys to equal value strings across any number of parameters.
  *
  * Folding follows caseSensitive, so the policy is baked into the keys and
- * comparisons never look at the strings again.
+ * comparisons never look at the strings again. A parser holds one interner and
+ * one key table per parameter, so building comparison nodes costs the size of
+ * the parameters involved rather than a table per node.
  */
-function internValuePair(
-  leftValues: string[],
-  rightValues: string[],
-  caseSensitive: boolean,
-): [ValueKeys, ValueKeys] {
-  const table = new Map<string, number>();
-  const intern = (values: string[]): ValueKeys => {
+export class ValueKeyInterner {
+  private readonly table = new Map<string, number>();
+
+  constructor(private readonly caseSensitive = false) {}
+
+  /** Intern one parameter's value strings. */
+  intern(values: string[]): ValueKeys {
     const keys = new Uint32Array(values.length);
     for (let i = 0; i < values.length; i++) {
-      const folded = caseSensitive ? values[i] : asciiToUpper(values[i]);
-      let key = table.get(folded);
+      const folded = this.caseSensitive ? values[i] : asciiToUpper(values[i]);
+      let key = this.table.get(folded);
       if (key === undefined) {
-        key = table.size;
-        table.set(folded, key);
+        key = this.table.size;
+        this.table.set(folded, key);
       }
       keys[i] = key;
     }
     return keys;
-  };
-  return [intern(leftValues), intern(rightValues)];
+  }
 }
 
 /**
@@ -592,8 +593,12 @@ export class ParamEqualsNode implements ConstraintNode {
     leftValues: string[],
     rightValues: string[],
     caseSensitive = false,
+    leftKeys?: ValueKeys,
+    rightKeys?: ValueKeys,
   ) {
-    [this.leftKeys, this.rightKeys] = internValuePair(leftValues, rightValues, caseSensitive);
+    const interner = new ValueKeyInterner(caseSensitive);
+    this.leftKeys = leftKeys ?? interner.intern(leftValues);
+    this.rightKeys = rightKeys ?? interner.intern(rightValues);
   }
 
   evaluate(assignment: number[]): ConstraintResult {
@@ -635,8 +640,12 @@ export class ParamNotEqualsNode implements ConstraintNode {
     leftValues: string[],
     rightValues: string[],
     caseSensitive = false,
+    leftKeys?: ValueKeys,
+    rightKeys?: ValueKeys,
   ) {
-    [this.leftKeys, this.rightKeys] = internValuePair(leftValues, rightValues, caseSensitive);
+    const interner = new ValueKeyInterner(caseSensitive);
+    this.leftKeys = leftKeys ?? interner.intern(leftValues);
+    this.rightKeys = rightKeys ?? interner.intern(rightValues);
   }
 
   evaluate(assignment: number[]): ConstraintResult {

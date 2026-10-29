@@ -42,7 +42,11 @@ import {
 import type { ConstraintNode } from '../../src/ts/model/constraint-ast.js';
 import { annotateConstraintError, parseConstraint } from '../../src/ts/model/constraint-parser.js';
 import { ErrorCode, type ErrorInfo } from '../../src/ts/model/error.js';
-import { validateGenerateOptions } from '../../src/ts/model/generate-options.js';
+import {
+  ExtendMode,
+  type GenerateOptions,
+  validateGenerateOptions,
+} from '../../src/ts/model/generate-options.js';
 import { validateCoverage as internalValidateCoverage } from '../../src/ts/validator/coverage-validator.js';
 import type {
   CoverageReport,
@@ -55,7 +59,10 @@ import type {
 } from '../types.js';
 import { CoverwiseError } from '../types.js';
 import {
+  chargedRowText,
   createStringBudget,
+  entryFrame,
+  readingInput,
   type StringBudget,
   validateConstraints,
   validateExtendMode,
@@ -74,6 +81,7 @@ import {
   toPublicError,
   toPublicModelStats,
   toPublicResult,
+  valueResolvers,
 } from './adapter.js';
 
 // --- Input Validation ---
@@ -85,6 +93,15 @@ const pureScalarError = (message: string): Error => new CoverwiseError('INVALID_
 
 function validateInput(input: GenerateInput, budget?: StringBudget): void {
   validateGenerateInput(input, pureScalarError, budget);
+}
+
+/**
+ * Submit a model to the acceptance gate with the row text this call has already
+ * charged, so the verdict is the one the compiled module reaches for the same
+ * input: one total, with each caller string counted once.
+ */
+function admit(options: GenerateOptions, budget: StringBudget): void {
+  throwOnResultError(validateGenerateOptions(options, chargedRowText(budget)));
 }
 
 /** Throw a CoverwiseError when the internal engine reports a structured error. */
@@ -113,16 +130,21 @@ function throwOnResultError(error: ErrorInfo): void {
  * // result.coverage: 1.0
  */
 export function generate(input: GenerateInput): GenerateResult {
-  validateInput(input);
-  const params = toInternalParams(input.parameters);
-  const opts = toInternalOptions(input, params);
-  const result = internalGenerate(opts);
-  // Core reports early-exit failures (e.g. constraint parse errors) via
-  // result.error rather than throwing; surface them as CoverwiseError.
-  throwOnResultError(result.error);
-  const strength = input.strength ?? 2;
+  return entryFrame(() => {
+    const budget = createStringBudget();
+    const { params, opts, strength } = readingInput(() => {
+      validateInput(input, budget);
+      const params = toInternalParams(input.parameters);
+      return { params, opts: toInternalOptions(input, params), strength: input.strength ?? 2 };
+    });
+    admit(opts, budget);
+    const result = internalGenerate(opts);
+    // Core reports early-exit failures (e.g. constraint parse errors) via
+    // result.error rather than throwing; surface them as CoverwiseError.
+    throwOnResultError(result.error);
 
-  return toPublicResult(result, params, strength);
+    return toPublicResult(result, params, strength);
+  });
 }
 
 /**
@@ -142,49 +164,58 @@ export function analyzeCoverage(
   strength?: number,
   constraints?: string[],
 ): CoverageReport {
-  const budget = createStringBudget();
-  validateParameters(parameters, budget);
-  validateTestArray(tests, 'tests', budget);
-  validateConstraints(constraints, budget);
-  const s = validateStrength(strength, pureScalarError);
-  const params = toInternalParams(parameters);
-  const internalTests = tests.map((tc) => toInternalTestCase(tc, params));
+  return entryFrame(() => {
+    const budget = createStringBudget();
+    const { s, params, internalTests } = readingInput(() => {
+      validateParameters(parameters, budget);
+      validateTestArray(tests, 'tests', budget);
+      validateConstraints(constraints, budget);
+      const s = validateStrength(strength, pureScalarError);
+      const params = toInternalParams(parameters);
+      const resolvers = valueResolvers(params);
+      return {
+        s,
+        params,
+        internalTests: tests.map((tc) => toInternalTestCase(tc, params, true, resolvers)),
+      };
+    });
 
-  // The model reaching the validator has been through the same acceptance gate
-  // as the one reaching the generator — the documented budgets are limits on
-  // the input, not on which function received it. The requested strength is
-  // deliberately not submitted: see toInternalModelOptions.
-  throwOnResultError(validateGenerateOptions(toInternalModelOptions(params, constraints ?? [])));
+    // The model reaching the validator has been through the same acceptance gate
+    // as the one reaching the generator — the documented budgets are limits on
+    // the input, not on which function received it. The requested strength is
+    // deliberately not submitted: see toInternalModelOptions.
+    admit(toInternalModelOptions(params, constraints ?? []), budget);
 
-  // Parse optional constraint expressions.
-  const parsedConstraints: ConstraintNode[] = [];
-  if (constraints && constraints.length > 0) {
-    for (const expr of constraints) {
-      const parseResult = parseConstraint(expr, params);
-      if (parseResult.error.code !== ErrorCode.Ok || !parseResult.constraint) {
-        const annotated = annotateConstraintError(expr, parseResult.error);
-        // A parse that failed without classifying itself is still a constraint
-        // failure; that is the one code decided here, and only because the
-        // engine reported none. Everything else crosses through the single
-        // conversion, which keeps code, message and detail as they arrived.
-        throw toPublicError(
-          annotated.code === ErrorCode.Ok
-            ? { ...annotated, code: ErrorCode.ConstraintError }
-            : annotated,
-        );
+    // Parse optional constraint expressions.
+    const parsedConstraints: ConstraintNode[] = [];
+    if (constraints && constraints.length > 0) {
+      for (const expr of constraints) {
+        const parseResult = parseConstraint(expr, params);
+        if (parseResult.error.code !== ErrorCode.Ok || !parseResult.constraint) {
+          const annotated = annotateConstraintError(expr, parseResult.error);
+          // A parse that failed without classifying itself is still a constraint
+          // failure; that is the one code decided here, and only because the
+          // engine reported none. Everything else crosses through the single
+          // conversion, which keeps code, message and detail as they arrived.
+          throw toPublicError(
+            annotated.code === ErrorCode.Ok
+              ? { ...annotated, code: ErrorCode.ConstraintError }
+              : annotated,
+          );
+        }
+        parsedConstraints.push(parseResult.constraint);
       }
-      parsedConstraints.push(parseResult.constraint);
     }
-  }
 
-  const report = internalValidateCoverage(params, internalTests, s, parsedConstraints);
-  throwOnResultError(report.error);
-  const result = toPublicCoverageReport(report);
-  // When there are no tuples, coverage is vacuously 1.0.
-  if (result.totalTuples === 0) {
-    result.coverageRatio = 1.0;
-  }
-  return result;
+    const report = internalValidateCoverage(params, internalTests, s, parsedConstraints);
+    throwOnResultError(report.error);
+    const result = toPublicCoverageReport(report);
+    // When there are no tuples, coverage is vacuously 1.0.
+    if (result.totalTuples === 0) {
+      result.coverageRatio = 1.0;
+    }
+    return result;
+  });
 }
 
 /**
@@ -194,30 +225,49 @@ export function analyzeCoverage(
  * Only "strict" mode is supported (existing tests are kept as-is).
  */
 export function extendTests(existing: TestCase[], input: ExtendInput): GenerateResult {
-  const budget = createStringBudget();
-  validateTestArray(existing, 'existing', budget);
-  validateInput(input, budget);
-  validateExtendMode(input.mode);
-  const params = toInternalParams(input.parameters);
-  const opts = toInternalOptions(input, params);
-  const internalExisting = existing.map((tc) => toInternalTestCase(tc, params, true));
-  const strength = input.strength ?? 2;
-  const result = internalExtend(internalExisting, opts);
-  throwOnResultError(result.error);
+  return entryFrame(() => {
+    const budget = createStringBudget();
+    const { params, opts, internalExisting, strength } = readingInput(() => {
+      validateTestArray(existing, 'existing', budget);
+      validateInput(input, budget);
+      validateExtendMode(input.mode);
+      const params = toInternalParams(input.parameters);
+      const resolvers = valueResolvers(params);
+      return {
+        params,
+        opts: toInternalOptions(input, params),
+        internalExisting: existing.map((tc) => toInternalTestCase(tc, params, true, resolvers)),
+        strength: input.strength ?? 2,
+      };
+    });
+    admit(opts, budget);
+    const result = internalExtend(
+      internalExisting,
+      opts,
+      ExtendMode.Strict,
+      chargedRowText(budget),
+    );
+    throwOnResultError(result.error);
 
-  return toPublicResult(result, params, strength, existing);
+    return toPublicResult(result, params, strength, existing);
+  });
 }
 
 /**
  * Get model statistics without running generation.
  */
 export function estimateModel(input: GenerateInput): ModelStats {
-  validateInput(input);
-  const params = toInternalParams(input.parameters);
-  const opts = toInternalOptions(input, params);
-  const stats = internalEstimateModel(opts);
-  throwOnResultError(stats.error);
-  return toPublicModelStats(stats);
+  return entryFrame(() => {
+    const budget = createStringBudget();
+    const opts = readingInput(() => {
+      validateInput(input, budget);
+      return toInternalOptions(input, toInternalParams(input.parameters));
+    });
+    admit(opts, budget);
+    const stats = internalEstimateModel(opts);
+    throwOnResultError(stats.error);
+    return toPublicModelStats(stats);
+  });
 }
 
 // --- Class-based API ---

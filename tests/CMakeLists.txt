@@ -79,7 +79,10 @@ target_compile_definitions(docs_contract_test
 if(COVERWISE_BUILD_CLI AND NOT COVERWISE_BUILD_WASM)
   coverwise_add_test(cli_test integration/cli_test.cpp)
   target_compile_definitions(cli_test
-    PRIVATE COVERWISE_CLI_PATH="$<TARGET_FILE:coverwise>")
+    PRIVATE COVERWISE_CLI_PATH="$<TARGET_FILE:coverwise>"
+            COVERWISE_LIMIT_CASES_PATH="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/limit_cases.json")
+  # The limit table is read with the CLI's own JSON reader.
+  target_include_directories(cli_test PRIVATE ${PROJECT_SOURCE_DIR}/tools)
   add_dependencies(cli_test coverwise)
 
   coverwise_add_test(negative_coverage_test integration/negative_coverage_test.cpp)
@@ -151,3 +154,19 @@ add_test(NAME docs_cpp_api_fixture
     -DFIXTURE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/docs-cpp-api
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_fixture.cmake
 )
+
+# The documented programs that print their own result: the fixture's output must
+# be the line its trailing comment shows.
+foreach(docs_fixture docs_readme docs_getting_started)
+  add_test(NAME ${docs_fixture}_fixture
+    COMMAND ${CMAKE_COMMAND}
+      -DMODE=find_package
+      -DCONFIG=$<CONFIG>
+      -DCOVERWISE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+      -DCOVERWISE_BINARY_DIR=${PROJECT_BINARY_DIR}
+      -DFIXTURE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake/${docs_fixture}
+      -DFIXTURE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/${docs_fixture}
+      -DEXPECT_OUTPUT_FROM_COMMENT=ON
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_fixture.cmake
+  )
+endforeach()

@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "model/error.h"
@@ -142,6 +143,31 @@ struct Parameter {
 /// @param name The value name as the caller wrote it.
 /// @return The value index, or UINT32_MAX if no value or alias names it.
 uint32_t ResolveValueName(const Parameter& param, const std::string& name);
+
+/// @brief A parameter's value and alias names indexed once for repeated resolution.
+///
+/// Resolves exactly as ResolveValueName does -- ASCII case folding (unless
+/// @c case_sensitive), primary values before aliases, first match wins --
+/// without scanning the value list for every name. Build one per parameter when resolving many
+/// names (the cells of a row set); it reads the parameter when constructed and does not follow
+/// later changes to it.
+///
+/// Internal to the surfaces that read rows; not part of the documented API.
+class ValueResolver {
+ public:
+  explicit ValueResolver(const Parameter& param, bool case_sensitive = false);
+
+  /// @brief Resolve a name the caller wrote to the index it names.
+  /// @return The value index, or UINT32_MAX if no value or alias names it.
+  uint32_t Resolve(const std::string& name) const;
+
+ private:
+  std::string Key(const std::string& name) const;
+
+  bool case_sensitive_;
+  /// Folded name and value index, ordered by name then by precedence.
+  std::vector<std::pair<std::string, uint32_t>> entries_;
+};
 
 /// @brief Check if any parameter in the collection has invalid values.
 inline bool HasInvalidValues(const std::vector<Parameter>& params) {

@@ -9,6 +9,7 @@ import {
   type Parameter,
   type TestCase,
 } from '../../js/index.js';
+import { expectComplete, expectReportedCoverageMatchesRecount } from '../util/coverage-oracle.js';
 
 describe('coverwise WASM', () => {
   beforeAll(async () => {
@@ -17,16 +18,16 @@ describe('coverwise WASM', () => {
 
   describe('generate', () => {
     it('generates pairwise tests with 100% coverage', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: 'os', values: ['win', 'mac', 'linux'] },
           { name: 'browser', values: ['chrome', 'firefox', 'safari'] },
         ],
         seed: 42,
-      });
-      expect(result.coverage).toBe(1.0);
-      expect(result.stats.totalTuples).toBe(9);
-      expect(result.stats.coveredTuples).toBe(9);
+      };
+      const result = generate(input);
+      const recount = expectComplete(input, result);
+      expect(recount.total).toBe(9);
       expect(result.tests.length).toBeGreaterThanOrEqual(9);
       expect(result.uncovered).toHaveLength(0);
     });
@@ -45,15 +46,16 @@ describe('coverwise WASM', () => {
     });
 
     it('respects constraints', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: 'os', values: ['win', 'mac', 'linux'] },
           { name: 'browser', values: ['chrome', 'firefox', 'safari', 'ie'] },
         ],
         constraints: ['IF os = mac THEN browser != ie'],
         seed: 1,
-      });
-      expect(result.coverage).toBe(1.0);
+      };
+      const result = generate(input);
+      expectComplete(input, result);
       for (const tc of result.tests) {
         if (tc.os === 'mac') {
           expect(tc.browser).not.toBe('ie');
@@ -62,17 +64,51 @@ describe('coverwise WASM', () => {
     });
 
     it('handles maxTests limitation', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: 'a', values: ['1', '2', '3', '4'] },
           { name: 'b', values: ['1', '2', '3', '4'] },
         ],
         maxTests: 3,
         seed: 1,
-      });
+      };
+      const result = generate(input);
       expect(result.tests).toHaveLength(3);
-      expect(result.coverage).toBeLessThan(1.0);
-      expect(result.uncovered.length).toBeGreaterThan(0);
+      const recount = expectReportedCoverageMatchesRecount(input, result);
+      expect(recount.ratio).toBeLessThan(1);
+      expect(recount.uncoveredCount).toBeGreaterThan(0);
+    });
+
+    it('reports the same truncated coverage as a recount for a constrained and a strength-3 run', () => {
+      const inputs = [
+        {
+          parameters: [
+            { name: 'os', values: ['win', 'mac', 'linux'] },
+            { name: 'browser', values: ['chrome', 'firefox', 'safari', 'ie'] },
+            { name: 'arch', values: ['x64', 'arm64', 'x86'] },
+          ],
+          constraints: ['IF os = mac THEN browser != ie'],
+          maxTests: 4,
+          seed: 7,
+        },
+        {
+          parameters: [
+            { name: 'A', values: ['1', '2', '3'] },
+            { name: 'B', values: ['1', '2', '3'] },
+            { name: 'C', values: ['1', '2', '3'] },
+            { name: 'D', values: ['1', '2', '3'] },
+          ],
+          strength: 3,
+          maxTests: 5,
+          seed: 7,
+        },
+      ];
+      for (const input of inputs) {
+        const result = generate(input);
+        expect(result.tests.length).toBeLessThanOrEqual(input.maxTests);
+        const recount = expectReportedCoverageMatchesRecount(input, result);
+        expect(recount.uncoveredCount).toBeGreaterThan(0);
+      }
     });
 
     it('rejects invalid numeric options', () => {
@@ -98,19 +134,20 @@ describe('coverwise WASM', () => {
     });
 
     it('supports weights', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: 'os', values: ['win', 'mac', 'linux'] },
           { name: 'browser', values: ['chrome', 'firefox'] },
         ],
         weights: { os: { win: 10, mac: 1, linux: 1 } },
         seed: 1,
-      });
-      expect(result.coverage).toBe(1.0);
+      };
+      const result = generate(input);
+      expectComplete(input, result);
     });
 
     it('supports sub-models', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: 'A', values: ['1', '2', '3'] },
           { name: 'B', values: ['1', '2', '3'] },
@@ -120,8 +157,9 @@ describe('coverwise WASM', () => {
         strength: 2,
         subModels: [{ parameters: ['A', 'B', 'C'], strength: 3 }],
         seed: 1,
-      });
-      expect(result.coverage).toBe(1.0);
+      };
+      const result = generate(input);
+      expectComplete(input, result);
     });
 
     it('rejects a non-positive sub-model strength at the binding boundary', () => {
@@ -144,14 +182,15 @@ describe('coverwise WASM', () => {
     });
 
     it('generates negative tests for invalid values', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: 'browser', values: ['chrome', 'safari', { value: 'ie6', invalid: true }] },
           { name: 'os', values: ['win', 'mac'] },
         ],
         seed: 1,
-      });
-      expect(result.coverage).toBe(1.0);
+      };
+      const result = generate(input);
+      expectComplete(input, result);
       expect(result.negativeTests).toBeDefined();
       expect(result.negativeTests?.length).toBeGreaterThan(0);
       for (const tc of result.negativeTests ?? []) {
@@ -207,7 +246,7 @@ describe('coverwise WASM', () => {
     });
 
     it('supports 3-wise generation', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: 'A', values: ['1', '2', '3'] },
           { name: 'B', values: ['1', '2', '3'] },
@@ -216,8 +255,9 @@ describe('coverwise WASM', () => {
         ],
         strength: 3,
         seed: 1,
-      });
-      expect(result.coverage).toBe(1.0);
+      };
+      const result = generate(input);
+      expectComplete(input, result);
       // Verify more tests are generated than for 2-wise
       const result2 = generate({
         parameters: [
@@ -274,7 +314,7 @@ describe('coverwise WASM', () => {
       };
       const existing: TestCase[] = [{ a: '0', b: '0', c: '0' }];
       const result = extendTests(existing, input);
-      expect(result.coverage).toBe(1.0);
+      expectComplete(input, result);
       expect(result.tests[0]).toEqual(existing[0]);
     });
 
@@ -289,7 +329,7 @@ describe('coverwise WASM', () => {
       };
       const existing: TestCase[] = [{ a: '0', b: '0' }];
       const result = extendTests(existing, input);
-      expect(result.coverage).toBe(1.0);
+      expectComplete(input, result);
       expect(result.tests[0]).toEqual(existing[0]);
     });
 
@@ -355,15 +395,16 @@ describe('coverwise WASM', () => {
 
   describe('Japanese and emoji support', () => {
     it('generates with Japanese parameter names and constraints (unquoted)', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: 'OS', values: ['win', 'mac', 'linux'] },
           { name: 'ブラウザ', values: ['chrome', 'safari', 'edge'] },
         ],
         constraints: ['IF OS = mac THEN ブラウザ != edge'],
         seed: 1,
-      });
-      expect(result.coverage).toBe(1.0);
+      };
+      const result = generate(input);
+      expectComplete(input, result);
       for (const tc of result.tests) {
         if (tc.OS === 'mac') {
           expect(tc.ブラウザ).not.toBe('edge');
@@ -372,15 +413,16 @@ describe('coverwise WASM', () => {
     });
 
     it('constraints with quoted Japanese values', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: 'OS', values: ['ウィンドウズ', 'マック', 'リナックス'] },
           { name: 'ブラウザ', values: ['クローム', 'サファリ', 'エッジ'] },
         ],
         constraints: ['IF OS = "マック" THEN ブラウザ != "エッジ"'],
         seed: 1,
-      });
-      expect(result.coverage).toBe(1.0);
+      };
+      const result = generate(input);
+      expectComplete(input, result);
       for (const tc of result.tests) {
         if (tc.OS === 'マック') {
           expect(tc.ブラウザ).not.toBe('エッジ');
@@ -389,15 +431,16 @@ describe('coverwise WASM', () => {
     });
 
     it('constraints with values containing spaces (quoted)', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: 'OS', values: ['Windows 10', 'macOS', 'Ubuntu'] },
           { name: 'browser', values: ['chrome', 'edge'] },
         ],
         constraints: ['IF OS = "Windows 10" THEN browser != "edge"'],
         seed: 1,
-      });
-      expect(result.coverage).toBe(1.0);
+      };
+      const result = generate(input);
+      expectComplete(input, result);
       for (const tc of result.tests) {
         if (tc.OS === 'Windows 10') {
           expect(tc.browser).not.toBe('edge');
@@ -422,14 +465,15 @@ describe('coverwise WASM', () => {
     });
 
     it('generates with emoji parameter names', () => {
-      const result = generate({
+      const input = {
         parameters: [
           { name: '🖥️', values: ['💻', '🖥️'] },
           { name: '🌐', values: ['🔥', '🧊'] },
         ],
         seed: 1,
-      });
-      expect(result.coverage).toBe(1.0);
+      };
+      const result = generate(input);
+      expectComplete(input, result);
       for (const tc of result.tests) {
         expect(tc).toHaveProperty('🖥️');
         expect(tc).toHaveProperty('🌐');

@@ -1,8 +1,12 @@
 import { BoundaryType } from '../model/boundary.js';
 import { parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode } from '../model/error.js';
-import type { GenerateOptions } from '../model/generate-options.js';
-import { acceptOptions, createGenerateOptions } from '../model/generate-options.js';
+import {
+  acceptOptions,
+  createGenerateOptions,
+  ExtendMode,
+  type GenerateOptions,
+} from '../model/generate-options.js';
 import { Parameter, resolveValueName } from '../model/parameter.js';
 import { type GenerateResult, UNASSIGNED } from '../model/test-case.js';
 import { MAX_DIAGNOSTIC_TUPLES } from '../model/tuning-limits.js';
@@ -24,6 +28,45 @@ function countPositiveViolations(result: GenerateResult, opts: GenerateOptions):
     return parsed.constraint;
   });
   return validateConstraintReport(result.tests, constraints).violations;
+}
+
+/// Assert a generate/extend result is complete by the independent validator.
+///
+/// Positive coverage is recounted with validateCoverage on the value space the
+/// rows address, each sub-model on the rows projected onto its parameters, and
+/// every negative row is checked for exactly one invalid value and the
+/// constraints. Sub-model projection ignores constraints, so the models passed
+/// here do not combine the two.
+function expectCompleteByValidator(result: GenerateResult, opts: GenerateOptions): void {
+  const params = result.parameters;
+  const constraints = opts.constraintExpressions.map((expr) => {
+    const parsed = parseConstraint(expr, params);
+    if (parsed.constraint == null) {
+      throw new Error(`constraint parse failed: ${expr}`);
+    }
+    return parsed.constraint;
+  });
+  const report = validateCoverage(params, result.tests, opts.strength, constraints);
+  expect(report.error.code).toBe(ErrorCode.Ok);
+  expect(report.coverageRatio).toBe(1);
+  expect(result.coverage).toBe(1);
+  const rejected = new Set(report.invalidTests.map((invalid) => invalid.testIndex));
+  const accepted = result.tests.filter((_, index) => !rejected.has(index));
+  for (const subModel of opts.subModels) {
+    const indices = params
+      .map((param, index) => (subModel.parameterNames.includes(param.name) ? index : -1))
+      .filter((index) => index >= 0);
+    const subReport = validateCoverage(
+      indices.map((index) => params[index]),
+      accepted.map((test) => ({ values: indices.map((index) => test.values[index]) })),
+      subModel.strength,
+    );
+    expect(subReport.coverageRatio).toBe(1);
+  }
+  for (const row of result.negativeTests) {
+    expect(row.values.filter((vi, pi) => params[pi].isInvalid(vi))).toHaveLength(1);
+  }
+  expect(validateConstraintReport(result.negativeTests, constraints).violations).toBe(0);
 }
 
 describe('generate', () => {
@@ -427,6 +470,30 @@ describe('generate', () => {
     );
     expect(covered.size).toBe(6);
     expect(result.warnings).toEqual([]);
+  });
+
+  it('chooses negative rows by coverage gain', () => {
+    // Each invalid value needs about validValues^(t-1) rows rather than one row
+    // per uncovered tuple.
+    const paramCount = 10;
+    const validValues = 3;
+    const opts = createGenerateOptions({
+      parameters: Array.from({ length: paramCount }, (_, pi) => ({
+        name: `P${pi}`,
+        values: [`P${pi}a`, `P${pi}b`, `P${pi}c`, `P${pi}bad`],
+        invalid: [false, false, false, true],
+      })),
+      strength: 2,
+      seed: 42,
+    });
+
+    const result = generate(opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expectCompleteByValidator(result, opts);
+    expect(result.negativeCoverage?.coverageRatio).toBe(1);
+    // Each invalid value needs at least validValues rows; allow three times that.
+    expect(result.negativeTests.length).toBeLessThanOrEqual(3 * validValues * paramCount);
   });
 
   it('deterministically completes four-wise negative coverage for every seed', () => {
@@ -876,7 +943,9 @@ describe('boundary expansion', () => {
     const result = extend(existing, opts);
 
     expect(result.error.code).toBe(ErrorCode.Ok);
-    expect(result.tests.slice(0, 2)).toEqual(existing.slice(0, 2));
+    // Index 1 named no declared value; in the expanded list it would read as 4.
+    expect(result.tests[0]).toEqual({ values: [UNASSIGNED, 0] });
+    expect(result.tests[1]).toEqual(existing[1]);
     expect(result.parameters[0].values[result.tests[2].values[0]]).toBe('5');
     expect(result.tests[2].values[1]).toBe(UNASSIGNED);
     expect(result.warnings).toContain(
@@ -1076,6 +1145,152 @@ describe('extend', () => {
     expect(result.error.code).toBe(ErrorCode.InvalidInput);
     expect(result.error.message).toContain('existing test count');
     expect(result.tests).toEqual([]);
+  });
+
+  it('reaches full coverage by the validator on a constrained model', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+        { name: 'browser', values: ['chrome', 'firefox', 'safari'] },
+        { name: 'arch', values: ['x64', 'arm'] },
+      ],
+      constraintExpressions: ['IF os=mac THEN browser!=chrome', 'IF arch=arm THEN os!=win'],
+      strength: 2,
+      seed: 5,
+    });
+    const existing = [{ values: [1, 2, 1] }, { values: [0, 0, 0] }];
+
+    const result = extend(existing, opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.tests.slice(0, existing.length)).toEqual(existing);
+    expectCompleteByValidator(result, opts);
+  });
+
+  it('reaches full coverage by the validator on every sub-model', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['a0', 'a1', 'a2'] },
+        { name: 'B', values: ['b0', 'b1', 'b2'] },
+        { name: 'C', values: ['c0', 'c1'] },
+        { name: 'D', values: ['d0', 'd1'] },
+      ],
+      subModels: [{ parameterNames: ['A', 'B', 'C'], strength: 3 }],
+      strength: 2,
+      seed: 9,
+    });
+    const existing = [{ values: [0, 0, 0, 0] }, { values: [1, 2, 1, 0] }];
+
+    const result = extend(existing, opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.tests.slice(0, existing.length)).toEqual(existing);
+    expectCompleteByValidator(result, opts);
+  });
+
+  it('appends nothing to a suite that is already complete', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'os', values: ['win', 'mac', 'linux'] },
+        { name: 'browser', values: ['chrome', 'firefox'] },
+        { name: 'arch', values: ['x64', 'arm'] },
+      ],
+      constraintExpressions: ['IF os=mac THEN arch=arm'],
+      strength: 2,
+      seed: 11,
+    });
+    const generated = generate(opts);
+    expectCompleteByValidator(generated, opts);
+
+    const result = extend(generated.tests, opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.tests).toEqual(generated.tests);
+    expectCompleteByValidator(result, opts);
+  });
+
+  it('holds existing and seed rows to one row limit and names them together', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['0', '1'] },
+        { name: 'B', values: ['0', '1'] },
+      ],
+      seeds: Array.from({ length: 50000 }, () => ({ values: [1, 1] })),
+    });
+    const existing = Array.from({ length: 60000 }, () => ({ values: [0, 0] }));
+
+    const result = extend(existing, opts);
+
+    expect(result.error.code).toBe(ErrorCode.InvalidInput);
+    expect(result.error.message).toBe(
+      'Existing and seed test count 110000 exceeds maximum of 100000',
+    );
+  });
+
+  it('does not read an out-of-range preserved index as an expanded value', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'n', values: ['5'] },
+        { name: 'os', values: ['win', 'mac'], equivalenceClasses: ['desktop', 'apple'] },
+      ],
+      boundaryConfigs: {
+        n: { type: BoundaryType.Integer, minValue: 4, maxValue: 6, step: 1 },
+      },
+      strength: 2,
+      maxTests: 1,
+    });
+
+    const result = extend([{ values: [1, 1] }], opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.tests).toHaveLength(1);
+    expect(result.tests[0].values).toEqual([UNASSIGNED, 1]);
+    expect(result.classCoverage?.coveredClassTuples).toBe(0);
+  });
+
+  it('does not charge rows a surface already counted', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['0', '1'] },
+        { name: 'B', values: ['0', '1'] },
+      ],
+    });
+    const existing = Array.from({ length: 20 }, () => ({
+      values: [UNASSIGNED, 0],
+      unresolved: ['9'.repeat(60000), undefined],
+    }));
+
+    const uncounted = extend(existing, opts);
+    expect(uncounted.error.code).toBe(ErrorCode.InvalidInput);
+
+    const counted = extend(existing, opts, ExtendMode.Strict, { bytes: 0, rowsCounted: true });
+    expect(counted.error.code).toBe(ErrorCode.Ok);
+    expect(counted.tests.length).toBeGreaterThanOrEqual(existing.length);
+    expectCompleteByValidator(counted, opts);
+  });
+
+  it('credits a preserved single-fault row instead of emitting it again', () => {
+    const opts = createGenerateOptions({
+      parameters: [
+        { name: 'A', values: ['a1', 'a2', 'bad'], invalid: [false, false, true] },
+        { name: 'B', values: ['b1', 'b2'] },
+        { name: 'C', values: ['c1', 'c2'] },
+      ],
+      strength: 3,
+      seed: 4,
+    });
+    const singleFault = { values: [2, 0, 0] };
+
+    const result = extend([singleFault], opts);
+
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.tests[0]).toEqual(singleFault);
+    expect(result.warnings).toContain(
+      'Existing test 0 preserved but excluded from coverage: value A=bad is marked invalid',
+    );
+    expect(result.negativeTests.map((row) => row.values)).not.toContainEqual(singleFault.values);
+    expect(result.negativeCoverage?.coverageRatio).toBe(1);
+    expectCompleteByValidator(result, opts);
   });
 });
 

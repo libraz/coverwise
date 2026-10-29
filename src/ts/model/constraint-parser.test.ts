@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { CONSTRAINT_CORPUS } from '../../../tests/util/constraint-error-corpus.js';
 import { NUMERIC_PARSE_CORPUS } from '../../../tests/util/numeric-parse-corpus.js';
 import { ConstraintResult } from './constraint-ast.js';
 import { parseConstraint } from './constraint-parser.js';
@@ -206,9 +207,93 @@ describe('constraint parser safety limits', () => {
     expect(ascii.error.code).toBe(ErrorCode.Ok);
     expect(ascii.constraint?.evaluate([0])).toBe(ConstraintResult.True);
 
-    const accented = parseConstraint('label LIKE café', params);
+    const accented = parseConstraint('label LIKE café*', params);
     expect(accented.error.code).toBe(ErrorCode.Ok);
     expect(accented.constraint?.evaluate([1])).toBe(ConstraintResult.False);
+  });
+
+  it('treats a LIKE pattern without a wildcard as an equality test', () => {
+    const browser = new Parameter('browser', ['chrome', 'firefox', 'safari']);
+    browser.setAliases([['cr'], [], []]);
+    const params = [browser];
+
+    for (const expression of [
+      'browser LIKE chrome',
+      'browser LIKE CHROME',
+      'browser LIKE cr',
+      'browser LIKE CR',
+    ]) {
+      const result = parseConstraint(expression, params);
+      expect(result.error.code, expression).toBe(ErrorCode.Ok);
+      expect(result.constraint?.evaluate([0]), expression).toBe(ConstraintResult.True);
+      expect(result.constraint?.evaluate([1]), expression).toBe(ConstraintResult.False);
+    }
+
+    const unknown = parseConstraint('browser LIKE xyz', params);
+    expect(unknown.error.code).toBe(ErrorCode.ConstraintError);
+    expect(unknown.error.message).toBe("Unknown value 'xyz' for parameter 'browser'");
+
+    // A wildcard pattern keeps matching by glob, aliases excluded.
+    const glob = parseConstraint('browser LIKE c*', params);
+    expect(glob.error.code).toBe(ErrorCode.Ok);
+    expect(glob.constraint?.evaluate([0])).toBe(ConstraintResult.True);
+    expect(glob.constraint?.evaluate([1])).toBe(ConstraintResult.False);
+  });
+
+  it('counts a lone surrogate as one unit that a literal U+00A0 never matches', () => {
+    const params = [new Parameter('text', ['\uD800', 'x', '\u00A0'])];
+
+    const anyOne = parseConstraint('text LIKE ?', params);
+    expect(anyOne.error.code).toBe(ErrorCode.Ok);
+    for (let i = 0; i < 3; i++) {
+      expect(anyOne.constraint?.evaluate([i]), `index ${i}`).toBe(ConstraintResult.True);
+    }
+
+    const nbsp = parseConstraint('text LIKE *\u00A0*', params);
+    expect(nbsp.error.code).toBe(ErrorCode.Ok);
+    expect(nbsp.constraint?.evaluate([0])).toBe(ConstraintResult.False);
+    expect(nbsp.constraint?.evaluate([1])).toBe(ConstraintResult.False);
+    expect(nbsp.constraint?.evaluate([2])).toBe(ConstraintResult.True);
+  });
+
+  it('builds many comparisons of the same wide parameters from shared keys', () => {
+    const left = Array.from({ length: 16384 }, (_, i) => `v${i}`);
+    const right = Array.from({ length: 16384 }, (_, i) => `v${i + 8192}`);
+    const params = [new Parameter('p0', left), new Parameter('p1', right)];
+
+    const expression = `p0 = p1${' OR p0 != p1'.repeat(499)}`;
+    const result = parseConstraint(expression, params);
+    expect(result.error.code).toBe(ErrorCode.Ok);
+    expect(result.constraint?.evaluate([8192, 0])).toBe(ConstraintResult.True);
+    expect(result.constraint?.evaluate([0, 0])).toBe(ConstraintResult.True);
+
+    const onlyEqual = parseConstraint('p0 = p1 AND p0 = p1', params);
+    expect(onlyEqual.constraint?.evaluate([8192, 0])).toBe(ConstraintResult.True);
+    expect(onlyEqual.constraint?.evaluate([0, 0])).toBe(ConstraintResult.False);
+  });
+
+  // The corpus is shared with the C++ tests, which read the same file, so both
+  // parsers accept and reject the same expressions with the same text.
+  it('accepts and rejects every expression in the shared constraint corpus like the core', () => {
+    const browser = new Parameter('browser', ['chrome', 'firefox', 'safari']);
+    browser.setAliases([['cr'], [], []]);
+    const params = [
+      new Parameter('os', ['win', 'mac', 'linux']),
+      browser,
+      new Parameter('n', ['1', '2', '10']),
+    ];
+    for (const entry of CONSTRAINT_CORPUS) {
+      const result = parseConstraint(entry.expression, params);
+      if (entry.accepted) {
+        expect(result.error.code, entry.expression).toBe(ErrorCode.Ok);
+        expect(result.constraint, entry.expression).not.toBeNull();
+      } else {
+        expect(result.error.code, entry.expression).toBe(ErrorCode.ConstraintError);
+        expect(result.error.message, entry.expression).toBe(entry.message);
+        expect(result.error.detail, entry.expression).toBe(entry.detail);
+        expect(result.constraint, entry.expression).toBeNull();
+      }
+    }
   });
 
   it('excludes the same combinations a LIKE constraint excludes in the C++ core', () => {

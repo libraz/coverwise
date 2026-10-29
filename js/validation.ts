@@ -17,6 +17,7 @@ import {
   chargedStringContext,
   stringBudgetExceeded,
 } from '../src/ts/model/budget.js';
+import type { ChargedText } from '../src/ts/model/generate-options.js';
 import {
   MAX_AGGREGATE_STRING_BYTES,
   MAX_CONSTRAINTS,
@@ -29,6 +30,9 @@ import { utf8ByteLength } from '../src/ts/model/utf8.js';
 import { asciiToUpper } from '../src/ts/util/string_util.js';
 import type { GenerateInput } from './types.js';
 import { CoverwiseError } from './types.js';
+
+/** The largest value the engine's unsigned 32-bit scalar fields hold. */
+const MAX_UINT32 = 0xffffffff;
 
 /**
  * Factory for the error thrown by the numeric scalar validators.
@@ -51,8 +55,15 @@ export function validateStrength(strength: unknown, makeError: ScalarErrorFactor
   if (strength === undefined || strength === null) {
     return 2;
   }
-  if (typeof strength !== 'number' || !Number.isInteger(strength) || strength <= 0) {
-    throw makeError(`Invalid strength: ${String(strength)}. Must be a positive integer.`);
+  if (
+    typeof strength !== 'number' ||
+    !Number.isInteger(strength) ||
+    strength <= 0 ||
+    strength > MAX_UINT32
+  ) {
+    throw makeError(
+      `Invalid strength: ${String(strength)}. Must be an integer in [1, 4294967295].`,
+    );
   }
   return strength;
 }
@@ -71,7 +82,7 @@ export function validateMaxTests(maxTests: unknown, makeError: ScalarErrorFactor
     typeof maxTests !== 'number' ||
     !Number.isInteger(maxTests) ||
     maxTests < 0 ||
-    maxTests > 0xffffffff
+    maxTests > MAX_UINT32
   ) {
     throw makeError(
       `Invalid maxTests: ${String(maxTests)}. Must be an integer in [0, 4294967295].`,
@@ -89,13 +100,122 @@ export function validateSeed(seed: unknown, makeError: ScalarErrorFactory): void
   if (seed === undefined || seed === null) {
     return;
   }
-  if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+  if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0 || seed > MAX_UINT32) {
     throw makeError(`Invalid seed: ${String(seed)}. Must be an integer in [0, 4294967295].`);
   }
 }
 
 function invalid(message: string): never {
   throw new CoverwiseError('INVALID_INPUT', message);
+}
+
+// --- Entry boundary ---
+
+/** Whether a thrown value is one this package raised, without trusting it. */
+function isCoverwiseError(thrown: unknown): thrown is CoverwiseError {
+  try {
+    return thrown instanceof CoverwiseError;
+  } catch {
+    // A value that refuses the prototype walk is not one this package raised.
+    return false;
+  }
+}
+
+/**
+ * Name a thrown value.
+ *
+ * Inspecting it is caller code as much as the read that threw it — the prototype
+ * walk behind `instanceof` can hit a proxy trap, `message` may be a getter, and
+ * `String` may reach a `toString` that throws — so each step is attempted
+ * defensively. A step that fails leaves the value unnamed rather than replacing
+ * one foreign throw with another.
+ */
+function describeThrown(thrown: unknown): string {
+  try {
+    return thrown instanceof Error && thrown.message !== '' ? thrown.message : String(thrown);
+  } catch {
+    return 'a value that cannot be described';
+  }
+}
+
+/**
+ * Run a step that reads caller-supplied data and let nothing but a
+ * {@link CoverwiseError} out of it.
+ *
+ * Reading a field of a caller's object runs caller code: a getter on a class
+ * instance, a reactive ref, a store proxy's trap. Whatever that code throws is a
+ * JavaScript exception this package did not raise, and it is reported as the
+ * invalid input it is. The property-read wording belongs to this function alone:
+ * a throw from anywhere else is not a caller's read.
+ */
+export function readingInput<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (thrown) {
+    if (isCoverwiseError(thrown)) {
+      throw thrown;
+    }
+    throw new CoverwiseError(
+      'INVALID_INPUT',
+      `Invalid input: a property read on the input threw (${describeThrown(thrown)}).`,
+    );
+  }
+}
+
+/**
+ * The one error frame every public entry point runs inside.
+ *
+ * A {@link CoverwiseError} passes through; anything else that reaches here was
+ * thrown by the engine itself, since a step that reads caller data runs under
+ * {@link readingInput}, and is reported as an engine failure rather than as the
+ * caller's input. Every entry point of every npm surface is written as a body
+ * handed to this function, so one added later inherits the conversion.
+ *
+ * @param body - The entry point's work.
+ * @param onEngineFailure - Told of a foreign throw before it is converted, so a
+ *   surface that holds an engine can discard one that may be left in an
+ *   unusable state.
+ */
+export function entryFrame<T>(body: () => T, onEngineFailure?: (thrown: unknown) => void): T {
+  try {
+    return body();
+  } catch (thrown) {
+    if (isCoverwiseError(thrown)) {
+      throw thrown;
+    }
+    onEngineFailure?.(thrown);
+    throw new CoverwiseError('INVALID_INPUT', `coverwise engine failed: ${describeThrown(thrown)}`);
+  }
+}
+
+// --- Caller-data reader ---
+//
+// Every read of a caller's record goes through these, so the rules for holes,
+// enumerability and absent cells are stated once and the WASM and pure surfaces
+// cannot read different data from one object. They follow the compiled
+// binding: a named field is an own key (enumerable or not), a row's cells are
+// its own enumerable string keys, and an array element is read by index, so a
+// hole is `undefined` and fails the same type check any other absent element
+// does.
+
+/** Whether `record` carries `field` as an own key, enumerable or not. */
+export function hasOwnField(record: object, field: string): boolean {
+  return Object.hasOwn(record, field);
+}
+
+/** The cells of a row or weights map: its own enumerable string keys, with values. */
+export function ownEntries(record: object): Array<[string, unknown]> {
+  return Object.entries(record);
+}
+
+/** The own enumerable string keys of a record. */
+export function ownKeys(record: object): string[] {
+  return Object.keys(record);
+}
+
+/** Whether `name` is one of the row's cells, and so visible to the binding. */
+export function hasCell(row: object, name: string): boolean {
+  return Object.prototype.propertyIsEnumerable.call(row, name);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -115,6 +235,24 @@ function isParameterScalar(value: unknown): value is string | number | boolean {
 // measurements of one documented limit are two limits.
 const utf8Bytes = utf8ByteLength;
 
+/** Whether a string holds a UTF-16 surrogate with no partner. */
+function hasLoneSurrogate(value: string): boolean {
+  for (let i = 0; i < value.length; ++i) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const low = value.charCodeAt(i + 1);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) {
+        return true;
+      }
+      ++i;
+    }
+  }
+  return false;
+}
+
 /**
  * A running total of the caller strings accepted so far in one call.
  *
@@ -123,12 +261,26 @@ const utf8Bytes = utf8ByteLength;
  * structure threads a single one of these through all of them.
  */
 export interface StringBudget {
+  /** Everything charged so far: the model's strings and the rows'. */
   value: number;
+  /** The part of `value` that came from rows, which the model layer never sees. */
+  rows: number;
 }
 
 /** Start a fresh aggregate budget for one public call. */
 export function createStringBudget(): StringBudget {
-  return { value: 0 };
+  return { value: 0, rows: 0 };
+}
+
+/**
+ * The row text a call has charged, in the form the acceptance gate takes.
+ *
+ * The gate then charges the model's own strings on top of it, so a pure-TS call
+ * reaches the verdict the compiled module and the command line reach for the
+ * same input.
+ */
+export function chargedRowText(budget: StringBudget): ChargedText {
+  return { bytes: budget.rows, rowsCounted: true };
 }
 
 /**
@@ -146,13 +298,21 @@ function chargeAggregate(bytes: number, aggregate: StringBudget): void {
 }
 
 /**
- * Charge one caller string, refusing it if it is over the per-string limit.
+ * Charge one caller string, refusing it if it is not valid text or is over the
+ * per-string limit.
  *
- * The context and both refusals are quoted from the shared budget module: the
- * limits are documented per input, so what a surface may do about one is
- * measure it and report what that module says, never word it again.
+ * The context and both budget refusals are quoted from the shared budget
+ * module: the limits are documented per input, so what a surface may do about
+ * one is measure it and report what that module says, never word it again. A
+ * string with an unpaired surrogate has no UTF-8 form, so it could not reach the
+ * engine as written and is refused on every field alike.
+ *
+ * @returns The string's UTF-8 length.
  */
-function validateStringBudget(value: string, context: string, aggregate?: StringBudget): void {
+function validateStringBudget(value: string, context: string, aggregate?: StringBudget): number {
+  if (hasLoneSurrogate(value)) {
+    invalid(`${context} contains an unpaired surrogate, which is not valid UTF-8`);
+  }
   const bytes = utf8Bytes(value);
   if (bytes > MAX_STRING_BYTES) {
     invalid(stringBudgetExceeded(context));
@@ -160,6 +320,7 @@ function validateStringBudget(value: string, context: string, aggregate?: String
   if (aggregate) {
     chargeAggregate(bytes, aggregate);
   }
+  return bytes;
 }
 
 /**
@@ -174,9 +335,9 @@ function validateStringBudget(value: string, context: string, aggregate?: String
  */
 function validateBoundary(parameter: Record<string, unknown>, name: string): void {
   const hasBoundary =
-    Object.hasOwn(parameter, 'type') ||
-    Object.hasOwn(parameter, 'range') ||
-    Object.hasOwn(parameter, 'step');
+    hasOwnField(parameter, 'type') ||
+    hasOwnField(parameter, 'range') ||
+    hasOwnField(parameter, 'step');
   if (!hasBoundary) {
     return;
   }
@@ -249,40 +410,46 @@ export function validateParameters(parameters: unknown, aggregate?: StringBudget
     }
     for (let vi = 0; vi < parameter.values.length; ++vi) {
       const value = parameter.values[vi];
+      // A number or boolean is charged as the text the engine renders for it.
       if (isParameterScalar(value)) {
-        if (typeof value === 'string') {
-          validateStringBudget(
-            value,
-            chargedStringContext.parameterValue(parameter.name, vi),
-            aggregate,
-          );
-        }
+        validateStringBudget(
+          String(value),
+          chargedStringContext.parameterValue(parameter.name, vi),
+          aggregate,
+        );
         continue;
       }
       // Establish the object shape before reading `.value`; `null`, `undefined`
       // and sparse holes must surface as a structured error, not a TypeError.
-      if (!isRecord(value) || !Object.hasOwn(value, 'value') || !isParameterScalar(value.value)) {
+      if (!isRecord(value) || !hasOwnField(value, 'value') || !isParameterScalar(value.value)) {
         invalid(`Invalid value at ${parameter.name}[${vi}]: expected string, number, or boolean.`);
       }
-      if (typeof value.value === 'string') {
-        validateStringBudget(
-          value.value,
-          chargedStringContext.parameterValue(parameter.name, vi),
-          aggregate,
-        );
-      }
+      validateStringBudget(
+        String(value.value),
+        chargedStringContext.parameterValue(parameter.name, vi),
+        aggregate,
+      );
       if (value.invalid !== undefined && typeof value.invalid !== 'boolean') {
         invalid(`Invalid flag at ${parameter.name}[${vi}] must be boolean.`);
       }
-      if (
-        value.aliases !== undefined &&
-        (!Array.isArray(value.aliases) ||
-          value.aliases.some((alias) => typeof alias !== 'string' || alias.length === 0))
-      ) {
-        invalid(`Aliases at ${parameter.name}[${vi}] must be non-empty strings.`);
-      }
-      for (const alias of value.aliases ?? []) {
-        validateStringBudget(alias, chargedStringContext.valueAlias(parameter.name, vi), aggregate);
+      if (value.aliases !== undefined) {
+        const aliases = value.aliases;
+        // An index loop reads a sparse hole as the `undefined` it fails on.
+        if (!Array.isArray(aliases)) {
+          invalid(`Aliases at ${parameter.name}[${vi}] must be non-empty strings.`);
+        }
+        for (let ai = 0; ai < aliases.length; ++ai) {
+          if (typeof aliases[ai] !== 'string' || aliases[ai].length === 0) {
+            invalid(`Aliases at ${parameter.name}[${vi}] must be non-empty strings.`);
+          }
+        }
+        for (let ai = 0; ai < aliases.length; ++ai) {
+          validateStringBudget(
+            aliases[ai],
+            chargedStringContext.valueAlias(parameter.name, vi),
+            aggregate,
+          );
+        }
       }
       if (value.class !== undefined && typeof value.class !== 'string') {
         invalid(`Class at ${parameter.name}[${vi}] must be a string.`);
@@ -326,15 +493,28 @@ export function validateTestArray(tests: unknown, field: string, aggregate?: Str
     if (!isRecord(test)) {
       invalid(`Invalid ${field}[${i}]: must be an object.`);
     }
-    if (Object.keys(test).length > MAX_PARAMETERS) {
-      invalid(`Invalid ${field}[${i}]: too many fields.`);
-    }
-    for (const [name, value] of Object.entries(test)) {
+    for (const [name, value] of ownEntries(test)) {
       if (!isParameterScalar(value)) {
         invalid(`Invalid ${field}[${i}].${name}: expected string, number, or boolean.`);
       }
+      // A key naming no parameter is skipped by the engine but still caller
+      // text, so it has to be well-formed like anything else.
+      if (hasLoneSurrogate(name)) {
+        invalid(
+          `Invalid ${field}[${i}]: a key contains an unpaired surrogate, which is not valid UTF-8`,
+        );
+      }
+      // Only text the caller wrote is charged: a number or boolean is rendered by
+      // the engine, and the model layer charges what it renders for a parameter.
       if (typeof value === 'string') {
-        validateStringBudget(value, chargedStringContext.rowValue(field, i), aggregate);
+        const bytes = validateStringBudget(
+          value,
+          chargedStringContext.rowValue(field, i),
+          aggregate,
+        );
+        if (aggregate) {
+          aggregate.rows += bytes;
+        }
       }
     }
   }
@@ -352,14 +532,20 @@ export function validateConstraints(constraints: unknown, aggregate?: StringBudg
   if (constraints === undefined || constraints === null) {
     return;
   }
-  if (!Array.isArray(constraints) || constraints.some((expr) => typeof expr !== 'string')) {
+  if (!Array.isArray(constraints)) {
     invalid('Invalid constraints: must be an array of strings.');
+  }
+  // An index loop reads a sparse hole as the `undefined` it fails on.
+  for (let i = 0; i < constraints.length; ++i) {
+    if (typeof constraints[i] !== 'string') {
+      invalid('Invalid constraints: must be an array of strings.');
+    }
   }
   if (constraints.length > MAX_CONSTRAINTS) {
     invalid(`Invalid constraints: maximum is ${MAX_CONSTRAINTS}.`);
   }
-  for (const expression of constraints) {
-    validateStringBudget(expression, chargedStringContext.constraintExpression(), aggregate);
+  for (let i = 0; i < constraints.length; ++i) {
+    validateStringBudget(constraints[i], chargedStringContext.constraintExpression(), aggregate);
   }
 }
 
@@ -374,11 +560,11 @@ function validateSeedRows(input: Record<string, unknown>, aggregate: StringBudge
   for (let i = 0; i < seeds.length; ++i) {
     const seed = seeds[i];
     for (const name of names) {
-      if (!Object.hasOwn(seed, name)) {
+      if (!hasCell(seed, name)) {
         invalid(`Invalid seeds[${i}]: missing parameter '${name}'.`);
       }
     }
-    for (const name of Object.keys(seed)) {
+    for (const name of ownKeys(seed)) {
       if (!names.has(name)) {
         invalid(`Invalid seeds[${i}]: unknown parameter '${name}'.`);
       }
@@ -410,15 +596,26 @@ function validateSubModels(subModels: unknown, aggregate: StringBudget): void {
       !isRecord(subModel) ||
       !Array.isArray(subModel.parameters) ||
       subModel.parameters.length === 0 ||
-      subModel.parameters.some((name) => typeof name !== 'string') ||
       typeof subModel.strength !== 'number' ||
       !Number.isInteger(subModel.strength) ||
-      subModel.strength < 1
+      subModel.strength < 1 ||
+      subModel.strength > MAX_UINT32
     ) {
       invalid(`Invalid subModels[${i}].`);
     }
-    for (const name of (subModel as { parameters: string[] }).parameters) {
-      validateStringBudget(name, chargedStringContext.subModelParameterName(), aggregate);
+    const names: unknown[] = subModel.parameters;
+    // An index loop reads a sparse hole as the `undefined` it fails on.
+    for (let ni = 0; ni < names.length; ++ni) {
+      if (typeof names[ni] !== 'string') {
+        invalid(`Invalid subModels[${i}].`);
+      }
+    }
+    for (let ni = 0; ni < names.length; ++ni) {
+      validateStringBudget(
+        names[ni] as string,
+        chargedStringContext.subModelParameterName(),
+        aggregate,
+      );
     }
   }
 }
@@ -442,12 +639,12 @@ function validateWeights(weights: unknown, aggregate: StringBudget): void {
   if (!isRecord(weights)) {
     invalid('Invalid weights: must be an object.');
   }
-  for (const [parameter, valueWeights] of Object.entries(weights)) {
+  for (const [parameter, valueWeights] of ownEntries(weights)) {
     validateStringBudget(parameter, chargedStringContext.weightParameterName(), aggregate);
     if (!isRecord(valueWeights)) {
       invalid(`Invalid weights.${parameter}: must be an object.`);
     }
-    for (const [value, weight] of Object.entries(valueWeights)) {
+    for (const [value, weight] of ownEntries(valueWeights)) {
       validateStringBudget(value, chargedStringContext.weightValueName(), aggregate);
       if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0) {
         invalid(`Invalid weight for ${parameter}=${value}: must be finite and positive.`);

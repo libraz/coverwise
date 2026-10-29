@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { expectComplete, expectNegativeSuiteSound } from '../tests/util/coverage-oracle.js';
 import {
   analyzeCoverage,
   Coverwise,
@@ -121,7 +122,7 @@ describe('generate()', () => {
   });
 
   it('with invalid values: generates negative tests', () => {
-    const result = generate({
+    const input = {
       parameters: [
         {
           name: 'browser',
@@ -129,8 +130,10 @@ describe('generate()', () => {
         },
         { name: 'os', values: ['win', 'mac'] },
       ],
-    });
-    expect(result.coverage).toBe(1.0);
+    };
+    const result = generate(input);
+    expectComplete(input, result);
+    expectNegativeSuiteSound(input, result);
     expect(result.negativeTests).toBeDefined();
     expect(result.negativeTests?.length).toBeGreaterThan(0);
     for (const nt of result.negativeTests ?? []) {
@@ -225,16 +228,19 @@ describe('extendTests()', () => {
 
   it('extends partial test suite → improved coverage', () => {
     const existing: TestCase[] = [{ os: 'win', browser: 'chrome' }];
-    const result = extendTests(existing, { parameters: params });
-    expect(result.coverage).toBe(1.0);
+    const input = { parameters: params };
+    const result = extendTests(existing, input);
+    expectComplete(input, result);
     expect(result.tests.length).toBeGreaterThan(1);
     expect(result.tests[0]).toEqual({ os: 'win', browser: 'chrome' });
   });
 
   it('extends already complete suite → keeps coverage', () => {
     const full = generate({ parameters: params });
-    const result = extendTests(full.tests, { parameters: params });
-    expect(result.coverage).toBe(1.0);
+    const input = { parameters: params };
+    const result = extendTests(full.tests, input);
+    expectComplete(input, result);
+    expect(result.tests).toEqual(full.tests);
   });
 });
 
@@ -685,7 +691,7 @@ describe('mixed type parameter values', () => {
   });
 
   it('ParameterValue object with numeric value', () => {
-    const result = generate({
+    const input = {
       parameters: [
         {
           name: 'port',
@@ -693,8 +699,10 @@ describe('mixed type parameter values', () => {
         },
         { name: 'proto', values: ['http', 'https'] },
       ],
-    });
-    expect(result.coverage).toBe(1.0);
+    };
+    const result = generate(input);
+    expectComplete(input, result);
+    expectNegativeSuiteSound(input, result);
     const negativeTests = result.negativeTests ?? [];
     expect(negativeTests.length).toBeGreaterThan(0);
     for (const nt of negativeTests) {
@@ -703,7 +711,7 @@ describe('mixed type parameter values', () => {
   });
 
   it('ParameterValue object with boolean value', () => {
-    const result = generate({
+    const input = {
       parameters: [
         {
           name: 'flag',
@@ -711,8 +719,10 @@ describe('mixed type parameter values', () => {
         },
         { name: 'mode', values: ['fast', 'slow'] },
       ],
-    });
-    expect(result.coverage).toBe(1.0);
+    };
+    const result = generate(input);
+    expectComplete(input, result);
+    expectNegativeSuiteSound(input, result);
     const negativeTests = result.negativeTests ?? [];
     expect(negativeTests.length).toBeGreaterThan(0);
     for (const nt of negativeTests) {

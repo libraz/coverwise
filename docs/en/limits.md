@@ -14,13 +14,15 @@ Seven limits bound what a model may declare, and every surface applies the same 
 | UTF-8 bytes across one input's strings, combined | 1,048,576 (1 MiB) |
 | Bytes of one JSON document a surface reads | 67,108,864 (64 MiB) |
 
+In `extend`, `existing` and `seeds` share the one 100,000-row limit: over it, the call fails with `Existing and seed test count N exceeds maximum of 100000` (invalid input, exit code 3). Each array is still refused on its own above 100,000 by the surface reader.
+
 The parameter count is what keeps constraint feasibility search bounded. The search walks one parameter per level, and a satisfying chain spends one node of the search budget per level, so nothing else limits how deep a search can go.
 
 The last row is different in kind from the six above it; the section on the document guard, below, says why.
 
 ## What a caller sees
 
-A limit is checked before generation starts, so a rejection costs nothing and names the limit that fired.
+A limit is checked before generation starts, so a rejection costs nothing and names the limit that fired. A string that contains an unpaired UTF-16 surrogate is rejected as invalid input in the same way on every surface (`INVALID_INPUT`, exit code 3) rather than being repaired or replaced.
 
 | Surface | How a rejection arrives |
 |---|---|
@@ -54,7 +56,7 @@ Two of the seven are byte budgets rather than counts. The per-string limit appli
 
 That model spends 83 bytes of the aggregate budget: 19 for the first parameter's name and values, 26 for the second's, and 38 for the constraint expression. Nothing else in the document is charged — braces, quotes, colons and the `name`/`values`/`constraints` keys are JSON syntax, not text the caller supplied.
 
-A row is charged for its **values**, never for its keys. A key is a parameter name, already charged once as a model string, and charging it again per row would count the same text once per row. Only **string** values are charged; a numeric or boolean row value costs nothing.
+A row is charged for its **values**, never for its keys. A key is a parameter name, already charged once as a model string, and charging it again per row would count the same text once per row. A numeric or boolean value in a parameter's `values` is charged as its rendered text (`8080`, `true`). A numeric or boolean value in a row costs nothing, as in C++. Each string the caller supplied is counted exactly once, in one total for the whole input. A row has no width limit of its own: rows are bounded only by the string budget and the row-count limit.
 
 Building a suite in C++ is the one case where rows cost nothing at all, because a C++ row carries value indices rather than value names and an index is not text. The same suite written as JSON is charged for every string value in every row, so a large suite can be accepted by the library and refused on the command line. See the [C++ API](cpp-api.md) for the full statement of that difference.
 

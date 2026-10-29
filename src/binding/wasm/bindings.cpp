@@ -344,14 +344,18 @@ struct RowConversionContext {
   /// First entry wins, matching the scan it replaces: rows are converted before
   /// the acceptance gate has ruled out a duplicate parameter name.
   std::unordered_map<std::string, uint32_t> param_index;
+  /// One per parameter, so a cell resolves by lookup rather than by scanning.
+  std::vector<coverwise::model::ValueResolver> resolvers;
   val object_ctor;
   val string_ctor;
 
   explicit RowConversionContext(const std::vector<coverwise::model::Parameter>& params)
       : object_ctor(val::global("Object")), string_ctor(val::global("String")) {
     param_index.reserve(params.size());
+    resolvers.reserve(params.size());
     for (uint32_t i = 0; i < params.size(); ++i) {
       param_index.emplace(params[i].name, i);
+      resolvers.emplace_back(params[i]);
     }
   }
 };
@@ -401,7 +405,7 @@ coverwise::model::TestCase ParseTestCase(const JsObject& js_test,
     // Charged before it is resolved: what the limit bounds is the text the
     // caller handed over, whether or not the model has a value to match it to.
     if (scalar->IsString()) ChargeRowValue(val_str, field, row_index, budget);
-    uint32_t idx = coverwise::model::ResolveValueName(params[i], val_str);
+    uint32_t idx = ctx.resolvers[i].Resolve(val_str);
     if (idx == UINT32_MAX) {
       if (allow_unknown) {
         // Filled on first drift only: a row that matches the model costs
@@ -481,7 +485,9 @@ std::vector<coverwise::model::SubModel> ParseSubModels(const JsArray& js_sub_mod
     const uint32_t name_count = js_names.size();
     sm.parameter_names.reserve(name_count);
     for (uint32_t j = 0; j < name_count; ++j) {
-      sm.parameter_names.push_back(js_names.RequireNonEmptyStringAt(j, message));
+      // An empty name is carried through so the model layer words its rejection
+      // as it does on every other surface.
+      sm.parameter_names.push_back(js_names.RequireStringAt(j, message));
     }
     // Required, as on every other surface. Validated as a positive integer; a
     // fractional or zero strength would otherwise be silently truncated.
@@ -891,7 +897,8 @@ val wasmExtendTests(val js_existing, val input) {
       return MakeError(accepted.error());
     }
     const auto& opts = accepted->get();
-    auto result = coverwise::core::Extend(existing, opts);
+    auto result = coverwise::core::Extend(existing, opts, coverwise::model::ExtendMode::kStrict,
+                                          budget.total());
     if (!result.error.ok()) {
       return MakeError(result.error);
     }

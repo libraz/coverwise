@@ -11,15 +11,17 @@ import type { ConstraintNode } from '../model/constraint-ast.js';
 import { annotateConstraintError, parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode, type ErrorInfo, okError, surfaceErrorText } from '../model/error.js';
 import {
+  type ChargedText,
   createModelStats,
   ExtendMode,
   type GenerateOptions,
   isWeightConfigEmpty,
   type ModelStats,
+  NO_CHARGED_TEXT,
   optionsParameters,
   type WeightConfig,
 } from '../model/generate-options.js';
-import { hasInvalidValues, type Parameter, resolveValueName } from '../model/parameter.js';
+import { hasInvalidValues, type Parameter, ValueResolver } from '../model/parameter.js';
 import {
   createGenerateResult,
   type GenerateResult,
@@ -44,7 +46,7 @@ import {
   type SolveStack,
 } from './constraint-solver.js';
 import { CoverageEngine, countTuples } from './coverage-engine.js';
-import { EngineInput, validatePositiveSeed } from './engine-input.js';
+import { classifySeedRow, EngineInput } from './engine-input.js';
 
 /// Resolve parameter names to sorted indices.
 /// Returns indices array and error message (empty string on success).
@@ -144,6 +146,10 @@ interface GenerationScratch {
   solveStack: SolveStack;
 }
 
+/// Consecutive constructions that may gain nothing before greedy gives way to
+/// deterministic completion.
+const MAX_GREEDY_RETRIES = 50;
+
 /// Build an allowedValues mask that only permits valid values.
 function buildValidOnlyMask(params: Parameter[]): boolean[][] {
   const mask: boolean[][] = new Array(params.length);
@@ -182,8 +188,13 @@ function buildNegativeMask(
 }
 
 /**
- * Generate deterministic single-fault negative coverage using a reused engine.
+ * Generate single-fault negative coverage using a reused engine.
  *
+ * Rows are chosen by the same coverage-gain construction as positive rows,
+ * with deterministic completion covering whatever greedy leaves.
+ *
+ * @param preservedNegatives Single-fault rows already in the suite; their
+ *   tuples are credited rather than generated again.
  * @returns An ok error on success, or the constraint-budget error that stopped
  *   the pass. The two budget exits are reported apart: failing to classify the
  *   target universe and failing to find a witness for a classified target are
@@ -192,15 +203,23 @@ function buildNegativeMask(
 function generateNegativeTests(
   params: Parameter[],
   constraints: ConstraintNode[],
+  weights: number[][],
+  preservedNegatives: readonly TestCase[],
   freshCov: CoverageEngine,
   maxTests: number,
   positiveTestCount: number,
+  rng: Rng,
   scratch: GenerationScratch,
   negativeTests: TestCase[],
   metrics: NegativeCoverage,
   warnings: string[],
 ): ErrorInfo {
   let stoppedAtMaxTests = false;
+  const atMaxTests = (): boolean =>
+    maxTests > 0 && positiveTestCount + negativeTests.length >= maxTests;
+  const scoreValues: ScoreValuesFn = (partial, pi, scores) => {
+    freshCov.addValueScores(partial, pi, scores);
+  };
 
   for (let pi = 0; pi < params.length; ++pi) {
     for (let vi = 0; vi < params[pi].size; ++vi) {
@@ -227,14 +246,47 @@ function generateNegativeTests(
       }
       const noFeasibleTarget = freshCov.totalTuples === 0;
 
+      // A single-fault row's only invalid value is the one it holds here.
+      for (const row of preservedNegatives) {
+        if (row.values[pi] === vi) {
+          freshCov.addTestCase(row);
+        }
+      }
+
       // The mask is fixed for the whole inner loop, so the solver order derived
       // from it is built once here rather than once per witness.
       scratch.solveOrder = buildAllowedSolveParameterOrder(params, negMask);
 
-      // Use the same FirstUncovered + deterministic completion path as
-      // positive generation, rather than a retry-limited random greedy pass.
+      let retries = 0;
       while (!freshCov.isComplete) {
-        if (maxTests > 0 && positiveTestCount + negativeTests.length >= maxTests) {
+        if (atMaxTests()) {
+          stoppedAtMaxTests = true;
+          break;
+        }
+        const built = greedyConstruct(
+          params,
+          scoreValues,
+          constraints,
+          rng,
+          scratch.greedy,
+          negMask,
+          weights,
+        );
+        if (built === null || built.score === 0) {
+          if (++retries >= MAX_GREEDY_RETRIES) {
+            break;
+          }
+          continue;
+        }
+        retries = 0;
+        freshCov.addTestCase(built.testCase);
+        negativeTests.push(built.testCase);
+      }
+
+      // Cover every feasible tuple greedy left, by the same deterministic
+      // firstUncovered + completeAssignment path positive generation uses.
+      while (!freshCov.isComplete) {
+        if (atMaxTests()) {
           stoppedAtMaxTests = true;
           break;
         }
@@ -319,8 +371,9 @@ function resolveWeights(params: Parameter[], config: WeightConfig): number[][] {
     // present with an explicit weight of 1.0 is honored rather than mistaken
     // for the default.
     const named = new Array<boolean>(params[pi].size).fill(false);
+    const resolver = new ValueResolver(params[pi]);
     for (const [valueName, weight] of Object.entries(paramWeights)) {
-      const vi = resolveValueName(params[pi], valueName);
+      const vi = resolver.resolve(valueName);
       if (vi === UNASSIGNED) {
         continue;
       }
@@ -351,7 +404,6 @@ function rejectedResult(options: GenerateOptions, error: ErrorInfo): GenerateRes
 function generateImpl(input: EngineInput): GenerateResult {
   const options = input.options;
   const params = input.params;
-  const preservedSeedCount = input.preservedSeedCount;
 
   const result = createGenerateResult();
   result.parameters = params;
@@ -502,39 +554,42 @@ function generateImpl(input: EngineInput): GenerateResult {
   const rng = new Rng(options.seed);
 
   // Pre-load seed tests into all engines. Strict extension retains the existing
-  // prefix even when a row no longer matches the model, but such rows do not
-  // contribute to coverage.
+  // prefix even when a row no longer matches the model; such rows do not
+  // contribute to positive coverage, and a preserved single-fault row is
+  // credited to the negative pass instead.
   let droppedForMaxTests = false;
-  const originalSeedValidations = input.originalSeedValidations;
-  for (let si = 0; si < options.seeds.length; ++si) {
-    const seedTest = options.seeds[si];
+  const preservedNegatives: TestCase[] = [];
+  const seedRows = input.seedRows;
+  for (const row of seedRows) {
     if (options.maxTests > 0 && result.tests.length >= options.maxTests) {
       droppedForMaxTests = true;
       break;
     }
-    const originalSeedValidation = originalSeedValidations[si];
-    const seedError = validatePositiveSeed(seedTest, params, constraints, originalSeedValidation);
-    if (seedError.length > 0) {
-      if (si < preservedSeedCount) {
-        result.tests.push(seedTest);
+    const classification = classifySeedRow(row, params, constraints);
+    if (classification.error.length > 0) {
+      if (row.preserved) {
+        result.tests.push(row.test);
         result.warnings.push(
-          `Existing test ${si} preserved but excluded from coverage: ${seedError}`,
+          `Existing test ${row.sourceIndex} preserved but excluded from coverage: ${classification.error}`,
         );
+        if (classification.singleFault) {
+          preservedNegatives.push(row.test);
+        }
       } else {
-        result.warnings.push(`Seed test ${si - preservedSeedCount} ignored: ${seedError}`);
+        result.warnings.push(`Seed test ${row.sourceIndex} ignored: ${classification.error}`);
       }
       continue;
     }
-    coverage.addTestCase(seedTest);
+    coverage.addTestCase(row.test);
     for (const eng of subEngines) {
-      eng.addTestCase(seedTest);
+      eng.addTestCase(row.test);
     }
-    result.tests.push(seedTest);
+    result.tests.push(row.test);
   }
 
   if (droppedForMaxTests) {
     result.warnings.push(
-      `Seed test count (${options.seeds.length}) exceeds maxTests (${options.maxTests}); some seeds were dropped`,
+      `Seed test count (${seedRows.length}) exceeds maxTests (${options.maxTests}); some seeds were dropped`,
     );
   }
 
@@ -561,7 +616,6 @@ function generateImpl(input: EngineInput): GenerateResult {
   }
 
   // Constructive greedy generation loop (positive tests only).
-  const kMaxRetries = 50;
   let retries = 0;
   while (
     !allComplete(coverage, subEngines) &&
@@ -579,7 +633,7 @@ function generateImpl(input: EngineInput): GenerateResult {
     // A failed construction (no constraint-satisfying value for some parameter)
     // is treated like a zero-score candidate: retry with a different shuffle.
     if (built === null) {
-      if (++retries >= kMaxRetries) {
+      if (++retries >= MAX_GREEDY_RETRIES) {
         break;
       }
       continue;
@@ -588,7 +642,7 @@ function generateImpl(input: EngineInput): GenerateResult {
     // and coverage does not change while a test case is being built, so the
     // candidate needs no second full scan of the coverage bitmaps.
     if (built.score === 0) {
-      if (++retries >= kMaxRetries) {
+      if (++retries >= MAX_GREEDY_RETRIES) {
         break;
       }
       continue;
@@ -823,9 +877,12 @@ function generateImpl(input: EngineInput): GenerateResult {
     const negativeError = generateNegativeTests(
       params,
       constraints,
+      resolvedWeights,
+      preservedNegatives,
       coverage,
       options.maxTests,
       result.tests.length,
+      rng,
       scratch,
       result.negativeTests,
       negativeCoverage,
@@ -849,7 +906,7 @@ function generateImpl(input: EngineInput): GenerateResult {
 }
 
 export function generate(options: GenerateOptions): GenerateResult {
-  const accepted = EngineInput.accept(options, 0);
+  const accepted = EngineInput.accept(options, [], NO_CHARGED_TEXT);
   if (accepted.input === null) {
     return rejectedResult(options, accepted.error);
   }
@@ -857,10 +914,16 @@ export function generate(options: GenerateOptions): GenerateResult {
 }
 
 /// Extend an existing test suite to improve coverage.
+///
+/// @param charged What the caller already counted against the string budget.
+///   A surface that read `existing` and `seeds` itself passes its row total, so
+///   their text is charged once; the default has the gate charge the rows'
+///   unresolved text. Mirrors core::Extend in the C++ core.
 export function extend(
   existing: TestCase[],
   options: GenerateOptions,
   mode: ExtendMode = ExtendMode.Strict,
+  charged: ChargedText = NO_CHARGED_TEXT,
 ): GenerateResult {
   if (mode !== ExtendMode.Strict) {
     return rejectedResult(options, {
@@ -869,18 +932,7 @@ export function extend(
       detail: 'Supported modes: strict',
     });
   }
-  if (options.maxTests > 0 && existing.length > options.maxTests) {
-    return rejectedResult(options, {
-      code: ErrorCode.InvalidInput,
-      message: 'maxTests cannot be smaller than the existing test count',
-      detail: `maxTests=${options.maxTests}, existing=${existing.length}`,
-    });
-  }
-  const opts: GenerateOptions = {
-    ...options,
-    seeds: [...existing, ...options.seeds],
-  };
-  const accepted = EngineInput.accept(opts, existing.length);
+  const accepted = EngineInput.accept(options, existing, charged);
   if (accepted.input === null) {
     return rejectedResult(options, accepted.error);
   }
@@ -891,7 +943,7 @@ export function extend(
 /// @param options The generation options to analyze.
 /// @returns Model statistics including estimated test count.
 export function estimateModel(options: GenerateOptions): ModelStats {
-  const accepted = EngineInput.accept(options, 0);
+  const accepted = EngineInput.accept(options, [], NO_CHARGED_TEXT);
   if (accepted.input === null) {
     const stats = createModelStats();
     stats.error = accepted.error;

@@ -31,6 +31,29 @@ std::string FormatInteger(double value) { return JsNumberToString(std::round(val
 /// values (min-step, max+step, ...) render identically to the TypeScript port.
 std::string FormatFloat(double value) { return JsNumberToString(value); }
 
+/// @brief Number of decimal places in the shortest round-trip rendering of @p value.
+int DecimalPlaces(double value) {
+  const std::string text = JsNumberToString(std::fabs(value));
+  const size_t exponent_at = text.find('e');
+  const std::string mantissa = text.substr(0, exponent_at);
+  const size_t dot = mantissa.find('.');
+  int places = dot == std::string::npos ? 0 : static_cast<int>(mantissa.size() - dot - 1);
+  if (exponent_at != std::string::npos) places -= std::stoi(text.substr(exponent_at + 1));
+  return std::max(places, 0);
+}
+
+/// @brief Round @p value to @p places decimals, so accumulated binary error does not leak.
+///
+/// Rounds half up, like JS Math.round, so the TypeScript port snaps identically.
+double SnapToDecimals(double value, int places) {
+  if (places > 15) return value;
+  double scale = 1.0;
+  for (int i = 0; i < places; ++i) scale *= 10.0;
+  const double scaled = value * scale;
+  if (!(std::fabs(scaled) < 9007199254740992.0)) return value;
+  return std::floor(scaled + 0.5) / scale;
+}
+
 }  // namespace
 
 Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& config) {
@@ -70,6 +93,12 @@ Parameter ExpandBoundaryValues(const Parameter& param, const BoundaryConfig& con
         config.min_value - config.step, config.min_value, config.min_value + config.step,
         config.max_value - config.step, config.max_value, config.max_value + config.step,
     };
+    // Snap to the precision the caller wrote, so 0.3 - 0.1 is 0.2 rather than 0.19999999999999998.
+    const int places = std::max({DecimalPlaces(config.min_value), DecimalPlaces(config.max_value),
+                                 DecimalPlaces(config.step)});
+    for (double& bv : boundary_nums) {
+      if (std::isfinite(bv)) bv = SnapToDecimals(bv, places);
+    }
   }
 
   // Map numeric identity to the original value index. Keeping the original

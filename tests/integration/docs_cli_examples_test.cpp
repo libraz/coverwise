@@ -7,6 +7,9 @@
 /// that invocation produces. The examples are therefore executable, and this
 /// test runs them rather than trusting that they were transcribed correctly.
 ///
+/// A section with no `bash` block that shows exactly one input and one output
+/// is a `generate` example: the model and the report it produces.
+///
 /// Which commands must carry such an example is read from the executable's own
 /// usage text, and which documents are read is found by walking the
 /// documentation tree, so neither set can drift behind what ships.
@@ -48,6 +51,7 @@ struct DocBlock {
 struct DocSection {
   std::string command;
   std::vector<DocBlock> blocks;
+  bool implicit_generate = false;  ///< No invocation shown; the input is run under `generate`.
 };
 
 std::string ReadRepoFile(const std::string& relative) {
@@ -90,7 +94,8 @@ std::string BacktickedToken(const std::string& line) {
 /// @brief Split a document into the sections its headings introduce.
 ///
 /// A section is named by the backticked token of its heading, which is how the
-/// reference names a command, so both translations are read the same way.
+/// reference names a command, so both translations are read the same way. A
+/// section whose heading names no command is kept for its blocks.
 std::vector<DocSection> DocumentSections(const std::string& relative) {
   std::vector<DocSection> sections;
   DocSection current;
@@ -116,12 +121,13 @@ std::vector<DocSection> DocumentSections(const std::string& relative) {
       continue;
     }
     if (trimmed.rfind("#", 0) == 0) {
-      if (!current.command.empty()) sections.push_back(std::move(current));
+      if (!current.command.empty() || !current.blocks.empty())
+        sections.push_back(std::move(current));
       current = DocSection{};
       current.command = BacktickedToken(trimmed);
     }
   }
-  if (!current.command.empty()) sections.push_back(std::move(current));
+  if (!current.command.empty() || !current.blocks.empty()) sections.push_back(std::move(current));
   return sections;
 }
 
@@ -230,14 +236,18 @@ RunResult RunCapturingStdout(const std::string& command) {
 RunResult RunDocumentedExample(const std::string& document, const DocSection& section) {
   const auto bash_blocks = BlocksWithInfo(section, "bash");
   const auto json_blocks = BlocksWithInfo(section, "json");
-  EXPECT_FALSE(bash_blocks.empty())
+  EXPECT_TRUE(section.implicit_generate || !bash_blocks.empty())
       << document << " section `" << section.command << "` shows JSON but no invocation";
-  if (bash_blocks.empty()) return {};
+  if (!section.implicit_generate && bash_blocks.empty()) return {};
 
   std::string invocation;
-  for (const auto& line : SplitLines(bash_blocks.front()->body)) {
-    const std::string trimmed = Trim(line);
-    if (trimmed.rfind("coverwise", 0) == 0) invocation = trimmed;
+  if (section.implicit_generate) {
+    invocation = "coverwise generate <input>";
+  } else {
+    for (const auto& line : SplitLines(bash_blocks.front()->body)) {
+      const std::string trimmed = Trim(line);
+      if (trimmed.rfind("coverwise", 0) == 0) invocation = trimmed;
+    }
   }
   EXPECT_FALSE(invocation.empty())
       << document << " section `" << section.command << "` shows no coverwise invocation";
@@ -390,12 +400,18 @@ std::vector<int> DocumentedExitCodes(const std::string& document) {
   return codes;
 }
 
-/// @brief The sections of a document that show an invocation and its output.
+/// @brief The sections of a document that show an invocation and its output,
+///        or a model and the report `generate` writes for it.
 std::vector<DocSection> ExecutableSections(const std::string& document) {
   std::vector<DocSection> executable;
   for (auto& section : DocumentSections(document)) {
-    if (BlocksWithInfo(section, "json").size() < 2) continue;
-    if (BlocksWithInfo(section, "bash").empty()) continue;
+    const size_t json_count = BlocksWithInfo(section, "json").size();
+    if (json_count < 2) continue;
+    if (BlocksWithInfo(section, "bash").empty()) {
+      if (json_count != 2) continue;
+      section.command = "generate";
+      section.implicit_generate = true;
+    }
     executable.push_back(std::move(section));
   }
   return executable;
@@ -447,6 +463,16 @@ TEST(DocsCliExamplesTest, EveryDocumentedExampleEndsAsTheReferenceSaysItCan) {
       EXPECT_NE(std::find(codes.begin(), codes.end(), exit_code), codes.end())
           << document << " section `" << section.command << "` exits with " << exit_code
           << ", which its exit-code table does not describe";
+
+      // A report carrying an error object ends on that error's own exit code;
+      // a tuple explosion (4) is the one code the process reports as 3.
+      const std::string report = CompactJson(BlocksWithInfo(section, "json").back()->body);
+      if (report.find("\"error\":{\"code\":") != std::string::npos) {
+        const long code = ReadNumber(report, "code");
+        EXPECT_EQ(exit_code, code == 4 ? 3 : code)
+            << document << " section `" << section.command
+            << "` shows an error report that the run does not end on";
+      }
     }
   }
 }

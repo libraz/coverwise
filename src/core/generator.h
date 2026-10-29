@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "model/generate_options.h"
+#include "model/options_validation.h"
 #include "model/test_case.h"
 
 namespace coverwise {
@@ -17,9 +18,14 @@ namespace core {
 model::GenerateResult Generate(const model::GenerateOptions& options);
 
 /// @brief Extend an existing test suite to improve coverage.
+/// @param charged What the caller already counted against the string budget.
+///        A surface that read `existing` and `seeds` itself passes its
+///        ChargedTextReader::total(), so their text is charged once; the
+///        default has the gate charge the rows' unresolved text.
 model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
                              const model::GenerateOptions& options,
-                             model::ExtendMode mode = model::ExtendMode::kStrict);
+                             model::ExtendMode mode = model::ExtendMode::kStrict,
+                             model::ChargedText charged = model::ChargedText::None());
 
 /// @brief Estimate model statistics without running generation.
 /// @param options The generation options to analyze.

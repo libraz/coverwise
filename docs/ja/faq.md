@@ -108,10 +108,10 @@ result.warnings;        // ['Generation stopped at maxTests (4) before reaching 
 存在せず、`coverwise --version` は未知のコマンドとして扱われます。usage が標準エラーに出て終了コードは 3 です。バイナリが持つ自己記述の手段は `coverwise --help` だけで、こちらは標準出力に出力して 0 で終了します。
 
 **`head` にパイプすると終了コード 3 になるのはなぜですか。**
-読み手がパイプを閉じると標準出力への書き込みが失敗し、出力を届けられなかった実行は成功ではないからです。CLI はこれを入力不正として報告します。カバレッジの結果以外のあらゆる異常に使っているコードです。
+レポートの書き出し中に読み手がパイプを閉じると標準出力への書き込みが失敗し、出力を届けられなかった実行は成功ではないからです。CLI はこれを入力不正として報告します。カバレッジの結果以外のあらゆる異常に使っているコードです。これが起きるのは、ドキュメントが読み手の読み取る量より大きい場合です。小さなドキュメントは読み手が閉じる前にパイプに収まり、実行は 0 で終了します。
 
 ```bash
-coverwise generate input.json | head -c 200
+coverwise generate big.json | head -c 200
 # error: cannot write to standard output
 # exit status 3
 ```

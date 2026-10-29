@@ -9,6 +9,9 @@
 #include <sstream>
 #include <string>
 
+#include "core/generator.h"
+#include "support/coverage_oracle.h"
+
 // Path to the built coverwise CLI binary, injected by CMake.
 #ifndef COVERWISE_CLI_PATH
 #error "COVERWISE_CLI_PATH must be defined by the build"
@@ -79,6 +82,19 @@ std::optional<double> NumberField(const std::string& object_body, const std::str
   return value;
 }
 
+/// @brief The CLI's negative counts must equal the oracle's recount of the same
+/// model generated in-process, which runs the same engine with the same seed.
+void ExpectCountsMatchOracle(const coverwise::model::GenerateOptions& options, double total,
+                             double covered) {
+  const auto result = coverwise::core::Generate(options);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  const auto oracle = coverwise::test_support::RecomputeCoverage(result, options);
+  ASSERT_TRUE(oracle.error.ok()) << oracle.error.message;
+  EXPECT_TRUE(oracle.malformed_negative_rows.empty());
+  EXPECT_DOUBLE_EQ(total, static_cast<double>(oracle.negative_total));
+  EXPECT_DOUBLE_EQ(covered, static_cast<double>(oracle.negative_covered));
+}
+
 /// @brief Model whose only invalid value drives negative generation to completion.
 constexpr const char* kCompleteModel =
     R"({"parameters":[)"
@@ -88,12 +104,39 @@ constexpr const char* kCompleteModel =
     R"({"name":"D","values":["d0","d1","d2"]}],)"
     R"("strength":4,"seed":42})";
 
+/// @brief kCompleteModel as engine options.
+coverwise::model::GenerateOptions CompleteOptions() {
+  coverwise::model::GenerateOptions options;
+  options.parameters = {
+      {"A", {"a0", "bad"}, {false, true}},
+      {"B", {"b0", "b1", "b2"}, {}},
+      {"C", {"c0", "c1", "c2"}, {}},
+      {"D", {"d0", "d1", "d2"}, {}},
+  };
+  options.strength = 4;
+  options.seed = 42;
+  return options;
+}
+
 /// @brief The same shape of model, capped so negative generation stops early.
 constexpr const char* kTruncatedModel =
     R"({"parameters":[)"
     R"({"name":"A","values":["a0",{"value":"bad","invalid":true}]},)"
     R"({"name":"B","values":["b0","b1"]}],)"
     R"("strength":2,"maxTests":3,"seed":42})";
+
+/// @brief kTruncatedModel as engine options.
+coverwise::model::GenerateOptions TruncatedOptions() {
+  coverwise::model::GenerateOptions options;
+  options.parameters = {
+      {"A", {"a0", "bad"}, {false, true}},
+      {"B", {"b0", "b1"}, {}},
+  };
+  options.strength = 2;
+  options.max_tests = 3;
+  options.seed = 42;
+  return options;
+}
 
 }  // namespace
 
@@ -121,6 +164,7 @@ TEST(CliNegativeCoverageTest, CountsPartitionTheNegativeTupleUniverse) {
   EXPECT_DOUBLE_EQ(*covered + *omitted, *total) << *object;
   EXPECT_DOUBLE_EQ(*omitted, 0.0) << *object;
   EXPECT_DOUBLE_EQ(*ratio, 1.0) << *object;
+  ExpectCountsMatchOracle(CompleteOptions(), *total, *covered);
 }
 
 // The maxTests cap stops negative generation part way. The omitted count must
@@ -146,4 +190,5 @@ TEST(CliNegativeCoverageTest, TruncatedSuiteReportsTheOmittedTuples) {
   EXPECT_GT(*omitted, 0.0) << *object;
   EXPECT_DOUBLE_EQ(*covered + *omitted, *total) << *object;
   EXPECT_DOUBLE_EQ(*ratio, *covered / *total) << *object;
+  ExpectCountsMatchOracle(TruncatedOptions(), *total, *covered);
 }

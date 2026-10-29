@@ -135,40 +135,31 @@ std::string InputName(const std::string& path) {
   return IsStdinPath(path) ? "standard input" : "file '" + path + "'";
 }
 
-/// @brief Read entire file contents into @p out.
-/// @return true if the file was opened and read within the size cap.
-bool ReadFile(const std::string& path, std::string& out, bool& too_large) {
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
-  if (!file.is_open()) return false;
-  const std::streampos size = file.tellg();
-  if (size < 0) return false;
-  if (static_cast<uint64_t>(size) > kMaxDocumentBytes) {
-    too_large = true;
-    return false;
-  }
-  out.resize(static_cast<size_t>(size));
-  file.seekg(0);
-  file.read(out.data(), static_cast<std::streamsize>(out.size()));
-  if (!file && !out.empty()) return false;
-  return true;
-}
-
-/// @brief Read standard input to end-of-stream into @p out.
+/// @brief Read @p in to end-of-stream into @p out.
 ///
 /// Stops as soon as the size cap is exceeded so a runaway producer cannot make
-/// the CLI allocate without bound.
+/// the CLI allocate without bound. Nothing here seeks or sizes the stream, so
+/// pipes, FIFOs and process-substitution paths read like regular files.
 /// @return true if the stream was consumed within the size cap.
-bool ReadStdin(std::string& out, bool& too_large) {
+bool ReadStream(std::istream& in, std::string& out, bool& too_large) {
   char buffer[65536];
-  while (std::cin.read(buffer, sizeof(buffer)) || std::cin.gcount() > 0) {
-    const size_t count = static_cast<size_t>(std::cin.gcount());
+  while (in.read(buffer, sizeof(buffer)) || in.gcount() > 0) {
+    const size_t count = static_cast<size_t>(in.gcount());
     if (out.size() + count > kMaxDocumentBytes) {
       too_large = true;
       return false;
     }
     out.append(buffer, count);
   }
-  return !std::cin.bad();
+  return !in.bad();
+}
+
+/// @brief Read the named file (or pipe) into @p out.
+/// @return true if the path was opened and read within the size cap.
+bool ReadFile(const std::string& path, std::string& out, bool& too_large) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file.is_open()) return false;
+  return ReadStream(file, out, too_large);
 }
 
 /// @brief Read an input source named on the command line into @p out.
@@ -185,13 +176,13 @@ bool ReadStdin(std::string& out, bool& too_large) {
 bool ReadInput(const std::string& path, std::string& out, std::string& error) {
   bool too_large = false;
   if (IsStdinPath(path)) {
-    // A completed ReadStdin leaves eofbit set, so the stream itself records
+    // A completed ReadStream leaves eofbit set, so the stream itself records
     // whether an earlier argument already drained it — no separate flag needed.
     if (std::cin.eof()) {
       error = "standard input can only be read once; '-' was given more than once";
       return false;
     }
-    if (!ReadStdin(out, too_large)) {
+    if (!ReadStream(std::cin, out, too_large)) {
       error = too_large ? "standard input exceeds the maximum of " +
                               std::to_string(kMaxDocumentBytes) + " bytes"
                         : "cannot read standard input";
@@ -540,7 +531,8 @@ ExitStatus RunExtend(int argc, char* argv[]) {
     return Fail(accepted.error());
   }
 
-  auto result = coverwise::core::Extend(existing, accepted->get());
+  auto result = coverwise::core::Extend(existing, accepted->get(),
+                                        coverwise::model::ExtendMode::kStrict, budget.total());
 
   const auto& effective_params =
       result.parameters.empty() ? accepted->get().parameters : result.parameters;

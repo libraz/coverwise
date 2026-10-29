@@ -69,7 +69,7 @@ This entry point throws `CoverwiseError` — from a non-finite number, from a re
 
 ### `@libraz/coverwise/wasm`
 
-The compiled binary itself, with no JavaScript and no types. It exists so a bundler can resolve the `.wasm` file as an asset and hand back its URL, rather than leaving the loader to find it at runtime.
+The compiled binary itself, with no JavaScript and no types. It exposes the `.wasm` file as an asset a bundler can resolve and copy. `init()` takes no arguments and cannot be handed that URL: the loader still finds the binary next to `coverwise.js`, so the file has to be emitted there.
 
 ```typescript
 // Vite and other bundlers that support the `?url` suffix.
@@ -355,6 +355,8 @@ const newTests = result.tests.slice(existing.length);
 
 `maxTests` counts the whole result, existing rows included, so a `maxTests` below `existing.length` asks for a suite that cannot contain its own input and is rejected outright — code `INVALID_INPUT`, message `maxTests cannot be smaller than the existing test count`. A `maxTests` equal to or above it is honoured and caps how many rows may be appended.
 
+The preserved prefix of `tests` may hold rows excluded from coverage; each one is flagged by an `Existing test N preserved but excluded from coverage: …` warning. A preserved row that has exactly one invalid value and otherwise satisfies the constraints counts toward `negativeCoverage` and is not generated again in `negativeTests`.
+
 ## `estimateModel(input)`
 
 Preview the size of a model without generating from it.
@@ -480,7 +482,8 @@ Every type below is exported from `@libraz/coverwise` and from `@libraz/coverwis
 
 Both engine-backed entry points run the same validation before any engine is reached, so `@libraz/coverwise` and `@libraz/coverwise/pure` accept and reject exactly the same inputs, with the same messages. The checks that run there are:
 
-- `strength`: must be a positive integer. Non-integer, negative and zero values are rejected. The upper bound — no greater than the parameter count — is enforced a layer later, by the engine.
+- `strength`: must be an integer in `[1, 4294967295]`; anything else is rejected with `Invalid strength: X. Must be an integer in [1, 4294967295].` A sub-model's `strength` has the same upper bound. The tighter bound — no greater than the parameter count — is enforced a layer later, by the engine.
+- Strings: a string containing an unpaired UTF-16 surrogate is rejected in every field, row keys included, with `<context> contains an unpaired surrogate, which is not valid UTF-8`.
 - `seed`: must be a uint32 integer in `[0, 4294967295]`.
 - `maxTests`: must be a uint32 integer in `[0, 4294967295]`; `0` means no limit.
 - `parameters`: must be an array. That it must also be non-empty is the engine's rule, not this layer's, and arrives with the message `At least one parameter is required`.
@@ -525,7 +528,7 @@ try {
 
 | Code | Reachable from JavaScript | What produces it |
 |---|---|---|
-| `INVALID_INPUT` | Yes | Anything the validation above rejects, plus the two initialization failures below |
+| `INVALID_INPUT` | Yes | Anything the validation above rejects, including a string that contains an unpaired UTF-16 surrogate, plus the two initialization failures below |
 | `CONSTRAINT_ERROR` | Yes | A constraint expression that does not parse, names an unknown parameter, or leaves the model unsatisfiable |
 | `TUPLE_EXPLOSION` | Yes | A model whose tuple universe or parameter-combination count exceeds the engine's internal work budget |
 | `INSUFFICIENT_COVERAGE` | No | Nothing in either JavaScript engine. It exists to mirror the C++ vocabulary and the CLI exit code |

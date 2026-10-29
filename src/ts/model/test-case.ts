@@ -16,12 +16,12 @@ export interface TestCase {
    *
    * Absent for a row the engine produced, and for a recorded row every member
    * of which resolved. Otherwise unresolved[i] is what the caller wrote for
-   * parameter i, or an empty string if the row carried no member for it. A
-   * position that does not resolve keeps UNASSIGNED in `values`, so this is the
+   * parameter i (possibly the empty string), or undefined if the row carried no
+   * member for it. A position that does not resolve keeps UNASSIGNED in `values`, so this is the
    * only place the caller's own text survives: a diagnostic about such a row
    * must name that text rather than an internal index.
    */
-  unresolved?: string[];
+  unresolved?: (string | undefined)[];
 }
 
 /** A human-readable representation of an uncovered tuple. */

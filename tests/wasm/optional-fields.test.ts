@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { type GenerateInput, init, generate as wasmGenerate } from '../../js/index.js';
 import { generate as pureGenerate } from '../../js/pure/index.js';
+import { expectComplete } from '../util/coverage-oracle.js';
 
 /// An optional field the caller did not fill in is `undefined` in JavaScript,
 /// and `null` once the same input has been through a JSON round trip. Neither
@@ -62,7 +63,9 @@ describe('optional fields holding undefined or null', () => {
         // whichever field is being nulled out.
         expect(wasmResult?.strength).toBe(2);
         expect(pureResult.strength).toBe(2);
-        expect(wasmResult?.coverage).toBe(1);
+        if (wasmResult) {
+          expectComplete(model(), wasmResult);
+        }
 
         // Identical to the same input with the key removed entirely.
         expect(wasmResult?.tests).toEqual(wasmGenerate(model()).tests);

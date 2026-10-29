@@ -94,7 +94,7 @@ for (const test of result.tests) {
 // { A: '0', B: '0', C: '0' }
 ```
 
-On a model with more parameters the exhaustive set stays out of reach and the covering array does not, but the suite still grows sharply with each step in t, and generation time grows with it. [Performance](../performance.md) publishes measured tuple counts, suite sizes and timings from t=2 through t=6, which is the table to read before committing to a higher strength.
+On a model with more parameters the exhaustive set stays out of reach and the covering array does not, but the suite still grows sharply with each step in t, and generation time grows with it. [Performance](../performance.md) publishes measured tuple counts and suite sizes from t=2 through t=6, which is the table to read before committing to a higher strength.
 
 ## Where to go next
 

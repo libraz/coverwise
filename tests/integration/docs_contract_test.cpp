@@ -720,6 +720,32 @@ std::vector<std::string> DocumentedPrograms(const std::vector<FencedBlock>& bloc
   return programs;
 }
 
+/// @brief A compiled fixture and the document that ships its program.
+///
+/// A document named `<page>.md` is the page of that name in every language
+/// directory under `docs/`; any other name is a document at the repository root.
+struct CompiledExample {
+  const char* fixture;
+  const char* document;
+};
+
+const CompiledExample kCompiledExamples[] = {
+    {"docs_cpp_api", "cpp-api.md"},
+    {"docs_getting_started", "getting-started.md"},
+    {"docs_readme", "README.md"},
+};
+
+/// @brief Every path of the document a compiled example is shipped in.
+std::vector<std::string> ExampleDocuments(const CompiledExample& example) {
+  std::vector<std::string> paths;
+  for (const auto& group : TranslationGroups()) {
+    if (group.first != example.document) continue;
+    for (const auto& translation : group.second) paths.push_back(translation.second);
+  }
+  if (paths.empty()) paths.push_back(example.document);
+  return paths;
+}
+
 /// @brief The shape of a document: its heading depths and its fenced blocks, in
 ///        order, with the prose left out so translations can be compared.
 std::vector<std::string> DocumentOutline(const std::vector<std::string>& lines) {
@@ -798,14 +824,15 @@ std::set<std::string> GlobMatcherWildcards() {
   return wildcards;
 }
 
-/// @brief Every limit the model layer declares, by value.
+/// @brief Every limit the model layer declares, as (constant name, value) in
+///        declaration order.
 ///
 /// The header is read rather than included so a value that moves takes the
 /// documents with it: a figure the code no longer produces has nothing here to
 /// match. Products of literals are folded, which is how the byte limits are
 /// spelled.
-std::set<uint64_t> DeclaredLimits() {
-  std::set<uint64_t> limits;
+std::vector<std::pair<std::string, uint64_t>> DeclaredLimits() {
+  std::vector<std::pair<std::string, uint64_t>> limits;
   const std::string marker = "inline constexpr";
   for (const auto& line : SplitLines(ReadRepoFile("src/model/limits.h"))) {
     if (line.find(marker) == std::string::npos) continue;
@@ -828,7 +855,9 @@ std::set<uint64_t> DeclaredLimits() {
       digits.clear();
       folded = true;
     }
-    if (folded) limits.insert(value);
+    if (!folded) continue;
+    const std::string declaration = Trim(line.substr(0, assign));
+    limits.emplace_back(declaration.substr(declaration.find_last_of(' ') + 1), value);
   }
   return limits;
 }
@@ -1038,39 +1067,33 @@ std::map<BenchmarkKey, BenchmarkClaim> PublishedBenchmarks(const std::vector<std
     if (cells[0].find(kMultiplicationSign) == std::string::npos) continue;
 
     const std::string row = document + " benchmark row `" + Trim(line) + "`";
-    if (cells.size() < 4) {
-      ADD_FAILURE() << row << " has " << cells.size()
-                    << " cells; a benchmark row names a configuration, a tuple count and a test "
-                       "count, and names its strength when it is not pairwise";
-      continue;
-    }
+    EXPECT_GE(cells.size(), 4u)
+        << row << " has " << cells.size()
+        << " cells; a benchmark row names a configuration, a tuple count and a test "
+           "count, and names its strength when it is not pairwise";
+    if (cells.size() < 4) continue;
 
     const auto dimensions = LeadingIntegers(cells[0]);
-    if (dimensions.size() != 2) {
-      ADD_FAILURE() << row << " does not name a parameter count and a value count";
-      continue;
-    }
+    EXPECT_EQ(dimensions.size(), 2u) << row << " does not name a parameter count and a value count";
+    if (dimensions.size() != 2) continue;
 
     uint32_t strength = 2;
     size_t tuples_cell = 1;
     const size_t wise = cells[1].find("-wise");
     if (wise != std::string::npos) {
-      if (!ParseCount(cells[1].substr(0, wise), &strength)) {
-        ADD_FAILURE() << row << " names a strength this reader cannot read: " << cells[1];
-        continue;
-      }
+      const bool readable = ParseCount(cells[1].substr(0, wise), &strength);
+      EXPECT_TRUE(readable) << row << " names a strength this reader cannot read: " << cells[1];
+      if (!readable) continue;
       tuples_cell = 2;
     }
 
     BenchmarkClaim claim{};
-    if (!ParseCount(cells[tuples_cell], &claim.tuples)) {
-      ADD_FAILURE() << row << " does not publish a tuple count: " << cells[tuples_cell];
-      continue;
-    }
-    if (!ParseCount(cells[tuples_cell + 1], &claim.tests)) {
-      ADD_FAILURE() << row << " does not publish a test count: " << cells[tuples_cell + 1];
-      continue;
-    }
+    const bool has_tuples = ParseCount(cells[tuples_cell], &claim.tuples);
+    EXPECT_TRUE(has_tuples) << row << " does not publish a tuple count: " << cells[tuples_cell];
+    if (!has_tuples) continue;
+    const bool has_tests = ParseCount(cells[tuples_cell + 1], &claim.tests);
+    EXPECT_TRUE(has_tests) << row << " does not publish a test count: " << cells[tuples_cell + 1];
+    if (!has_tests) continue;
 
     const BenchmarkKey key{dimensions[0], dimensions[1], strength};
     EXPECT_EQ(rows.count(key), 0u) << document << " lists the same configuration twice";
@@ -1338,17 +1361,25 @@ TEST(DocsContractTest, DocumentedBuilderMethodsMatchTheBuilderInterface) {
 
 // --- Published limit figures ---
 
-TEST(DocsContractTest, EveryPublishedLimitIsOneTheCodeStillProduces) {
+// A limits table lists the limits in the order the model layer declares them,
+// so each row is held to the one constant it sits opposite: swapping two rows'
+// values, or pairing a name with the wrong figure, fails.
+TEST(DocsContractTest, EveryPublishedLimitIsTheValueOfTheConstantItsRowNames) {
   const auto declared = DeclaredLimits();
   ASSERT_FALSE(declared.empty()) << "Could not read the declared limits";
 
   size_t checked = 0;
   for (const auto& document : GatedDocuments()) {
-    for (const auto& [name, value] : PublishedLimits(SplitLines(ReadRepoFile(document)))) {
+    const auto published = PublishedLimits(SplitLines(ReadRepoFile(document)));
+    if (published.empty()) continue;
+    ASSERT_EQ(published.size(), declared.size())
+        << document << " publishes a different number of limits than the model layer declares";
+    for (size_t i = 0; i < published.size(); ++i) {
       ++checked;
-      EXPECT_EQ(declared.count(value), 1u)
-          << document << " publishes " << value << " as the limit on " << name
-          << ", which the model layer no longer declares";
+      EXPECT_EQ(published[i].second, declared[i].second)
+          << document << " publishes " << published[i].second << " as the limit on '"
+          << published[i].first << "', which is " << declared[i].first << " = "
+          << declared[i].second;
     }
   }
   EXPECT_GT(checked, 0u) << "No document publishes a limit";
@@ -1446,27 +1477,46 @@ TEST(DocsContractTest, EveryPrintedTestCaseIsTheSuiteMemberItIsDrawnAs) {
 
 // --- Shipped C++ programs ---
 
-TEST(DocsContractTest, EveryCompiledExampleIsShippedInEveryLanguage) {
+TEST(DocsContractTest, EveryCompiledFixtureIsRegisteredAndEveryRegisteredFixtureExists) {
+  std::set<std::string> registered;
+  for (const auto& example : kCompiledExamples) registered.insert(example.fixture);
+
+  std::set<std::string> found;
+  for (const auto& fixture : DocumentationFixturePrograms()) found.insert(fixture.first);
+  EXPECT_EQ(found, registered)
+      << "The docs_* fixture directories and the compiled-example table name different programs";
+}
+
+TEST(DocsContractTest, EveryCompiledExampleIsShippedInTheDocumentsThatShowIt) {
   const auto fixtures = DocumentationFixturePrograms();
   ASSERT_FALSE(fixtures.empty()) << "No documentation fixture program was found";
 
-  std::map<std::string, std::vector<std::string>> by_language;
-  for (const auto& group : TranslationGroups()) {
-    for (const auto& [language, path] : group.second) {
-      for (auto& program : DocumentedPrograms(FencedBlocks(SplitLines(ReadRepoFile(path))))) {
-        by_language[language].push_back(std::move(program));
-      }
-    }
-  }
-
-  for (const auto& language : DocumentLanguages()) {
-    const auto& programs = by_language[language];
-    for (const auto& [fixture, program] : fixtures) {
-      EXPECT_NE(std::find(programs.begin(), programs.end(), program), programs.end())
-          << "The program the " << fixture << " fixture compiles is not shipped in " << language
+  for (const auto& example : kCompiledExamples) {
+    const auto found = fixtures.find(example.fixture);
+    ASSERT_NE(found, fixtures.end()) << "No fixture directory named " << example.fixture;
+    for (const auto& path : ExampleDocuments(example)) {
+      const auto programs = DocumentedPrograms(FencedBlocks(SplitLines(ReadRepoFile(path))));
+      EXPECT_NE(std::find(programs.begin(), programs.end(), found->second), programs.end())
+          << "The program the " << example.fixture << " fixture compiles is not shipped in " << path
           << "; the documented example is no longer the text that compiles";
     }
   }
+}
+
+TEST(DocsContractTest, EveryDocumentedProgramIsOneAFixtureCompiles) {
+  std::vector<std::string> compiled;
+  for (const auto& fixture : DocumentationFixturePrograms()) compiled.push_back(fixture.second);
+
+  size_t checked = 0;
+  for (const auto& document : GatedDocuments()) {
+    for (const auto& program :
+         DocumentedPrograms(FencedBlocks(SplitLines(ReadRepoFile(document))))) {
+      ++checked;
+      EXPECT_NE(std::find(compiled.begin(), compiled.end(), program), compiled.end())
+          << document << " shows a C++ program that no docs_* fixture compiles";
+    }
+  }
+  EXPECT_GT(checked, 0u) << "No document shows a C++ program";
 }
 
 // --- Model size estimate ---

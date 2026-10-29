@@ -12,6 +12,7 @@ import {
   getWeight,
   hasBoundaryConfigs,
   isWeightConfigEmpty,
+  NO_CHARGED_TEXT,
   validateGenerateOptions,
 } from './generate-options.js';
 import {
@@ -362,5 +363,54 @@ describe('validateGenerateOptions acceptance limits', () => {
     const error = validateGenerateOptions(options);
     expect(error.code).toBe(ErrorCode.InvalidInput);
     expect(error.message).toBe(stringBudgetExceeded(chargedStringContext.rowValue('seeds', 1)));
+  });
+});
+
+describe('the text a reader has already charged', () => {
+  const model = [
+    { name: 'a', values: ['x', 'y'] },
+    { name: 'b', values: ['1', '2'] },
+  ];
+
+  it('is spent before the model is walked', () => {
+    const options = createGenerateOptions({ parameters: model });
+    expect(validateGenerateOptions(options, { bytes: 10, rowsCounted: true }).code).toBe(
+      ErrorCode.Ok,
+    );
+    const over = validateGenerateOptions(options, {
+      bytes: MAX_AGGREGATE_STRING_BYTES,
+      rowsCounted: true,
+    });
+    expect(over.code).toBe(ErrorCode.InvalidInput);
+    expect(over.message).toBe(aggregateBudgetExceeded());
+  });
+
+  it('is judged even when the model has nothing left to charge', () => {
+    const over = validateGenerateOptions(createGenerateOptions(), {
+      bytes: MAX_AGGREGATE_STRING_BYTES + 1,
+      rowsCounted: true,
+    });
+    expect(over.message).toBe(aggregateBudgetExceeded());
+  });
+
+  it('leaves unresolved row text uncharged only when a reader counted the rows', () => {
+    const text = 'x'.repeat(60 * 1024);
+    const seeds = Array.from({ length: 40 }, () => ({
+      values: [0xffffffff, 0xffffffff],
+      unresolved: [text, text],
+    }));
+    const options = createGenerateOptions({ parameters: model, seeds });
+    expect(validateGenerateOptions(options, NO_CHARGED_TEXT).message).toBe(
+      aggregateBudgetExceeded(),
+    );
+    expect(validateGenerateOptions(options, { bytes: 0, rowsCounted: true }).code).toBe(
+      ErrorCode.Ok,
+    );
+  });
+
+  it('charges a position the row did not carry as nothing', () => {
+    const seeds = [{ values: [0xffffffff, 0], unresolved: [undefined, undefined] }];
+    const options = createGenerateOptions({ parameters: model, seeds });
+    expect(validateGenerateOptions(options).code).toBe(ErrorCode.Ok);
   });
 });

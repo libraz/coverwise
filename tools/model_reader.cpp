@@ -66,12 +66,12 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
     error = "parameters must be a JSON array";
     return false;
   }
-  if (json.array_val.size() > kMaxParameters) {
+  if (json.Items().size() > kMaxParameters) {
     error = "parameters exceed maximum of " + std::to_string(kMaxParameters);
     return false;
   }
-  for (size_t i = 0; i < json.array_val.size(); ++i) {
-    const auto& p = json.array_val[i];
+  for (size_t i = 0; i < json.Items().size(); ++i) {
+    const auto& p = json.Items()[i];
     if (p.type != JsonType::kObject) {
       error = "parameter " + std::to_string(i) + " must be an object";
       return false;
@@ -89,7 +89,7 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
       error = "parameter '" + param.name + "' missing 'values' array";
       return false;
     }
-    if (values_val.array_val.size() > kMaxValuesPerParameter) {
+    if (values_val.Items().size() > kMaxValuesPerParameter) {
       error = "parameter '" + param.name + "' values exceed maximum of " +
               std::to_string(kMaxValuesPerParameter);
       return false;
@@ -100,8 +100,8 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
     std::vector<bool> invalid_flags;
     std::vector<std::vector<std::string>> aliases_list;
     std::vector<std::string> eq_classes;
-    for (size_t j = 0; j < values_val.array_val.size(); ++j) {
-      const auto& v = values_val.array_val[j];
+    for (size_t j = 0; j < values_val.Items().size(); ++j) {
+      const auto& v = values_val.Items()[j];
       if (v.type == JsonType::kString) {
         param.values.push_back(v.string_val);
         invalid_flags.push_back(false);
@@ -153,8 +153,8 @@ bool ParseParameters(const JsonValue& json, std::vector<coverwise::model::Parame
                     " aliases must be an array";
             return false;
           }
-          for (size_t k = 0; k < aliases_field.array_val.size(); ++k) {
-            const auto& a = aliases_field.array_val[k];
+          for (size_t k = 0; k < aliases_field.Items().size(); ++k) {
+            const auto& a = aliases_field.Items()[k];
             if (a.type == JsonType::kString && !a.string_val.empty()) {
               val_aliases.push_back(a.string_val);
             } else {
@@ -223,8 +223,8 @@ bool ParseBoundaryConfigs(const JsonValue& json,
     error = "parameters must be a JSON array";
     return false;
   }
-  for (size_t i = 0; i < json.array_val.size(); ++i) {
-    const auto& p = json.array_val[i];
+  for (size_t i = 0; i < json.Items().size(); ++i) {
+    const auto& p = json.Items()[i];
     if (p.type != JsonType::kObject) continue;
 
     const auto& name_val = p["name"];
@@ -235,20 +235,20 @@ bool ParseBoundaryConfigs(const JsonValue& json,
     const bool has_boundary = p.HasKey("type") || p.HasKey("range") || p.HasKey("step");
     if (!has_boundary) continue;
     if (type_val.type != JsonType::kString || range_val.type != JsonType::kArray ||
-        range_val.array_val.size() != 2) {
+        range_val.Items().size() != 2) {
       error =
           "parameter '" + name_val.string_val + "' boundary requires type and a two-number range";
       return false;
     }
-    if (range_val.array_val[0].type != JsonType::kNumber ||
-        range_val.array_val[1].type != JsonType::kNumber) {
+    if (range_val.Items()[0].type != JsonType::kNumber ||
+        range_val.Items()[1].type != JsonType::kNumber) {
       error = "parameter '" + name_val.string_val + "' boundary range must contain numbers";
       return false;
     }
 
     coverwise::model::BoundaryConfig config;
-    config.min_value = range_val.array_val[0].number_val;
-    config.max_value = range_val.array_val[1].number_val;
+    config.min_value = range_val.Items()[0].number_val;
+    config.max_value = range_val.Items()[1].number_val;
 
     if (type_val.string_val == "integer") {
       config.type = coverwise::model::BoundaryConfig::Type::kInteger;
@@ -321,7 +321,7 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
     error = std::string(field) + " must be a JSON array";
     return false;
   }
-  if (json.array_val.size() > kMaxTests) {
+  if (json.Items().size() > kMaxTests) {
     error = std::string(field) + " exceed maximum of " + std::to_string(kMaxTests);
     return false;
   }
@@ -331,10 +331,13 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
   for (size_t pi = 0; pi < params.size(); ++pi) {
     parameter_indices.emplace(params[pi].name, pi);
   }
+  std::vector<coverwise::model::ValueResolver> resolvers;
+  resolvers.reserve(params.size());
+  for (const auto& param : params) resolvers.emplace_back(param);
   std::vector<const JsonValue*> members(params.size());
 
-  for (size_t i = 0; i < json.array_val.size(); ++i) {
-    const auto& t = json.array_val[i];
+  for (size_t i = 0; i < json.Items().size(); ++i) {
+    const auto& t = json.Items()[i];
     if (t.type != JsonType::kObject) {
       error = std::string(field) + " " + std::to_string(i) + " must be an object";
       return false;
@@ -351,7 +354,7 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
     // The per-string limit is applied here for the same reason, and the sentence
     // reporting it comes from the model layer. The aggregate total goes to the
     // acceptance gate, so neither limit's verdict is composed twice.
-    for (const auto& member : t.object_vals) {
+    for (const auto& member : t.Items()) {
       if (member.type != JsonType::kString) continue;
       if (member.string_val.size() > kMaxStringBytes) {
         error =
@@ -362,8 +365,8 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
       budget.Charge(member.string_val.size());
     }
     std::fill(members.begin(), members.end(), nullptr);
-    for (size_t member_index = 0; member_index < t.object_keys.size(); ++member_index) {
-      const auto& key = t.object_keys[member_index];
+    for (size_t member_index = 0; member_index < t.Items().size(); ++member_index) {
+      const auto& key = t.KeyAt(member_index);
       const auto found = parameter_indices.find(key);
       if (found == parameter_indices.end()) {
         if (policy == TestRowPolicy::kSeed) {
@@ -373,7 +376,7 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
         }
         continue;
       }
-      members[found->second] = &t.object_vals[member_index];
+      members[found->second] = &t.Items()[member_index];
     }
 
     coverwise::model::TestCase tc;
@@ -411,7 +414,7 @@ bool ParseTests(const JsonValue& json, const std::vector<coverwise::model::Param
       }
 
       // Find the value index (checking primary values and aliases).
-      uint32_t val_idx = coverwise::model::ResolveValueName(params[pi], val_str);
+      uint32_t val_idx = resolvers[pi].Resolve(val_str);
       if (val_idx == coverwise::model::kUnassigned) {
         if (policy == TestRowPolicy::kRecorded) {
           record_unresolved(pi, std::move(val_str));
@@ -464,12 +467,12 @@ bool ParseConstraintExpressions(const JsonValue& json, std::vector<std::string>&
     error = "constraints must be a JSON array";
     return false;
   }
-  if (json.array_val.size() > kMaxConstraints) {
+  if (json.Items().size() > kMaxConstraints) {
     error = "constraints exceed maximum of " + std::to_string(kMaxConstraints);
     return false;
   }
-  for (size_t i = 0; i < json.array_val.size(); ++i) {
-    const auto& c = json.array_val[i];
+  for (size_t i = 0; i < json.Items().size(); ++i) {
+    const auto& c = json.Items()[i];
     if (c.type != JsonType::kString) {
       error = "constraint " + std::to_string(i) + " must be a string";
       return false;
@@ -489,8 +492,8 @@ bool ParseSubModels(const JsonValue& json, std::vector<coverwise::model::SubMode
     error = "subModels must be a JSON array";
     return false;
   }
-  for (size_t i = 0; i < json.array_val.size(); ++i) {
-    const auto& sm = json.array_val[i];
+  for (size_t i = 0; i < json.Items().size(); ++i) {
+    const auto& sm = json.Items()[i];
     if (sm.type != JsonType::kObject) {
       error = "subModel " + std::to_string(i) + " must be an object";
       return false;
@@ -505,11 +508,11 @@ bool ParseSubModels(const JsonValue& json, std::vector<coverwise::model::SubMode
     }
     sub_model.strength = static_cast<uint32_t>(sm_strength.number_val);
     const auto& sm_params = sm["parameters"];
-    if (sm_params.type != JsonType::kArray || sm_params.array_val.empty()) {
+    if (sm_params.type != JsonType::kArray || sm_params.Items().empty()) {
       error = "subModel " + std::to_string(i) + " parameters must be a non-empty array";
       return false;
     }
-    for (const auto& p : sm_params.array_val) {
+    for (const auto& p : sm_params.Items()) {
       if (p.type != JsonType::kString) {
         error = "subModel " + std::to_string(i) + " parameter names must be strings";
         return false;
@@ -530,16 +533,16 @@ bool ParseWeights(const JsonValue& json, coverwise::model::WeightConfig& weights
     error = "weights must be a JSON object";
     return false;
   }
-  for (size_t i = 0; i < json.object_keys.size(); ++i) {
-    const auto& param_name = json.object_keys[i];
-    const auto& param_weights = json.object_vals[i];
+  for (size_t i = 0; i < json.Items().size(); ++i) {
+    const auto& param_name = json.KeyAt(i);
+    const auto& param_weights = json.Items()[i];
     if (param_weights.type != JsonType::kObject) {
       error = "weights for '" + param_name + "' must be an object";
       return false;
     }
-    for (size_t j = 0; j < param_weights.object_keys.size(); ++j) {
-      const auto& value_name = param_weights.object_keys[j];
-      const auto& weight_val = param_weights.object_vals[j];
+    for (size_t j = 0; j < param_weights.Items().size(); ++j) {
+      const auto& value_name = param_weights.KeyAt(j);
+      const auto& weight_val = param_weights.Items()[j];
       if (weight_val.type != JsonType::kNumber) {
         error = "weight for '" + param_name + "." + value_name + "' must be a number";
         return false;

@@ -65,8 +65,8 @@ ParseResult ParseConstraint(const std::string& expression, const std::vector<Par
 /// Produces the uniform cross-surface message
 /// `Invalid constraint "<expression>": <original message>` so every surface
 /// (CLI, WASM, pure-JS generate and analyze) reports constraint failures in a
-/// single format that names the source expression. The detail field is left
-/// unchanged; each surface appends it consistently.
+/// single format that names the source expression. Only the message is
+/// prefixed; the detail field is returned unchanged and carries no position.
 Error AnnotateConstraintError(const std::string& expression, Error error);
 
 }  // namespace model

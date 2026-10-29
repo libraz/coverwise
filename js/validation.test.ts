@@ -11,7 +11,9 @@ import { generate as pureGenerate } from './pure/index.js';
 import type { GenerateInput } from './types.js';
 import { CoverwiseError } from './types.js';
 import {
+  createStringBudget,
   type ScalarErrorFactory,
+  validateConstraints,
   validateGenerateInput,
   validateMaxTests,
   validateParameters,
@@ -38,6 +40,11 @@ describe('shared validation module', () => {
       expect(() => validateStrength(-1, makeError)).toThrow(/Invalid strength/);
       expect(() => validateStrength(1.5, makeError)).toThrow(/Invalid strength/);
       expect(() => validateStrength('2', makeError)).toThrow(/Invalid strength/);
+    });
+
+    it('rejects a value beyond the unsigned 32-bit range', () => {
+      expect(validateStrength(0xffffffff, makeError)).toBe(0xffffffff);
+      expect(() => validateStrength(2 ** 32, makeError)).toThrow(/Invalid strength/);
     });
   });
 
@@ -142,6 +149,39 @@ describe('surface validation parity', () => {
       expect((thrown[0] as CoverwiseError).detail).toBe((thrown[1] as CoverwiseError).detail);
     });
   }
+});
+
+describe('caller-data reader and budget charging', () => {
+  it('charges a numeric or boolean parameter value as its rendered text', () => {
+    const budget = createStringBudget();
+    validateParameters([{ name: 'p', values: [12345, true, { value: 0.5 }] }], budget);
+    expect(budget.value).toBe('p'.length + '12345'.length + 'true'.length + '0.5'.length);
+    expect(budget.rows).toBe(0);
+  });
+
+  it('charges only row strings, and tracks them apart from the model', () => {
+    const budget = createStringBudget();
+    validateTestArray([{ p: 'abc', q: 12345, r: true }], 'tests', budget);
+    expect(budget.value).toBe(3);
+    expect(budget.rows).toBe(3);
+  });
+
+  it('accepts a row of any width', () => {
+    const row: Record<string, number> = {};
+    for (let i = 0; i < 2000; ++i) {
+      row[`k${i}`] = i;
+    }
+    expect(() => validateTestArray([row], 'tests')).not.toThrow();
+  });
+
+  it('reports a hole in an array field as invalid input', () => {
+    const aliases = new Array<string>(2);
+    aliases[0] = 'x';
+    expect(() =>
+      validateParameters([{ name: 'p', values: [{ value: 'a', aliases }] }] as never),
+    ).toThrow(/Aliases at p\[0\]/);
+    expect(() => validateConstraints(new Array<string>(1))).toThrow(/array of strings/);
+  });
 });
 
 /** Run `fn`, returning the thrown error (fails if it does not throw). */

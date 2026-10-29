@@ -1,6 +1,7 @@
 #include "model/constraint_parser.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -92,8 +93,8 @@ struct ResolvedValue {
 };
 
 ResolvedValue ResolveValue(uint32_t param_index, const std::string& value_name,
-                           const std::vector<Parameter>& params, bool case_sensitive) {
-  uint32_t idx = params[param_index].find_value_index(value_name, case_sensitive);
+                           const std::vector<Parameter>& params, const ValueResolver& resolver) {
+  uint32_t idx = resolver.Resolve(value_name);
   if (idx != UINT32_MAX) {
     return {idx, {}};
   }
@@ -121,9 +122,8 @@ bool IsParameterName(const std::string& name, const std::vector<Parameter>& para
 }
 
 /// @brief Check if a name is a value (or alias) of the given parameter.
-bool IsValueOfParam(uint32_t param_index, const std::string& name,
-                    const std::vector<Parameter>& params, bool case_sensitive) {
-  return params[param_index].find_value_index(name, case_sensitive) != UINT32_MAX;
+bool IsValueOfParam(const std::string& name, const ValueResolver& resolver) {
+  return resolver.Resolve(name) != UINT32_MAX;
 }
 
 // --- Recursive descent parser ---
@@ -136,6 +136,9 @@ class Parser {
         params_(params),
         options_(options),
         numeric_caches_(params.size()),
+        value_keys_(params.size()),
+        resolvers_(params.size()),
+        interner_(options.case_sensitive),
         pos_(0) {}
 
   ParseResult Parse() {
@@ -158,6 +161,20 @@ class Parser {
     auto& cache = numeric_caches_[param_index];
     if (!cache) cache = BuildNumericValueCache(params_[param_index].values);
     return cache;
+  }
+
+  const ValueResolver& ResolverFor(uint32_t param_index) {
+    auto& resolver = resolvers_[param_index];
+    if (!resolver) {
+      resolver = std::make_unique<ValueResolver>(params_[param_index], options_.case_sensitive);
+    }
+    return *resolver;
+  }
+
+  ValueKeysPtr KeysFor(uint32_t param_index) {
+    auto& keys = value_keys_[param_index];
+    if (!keys) keys = interner_.Intern(params_[param_index].values);
+    return keys;
   }
 
   const Token& Current() const { return tokens_[pos_]; }
@@ -390,14 +407,13 @@ class Parser {
       // quoted RHS is always a literal value, never a parameter reference, so a
       // quoted token that collides with a parameter name is not silently turned
       // into a param-to-param comparison.
-      bool rhs_is_value =
-          IsValueOfParam(left_param, value_tok.text, params_, options_.case_sensitive);
+      bool rhs_is_value = IsValueOfParam(value_tok.text, ResolverFor(left_param));
       bool rhs_is_param = !value_tok.was_quoted &&
                           IsParameterName(value_tok.text, params_, options_.case_sensitive);
 
       // If it's a value of the left param, prefer param=value interpretation
       if (rhs_is_value) {
-        auto rv = ResolveValue(left_param, value_tok.text, params_, options_.case_sensitive);
+        auto rv = ResolveValue(left_param, value_tok.text, params_, ResolverFor(left_param));
         if (!rv.error.ok()) {
           return {nullptr, rv.error};
         }
@@ -416,12 +432,10 @@ class Parser {
         }
         if (is_equals) {
           return MakeNode(std::make_unique<ParamEqualsNode>(
-              left_param, rp2.param_index, params_[left_param].values,
-              params_[rp2.param_index].values, options_.case_sensitive));
+              left_param, rp2.param_index, KeysFor(left_param), KeysFor(rp2.param_index)));
         } else {
           return MakeNode(std::make_unique<ParamNotEqualsNode>(
-              left_param, rp2.param_index, params_[left_param].values,
-              params_[rp2.param_index].values, options_.case_sensitive));
+              left_param, rp2.param_index, KeysFor(left_param), KeysFor(rp2.param_index)));
         }
       }
 
@@ -469,7 +483,7 @@ class Parser {
     }
     {
       const Token& val_tok = Advance();
-      auto rv = ResolveValue(param_idx, val_tok.text, params_, options_.case_sensitive);
+      auto rv = ResolveValue(param_idx, val_tok.text, params_, ResolverFor(param_idx));
       if (!rv.error.ok()) {
         return {nullptr, rv.error};
       }
@@ -485,7 +499,7 @@ class Parser {
                  "Syntax: parameter IN {value1, value2, ...}"}};
       }
       const Token& val_tok = Advance();
-      auto rv = ResolveValue(param_idx, val_tok.text, params_, options_.case_sensitive);
+      auto rv = ResolveValue(param_idx, val_tok.text, params_, ResolverFor(param_idx));
       if (!rv.error.ok()) {
         return {nullptr, rv.error};
       }
@@ -519,6 +533,15 @@ class Parser {
                "? = single char)"}};
     }
     const Token& pattern_tok = Advance();
+
+    // Without a wildcard, LIKE is an ordinary equality test on the value.
+    if (pattern_tok.text.find_first_of("*?") == std::string::npos) {
+      auto rv = ResolveValue(param_idx, pattern_tok.text, params_, ResolverFor(param_idx));
+      if (!rv.error.ok()) {
+        return {nullptr, rv.error};
+      }
+      return MakeNode(std::make_unique<EqualsNode>(param_idx, rv.value_index));
+    }
 
     return MakeNode(std::make_unique<LikeNode>(param_idx, pattern_tok.text,
                                                params_[param_idx].values, options_.case_sensitive));
@@ -612,6 +635,9 @@ class Parser {
   const std::vector<Parameter>& params_;
   ParseOptions options_;
   std::vector<NumericValueCachePtr> numeric_caches_;
+  std::vector<ValueKeysPtr> value_keys_;
+  std::vector<std::unique_ptr<ValueResolver>> resolvers_;
+  ValueKeyInterner interner_;
   size_t pos_;
   size_t node_count_ = 0;
   size_t not_depth_ = 0;  ///< Current prefix-NOT recursion depth (bounds the stack).

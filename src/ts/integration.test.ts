@@ -5,10 +5,12 @@
 /// The adapter functions below bridge these representations.
 
 import { describe, expect, it } from 'vitest';
+import { analyzeCoverage as pureAnalyzeCoverage } from '../../js/pure/index.js';
 import {
   COSTLY_REPRESENTATIVE_EXPRESSION,
   representativeOrderParameters,
 } from '../../tests/util/class-tuple-fixture.js';
+import { expectComplete, expectNegativeSuiteSound } from '../../tests/util/coverage-oracle.js';
 import { estimateModel, extend, generate } from './core/generator.js';
 import { ErrorCode } from './model/error.js';
 import {
@@ -372,7 +374,7 @@ describe('generate()', () => {
   });
 
   it('with invalid values: generates negative tests', () => {
-    const result = tsGenerate({
+    const input = {
       parameters: [
         {
           name: 'browser',
@@ -380,8 +382,10 @@ describe('generate()', () => {
         },
         { name: 'os', values: ['win', 'mac'] },
       ],
-    });
-    expect(result.coverage).toBe(1.0);
+    };
+    const result = tsGenerate(input);
+    expectComplete(input, result, pureAnalyzeCoverage);
+    expectNegativeSuiteSound(input, result, pureAnalyzeCoverage);
     expect(result.negativeTests).toBeDefined();
     expect(result.negativeTests?.length).toBeGreaterThan(0);
     for (const nt of result.negativeTests ?? []) {
@@ -456,16 +460,20 @@ describe('extendTests()', () => {
 
   it('extends partial test suite -> improved coverage', () => {
     const existing: WasmTestCase[] = [{ os: 'win', browser: 'chrome' }];
-    const result = tsExtendTests(existing, { parameters: params });
-    expect(result.coverage).toBe(1.0);
+    const input = { parameters: params };
+    const result = tsExtendTests(existing, input);
+    expectComplete(input, result, pureAnalyzeCoverage);
     expect(result.tests.length).toBeGreaterThan(1);
     expect(result.tests[0]).toEqual({ os: 'win', browser: 'chrome' });
   });
 
   it('extends already complete suite -> keeps coverage', () => {
     const full = tsGenerate({ parameters: params });
-    const result = tsExtendTests(full.tests, { parameters: params });
-    expect(result.coverage).toBe(1.0);
+    const input = { parameters: params };
+    const result = tsExtendTests(full.tests, input);
+    expectComplete(input, result, pureAnalyzeCoverage);
+    // Nothing is appended and the preserved prefix is untouched.
+    expect(result.tests).toEqual(full.tests);
   });
 });
 
@@ -749,8 +757,9 @@ describe('boolean parameter values', () => {
       { name: 'os', values: ['win', 'mac'] },
     ];
     const existing: WasmTestCase[] = [{ debug: 'true', os: 'win' }];
-    const result = tsExtendTests(existing, { parameters: params });
-    expect(result.coverage).toBe(1.0);
+    const input = { parameters: params };
+    const result = tsExtendTests(existing, input);
+    expectComplete(input, result, pureAnalyzeCoverage);
   });
 
   it('constraint with boolean param: IF debug = true THEN os != mac', () => {
@@ -881,7 +890,7 @@ describe('mixed type parameter values', () => {
   });
 
   it('ParameterValue object with numeric value', () => {
-    const result = tsGenerate({
+    const input = {
       parameters: [
         {
           name: 'port',
@@ -889,8 +898,10 @@ describe('mixed type parameter values', () => {
         },
         { name: 'proto', values: ['http', 'https'] },
       ],
-    });
-    expect(result.coverage).toBe(1.0);
+    };
+    const result = tsGenerate(input);
+    expectComplete(input, result, pureAnalyzeCoverage);
+    expectNegativeSuiteSound(input, result, pureAnalyzeCoverage);
     const negativeTests = result.negativeTests ?? [];
     expect(negativeTests.length).toBeGreaterThan(0);
     for (const nt of negativeTests) {
@@ -899,7 +910,7 @@ describe('mixed type parameter values', () => {
   });
 
   it('ParameterValue object with boolean value', () => {
-    const result = tsGenerate({
+    const input = {
       parameters: [
         {
           name: 'flag',
@@ -907,8 +918,10 @@ describe('mixed type parameter values', () => {
         },
         { name: 'mode', values: ['fast', 'slow'] },
       ],
-    });
-    expect(result.coverage).toBe(1.0);
+    };
+    const result = tsGenerate(input);
+    expectComplete(input, result, pureAnalyzeCoverage);
+    expectNegativeSuiteSound(input, result, pureAnalyzeCoverage);
     const negativeTests = result.negativeTests ?? [];
     expect(negativeTests.length).toBeGreaterThan(0);
     for (const nt of negativeTests) {

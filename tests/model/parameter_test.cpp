@@ -14,6 +14,7 @@ using coverwise::model::Parameter;
 using coverwise::model::ParseConstraint;
 using coverwise::model::ResolveValueName;
 using coverwise::model::ValidateParameters;
+using coverwise::model::ValueResolver;
 
 TEST(ParameterTest, SizeReturnsValueCount) {
   Parameter p{"color", {"red", "green", "blue"}, {}};
@@ -148,6 +149,23 @@ TEST(ResolveValueNameTest, AnyAsciiCaseOfAValueOrAliasNamesTheDeclaredIndex) {
   }
   EXPECT_EQ(ResolveValueName(p, "LINUX"), 1u);
   EXPECT_EQ(ResolveValueName(p, "Windows"), ResolveValueName(p, "windows"));
+}
+
+// The indexed resolver answers exactly as the scanning entry point does for
+// primary names, aliases, case variants, unknown names and duplicate spellings.
+TEST(ValueResolverTest, ResolvesExactlyLikeResolveValueName) {
+  Parameter p{"os", {"Windows", "Linux", "linux", "Mac"}};
+  p.set_aliases({{"Win32", "mac"}, {"nix"}, {}, {"Mac"}});
+  const ValueResolver resolver(p);
+
+  for (const char* name : {"Windows", "WINDOWS", "Win32", "win32", "Linux", "LINUX", "linux", "nix",
+                           "NIX", "Mac", "MAC", "mac", "missing", ""}) {
+    EXPECT_EQ(resolver.Resolve(name), ResolveValueName(p, name)) << name;
+  }
+  // A primary value wins over an alias spelled the same way.
+  EXPECT_EQ(resolver.Resolve("mac"), 3u);
+  // The first of two primaries that fold to one name wins.
+  EXPECT_EQ(resolver.Resolve("linux"), 1u);
 }
 
 // Widening the fold past ASCII would be its own defect: it would make two names

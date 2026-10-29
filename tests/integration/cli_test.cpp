@@ -1,4 +1,7 @@
+#include <fcntl.h>
 #include <gtest/gtest.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -12,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "json.h"
 #include "model/limits.h"
 #include "model/options_validation.h"
 #include "model/parameter.h"
@@ -722,6 +726,18 @@ TEST(CliGenerateTest, SubModelRaisesTestCount) {
   int sub_count = extract_test_count(sub_result.stdout_text);
   EXPECT_EQ(sub_count, 16) << sub_result.stdout_text;
   EXPECT_GT(sub_count, base_count) << "sub-model was ignored";
+
+  // The count alone would pass sixteen repeated rows. Measure the emitted rows
+  // again with the validator at the sub-model's own strength.
+  const std::string rows_path = TempPath("gsub_rows.json");
+  WriteFile(rows_path, sub_result.stdout_text);
+  const auto recount =
+      RunCli("analyze --params " + base_path + " --tests " + rows_path + " --strength 4");
+  EXPECT_EQ(recount.exit_code, 0) << recount.stdout_text;
+  EXPECT_NE(recount.stdout_text.find(R"("totalTuples":16)"), std::string::npos)
+      << recount.stdout_text;
+  EXPECT_NE(recount.stdout_text.find(R"("coveredTuples":16)"), std::string::npos)
+      << recount.stdout_text;
 }
 
 // generate honors seed tests: a seed row supplied via the input JSON appears in
@@ -2553,4 +2569,488 @@ TEST(CliHelpTest, RequestedUsageGoesToStandardOutputAndDiagnosedUsageToStandardE
   EXPECT_EQ(unknown_command.stdout_text, "");
   EXPECT_NE(RunCliStderrOnly("nosuchcommand").stdout_text.find("Unknown command"),
             std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Reading inputs and reporting diagnostics.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Count the bytes of the CLI's diagnostics that are not printable text.
+///
+/// Piped through `tr` so a NUL or a stray high byte is counted instead of being
+/// cut off by the line-oriented capture.
+int NonPrintableDiagnosticBytes(const std::string& args) {
+  const auto result = RunCommandLine(std::string(COVERWISE_CLI_PATH) + " " + args +
+                                     " 2>&1 >/dev/null | LC_ALL=C tr -d '[:print:][:space:]'"
+                                     " | wc -c");
+  return std::atoi(result.stdout_text.c_str());
+}
+
+}  // namespace
+
+// A path that is a pipe has no size to ask for, so it is read until it ends,
+// the way standard input is.
+TEST(CliReadFileTest, ReadsANamedPipe) {
+  const std::string model_path = TempPath("pipe_model.json");
+  WriteFile(model_path, R"({"parameters":[{"name":"a","values":["0","1"]},)"
+                        R"({"name":"b","values":["0","1"]}]})");
+  const std::string fifo_path = TempPath("model.fifo");
+  ASSERT_EQ(mkfifo(fifo_path.c_str(), 0600), 0);
+
+  const auto result = RunCommandLine("cat " + model_path + " > " + fifo_path + " & '" +
+                                     std::string(COVERWISE_CLI_PATH) + "' generate " + fifo_path +
+                                     " 2>&1; status=$?; wait; exit $status");
+  std::remove(fifo_path.c_str());
+  EXPECT_EQ(result.exit_code, 0) << result.stdout_text;
+  EXPECT_EQ(result.stdout_text.find("cannot open file"), std::string::npos) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(R"("coverage":1)"), std::string::npos) << result.stdout_text;
+}
+
+// A diagnostic is text a person reads: it carries no NUL for an input that ends
+// early and no fragment of a multi-byte character for one that does not parse.
+TEST(CliJsonTest, ParseDiagnosticsAreWholePrintableText) {
+  const std::vector<std::pair<std::string, std::string>> cases = {
+      {R"({"parameters":[)", "unexpected end of input"},
+      {"   ", "unexpected end of input"},
+      {R"({"parameters":[{"name":"a","values":[1,)", "unexpected end of input"},
+      {"{\"parameters\":\xC3\xA9}", "unexpected byte 0xC3"},
+      {std::string("{\"parameters\":\x01}"), "unexpected byte 0x01"},
+      {std::string(R"({"a":1,"a\u0001":2,"a\u0001":3})"), "duplicate object key 'a\\x01'"},
+  };
+  for (size_t i = 0; i < cases.size(); ++i) {
+    const std::string path = TempPath("diagnostic_" + std::to_string(i) + ".json");
+    WriteFile(path, cases[i].first);
+    const auto result = RunCliCaptureStderr("generate " + path);
+    EXPECT_EQ(result.exit_code, 3) << "case " << i << ": " << result.stdout_text;
+    EXPECT_NE(result.stdout_text.find(cases[i].second), std::string::npos)
+        << "case " << i << ": " << result.stdout_text;
+    EXPECT_EQ(NonPrintableDiagnosticBytes("generate " + path), 0) << "case " << i;
+  }
+}
+
+// A number is accepted whenever it has a finite value, however small: the
+// JavaScript surfaces read the same text the same way.
+TEST(CliJsonTest, AcceptsNumbersThatUnderflowOrAreSubnormal) {
+  const std::string path = TempPath("subnormal.json");
+  WriteFile(path, R"({"parameters":[{"name":"a","values":[1e-320,5e-324,1e-400]},)"
+                  R"({"name":"b","values":["x"]}]})");
+  const auto result = RunCli("generate " + path);
+  EXPECT_EQ(result.exit_code, 0) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(R"("a":"1e-320")"), std::string::npos) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(R"("a":"5e-324")"), std::string::npos) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(R"("a":"0")"), std::string::npos) << result.stdout_text;
+
+  const std::string overflow_path = TempPath("overflow.json");
+  WriteFile(overflow_path, R"({"parameters":[{"name":"a","values":[1e400]},)"
+                           R"({"name":"b","values":["x"]}]})");
+  const auto overflow = RunCliCaptureStderr("generate " + overflow_path);
+  EXPECT_EQ(overflow.exit_code, 3) << overflow.stdout_text;
+  EXPECT_NE(overflow.stdout_text.find("out of finite range"), std::string::npos)
+      << overflow.stdout_text;
+}
+
+// The rows extend is handed come back as they were written: every member keeps
+// its key, its place and its value, whatever JSON type that value has.
+TEST(CliExtendTest, HandsBackNestedMembersOfAnExistingRowUnchanged) {
+  const std::string model_path = TempPath("extend_nested_model.json");
+  WriteFile(model_path, R"({"parameters":[{"name":"a","values":["x","y"]},)"
+                        R"({"name":"b","values":["1","2"]}]})");
+  const std::string row =
+      R"({"a":"x","b":"1","meta":{"id":7,"tags":["smoke",null,true],"inner":{}},)"
+      R"("tags":["smoke"],"empty":[],"nothing":null,"flag":false,"ratio":1.5})";
+  const std::string rows_path = TempPath("extend_nested_rows.json");
+  WriteFile(rows_path, "[" + row + "]");
+
+  const auto result = RunCli("extend --existing " + rows_path + " " + model_path);
+  EXPECT_EQ(result.exit_code, 0) << result.stdout_text;
+  EXPECT_NE(result.stdout_text.find(R"("tests":[)" + row), std::string::npos) << result.stdout_text;
+}
+
+// ---------------------------------------------------------------------------
+// Memory held while a document is read.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief What one run of the CLI cost: how it ended and its peak resident set.
+struct MeasuredRun {
+  int exit_code = -1;
+  long long peak_bytes = 0;
+};
+
+/// @brief Run the CLI with its standard error written to @p stderr_path.
+MeasuredRun RunCliMeasured(const std::vector<std::string>& args, const std::string& stderr_path) {
+  MeasuredRun run;
+  const pid_t child = fork();
+  if (child == 0) {
+    const int null_fd = open("/dev/null", O_WRONLY);
+    const int err_fd = open(stderr_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    dup2(null_fd, STDOUT_FILENO);
+    dup2(err_fd, STDERR_FILENO);
+    std::vector<char*> argv;
+    argv.push_back(const_cast<char*>(COVERWISE_CLI_PATH));
+    for (const auto& arg : args) argv.push_back(const_cast<char*>(arg.c_str()));
+    argv.push_back(nullptr);
+    execv(COVERWISE_CLI_PATH, argv.data());
+    _exit(127);
+  }
+  int status = 0;
+  struct rusage usage {};
+  if (wait4(child, &status, 0, &usage) < 0) return run;
+  if (WIFEXITED(status)) run.exit_code = WEXITSTATUS(status);
+#ifdef __APPLE__
+  run.peak_bytes = usage.ru_maxrss;  // bytes
+#else
+  run.peak_bytes = static_cast<long long>(usage.ru_maxrss) * 1024;  // kilobytes
+#endif
+  return run;
+}
+
+std::string ReadWholeFile(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  return buffer.str();
+}
+
+}  // namespace
+
+// A document the row limit will refuse is still read in full, so the memory
+// guard is only as good as what the reader holds while it does: a small
+// multiple of the document, not an order of magnitude more.
+TEST(CliInputBudgetTest, ReadingAnOverLimitSuiteHoldsAFewTimesTheDocument) {
+  constexpr size_t kParameters = 40;
+  const char* kValues[] = {"a", "b", "c", "d"};
+  std::string params = R"({"parameters":[)";
+  for (size_t i = 0; i < kParameters; ++i) {
+    if (i > 0) params += ',';
+    char name[16];
+    std::snprintf(name, sizeof(name), "param%02zu", i);
+    params += std::string(R"({"name":")") + name + R"(","values":["a","b","c","d"]})";
+  }
+  params += "]}";
+  const std::string params_path = TempPath("memory_params.json");
+  WriteFile(params_path, params);
+
+  const std::string tests_path = TempPath("memory_tests.json");
+  {
+    std::ofstream out(tests_path, std::ios::binary);
+    ASSERT_TRUE(out.is_open());
+    out << '[';
+    for (size_t row = 0; row < coverwise::model::kMaxTests + 10000; ++row) {
+      if (row > 0) out << ',';
+      out << '{';
+      for (size_t i = 0; i < kParameters; ++i) {
+        if (i > 0) out << ',';
+        char name[16];
+        std::snprintf(name, sizeof(name), "param%02zu", i);
+        out << '"' << name << "\":\"" << kValues[(row + i) % 4] << '"';
+      }
+      out << '}';
+    }
+    out << ']';
+  }
+  const size_t document_bytes = ReadWholeFile(tests_path).size();
+  ASSERT_LT(document_bytes, coverwise::model::kMaxDocumentBytes);
+
+  const std::string stderr_path = TempPath("memory_stderr.txt");
+  const auto run =
+      RunCliMeasured({"analyze", "--params", params_path, "--tests", tests_path}, stderr_path);
+  EXPECT_EQ(run.exit_code, 3);
+  EXPECT_NE(ReadWholeFile(stderr_path).find("tests exceed maximum of 100000"), std::string::npos)
+      << ReadWholeFile(stderr_path);
+  EXPECT_LT(run.peak_bytes, static_cast<long long>(14 * document_bytes))
+      << "peak resident set " << run.peak_bytes << " bytes for a " << document_bytes
+      << " byte document";
+  std::remove(tests_path.c_str());
+}
+
+// Rows past the limit are not kept, but they are still read: malformed JSON
+// after them is reported as malformed JSON, not hidden behind the row count.
+TEST(CliInputBudgetTest, SyntaxAfterTheRowLimitIsStillChecked) {
+  const std::string params_path = TempPath("tail_params.json");
+  WriteFile(params_path, R"({"parameters":[{"name":"a","values":["x","y"]}]})");
+  std::string tests = "[";
+  for (size_t i = 0; i < coverwise::model::kMaxTests + 5; ++i) {
+    if (i > 0) tests += ',';
+    tests += R"({"a":"x"})";
+  }
+  tests += R"(,{"a":}])";
+  const std::string tests_path = TempPath("tail_tests.json");
+  WriteFile(tests_path, tests);
+
+  const auto result =
+      RunCliCaptureStderr("analyze --params " + params_path + " --tests " + tests_path);
+  EXPECT_EQ(result.exit_code, 3) << result.stdout_text.substr(0, 400);
+  EXPECT_NE(result.stdout_text.find("invalid tests JSON"), std::string::npos)
+      << result.stdout_text.substr(0, 400);
+}
+
+// ---------------------------------------------------------------------------
+// The documented input limits, one step past each.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using coverwise::cli::JsonParser;
+using coverwise::cli::JsonValue;
+
+std::string JsonStringList(const std::vector<std::string>& items) {
+  std::string out = "[";
+  for (size_t i = 0; i < items.size(); ++i) {
+    if (i > 0) out += ',';
+    out += '"' + items[i] + '"';
+  }
+  return out + "]";
+}
+
+std::string JsonParameter(const std::string& name, const std::vector<std::string>& values) {
+  return R"({"name":")" + name + R"(","values":)" + JsonStringList(values) + "}";
+}
+
+/// @brief The documents one limit case runs the CLI against.
+struct LimitInput {
+  std::string model;  ///< The model, or the parameters an `analyze` case measures against.
+  std::string tests;  ///< Rows for `analyze` cases; empty otherwise.
+};
+
+/// @brief Build the input a case of the shared limit table describes.
+LimitInput BuildLimitInput(const JsonValue& spec) {
+  const std::string kind = spec["kind"].string_val;
+  const size_t count = static_cast<size_t>(spec["count"].number_val);
+  const size_t bytes = static_cast<size_t>(spec["bytes"].number_val);
+  const auto model_of = [](const std::vector<std::string>& parameters, const std::string& extra) {
+    std::string out = R"({"parameters":[)";
+    for (size_t i = 0; i < parameters.size(); ++i) {
+      if (i > 0) out += ',';
+      out += parameters[i];
+    }
+    return out + "]" + extra + "}";
+  };
+
+  if (kind == "parameters") {
+    std::vector<std::string> parameters;
+    for (size_t i = 0; i < count; ++i)
+      parameters.push_back(JsonParameter("p" + std::to_string(i), {"v"}));
+    return {model_of(parameters, ""), ""};
+  }
+  if (kind == "values") {
+    std::vector<std::string> values;
+    for (size_t j = 0; j < count; ++j) values.push_back("v" + std::to_string(j));
+    return {model_of({JsonParameter("p0", values), JsonParameter("p1", {"a"})}, ""), ""};
+  }
+  if (kind == "rows") {
+    std::string rows = "[";
+    for (size_t i = 0; i < count; ++i) {
+      if (i > 0) rows += ',';
+      rows += R"({"p0":"v0","p1":"a"})";
+    }
+    return {model_of({JsonParameter("p0", {"v0"}), JsonParameter("p1", {"a"})}, ""), rows + "]"};
+  }
+  if (kind == "constraints") {
+    const std::vector<std::string> constraints(count, "p0 = a");
+    return {model_of({JsonParameter("p0", {"a", "b"}), JsonParameter("p1", {"x", "y"})},
+                     R"(,"constraints":)" + JsonStringList(constraints)),
+            ""};
+  }
+  if (kind == "long-value") {
+    return {
+        model_of({JsonParameter("p0", {std::string(bytes, 'a')}), JsonParameter("p1", {"x"})}, ""),
+        ""};
+  }
+  if (kind == "long-values") {
+    std::vector<std::string> values;
+    for (size_t j = 0; j < count; ++j) {
+      std::string value = std::to_string(j) + ":";
+      value.resize(bytes, 'a');
+      values.push_back(value);
+    }
+    return {model_of({JsonParameter("p0", values), JsonParameter("p1", {"x"})}, ""), ""};
+  }
+  if (kind == "uniform") {
+    std::vector<std::string> values;
+    for (size_t j = 0; j < static_cast<size_t>(spec["values"].number_val); ++j) {
+      values.push_back("v" + std::to_string(j));
+    }
+    std::vector<std::string> parameters;
+    for (size_t i = 0; i < static_cast<size_t>(spec["parameters"].number_val); ++i) {
+      parameters.push_back(JsonParameter("p" + std::to_string(i), values));
+    }
+    return {model_of(parameters, R"(,"strength":)" +
+                                     std::to_string(static_cast<int>(spec["strength"].number_val))),
+            ""};
+  }
+  ADD_FAILURE() << "unknown builder " << kind;
+  return {};
+}
+
+}  // namespace
+
+// Every case of the shared table is refused with exit 3 and the message the
+// limits reference documents, through the same reader a user's file goes through.
+TEST(CliLimitCasesTest, EachLimitIsRefusedWithTheDocumentedMessage) {
+  const std::string table_text = ReadWholeFile(COVERWISE_LIMIT_CASES_PATH);
+  ASSERT_FALSE(table_text.empty()) << COVERWISE_LIMIT_CASES_PATH;
+  JsonParser parser(table_text);
+  const JsonValue table = parser.Parse();
+  ASSERT_TRUE(parser.error().empty()) << parser.error();
+  ASSERT_GT(table["cases"].Size(), 0u);
+
+  for (const auto& limit : table["cases"].Items()) {
+    const std::string name = limit["name"].string_val;
+    const LimitInput input = BuildLimitInput(limit["build"]);
+    const std::string model_path = TempPath("limit_" + name + "_model.json");
+    WriteFile(model_path, input.model);
+
+    std::string args = "generate " + model_path;
+    if (limit["entry"].string_val == "analyze") {
+      const std::string tests_path = TempPath("limit_" + name + "_tests.json");
+      WriteFile(tests_path, input.tests);
+      args = "analyze --params " + model_path + " --tests " + tests_path;
+    }
+
+    const auto result = RunCliCaptureStderr(args);
+    EXPECT_EQ(result.exit_code, 3) << name << ": " << result.stdout_text.substr(0, 400);
+    EXPECT_NE(result.stdout_text.find(limit["cli"].string_val), std::string::npos)
+        << name << ": " << result.stdout_text.substr(0, 400);
+    if (limit.HasKey("cliBody")) {
+      EXPECT_NE(result.stdout_text.find(limit["cliBody"].string_val), std::string::npos)
+          << name << ": " << result.stdout_text.substr(0, 400);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A constraint search that runs out of nodes.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Eleven parameters of ten values that must all differ: no solution, and
+///        proving it costs more nodes than the search budget allows.
+///
+/// With @p guard, every constraint applies only when `P0` holds that invalid
+/// value, so the positive suite is solvable and the negative targets are not.
+std::string PigeonholeModel(const std::string& guard) {
+  const std::vector<std::string> holes = {"h0", "h1", "h2", "h3", "h4",
+                                          "h5", "h6", "h7", "h8", "h9"};
+  std::vector<std::string> parameters;
+  if (!guard.empty()) {
+    std::string values = JsonStringList(holes);
+    values.back() = ',';
+    values += R"({"value":")" + guard + R"(","invalid":true}])";
+    parameters.push_back(R"({"name":"P0","values":)" + values + "}");
+  }
+  for (int i = 1; i <= 11; ++i) {
+    parameters.push_back(JsonParameter("P" + std::to_string(i), holes));
+  }
+  const std::string prefix = guard.empty() ? "" : "IF P0 = \\\"" + guard + "\\\" THEN ";
+  std::vector<std::string> constraints;
+  for (int left = 1; left <= 11; ++left) {
+    for (int right = left + 1; right <= 11; ++right) {
+      constraints.push_back(prefix + "P" + std::to_string(left) + " != P" + std::to_string(right));
+    }
+  }
+  std::string model = R"({"parameters":[)";
+  for (size_t i = 0; i < parameters.size(); ++i) {
+    if (i > 0) model += ',';
+    model += parameters[i];
+  }
+  return model + R"(],"constraints":)" + JsonStringList(constraints) +
+         R"(,"strength":2,"seed":42})";
+}
+
+}  // namespace
+
+// Every command that spends the constraint search budget refuses with the
+// constraint-error exit code and the message the TypeScript surfaces give: the
+// budget error, then the reason this exit of the engine reached it.
+TEST(CliConstraintSearchBudgetTest, EveryExitThatSpendsTheBudgetRefusesAlike) {
+  const std::string solvable_path = TempPath("pigeonhole.json");
+  WriteFile(solvable_path, PigeonholeModel(""));
+  const std::string guarded_path = TempPath("pigeonhole_guarded.json");
+  WriteFile(guarded_path, PigeonholeModel("bad"));
+  const std::string empty_rows_path = TempPath("pigeonhole_rows.json");
+  WriteFile(empty_rows_path, "[]");
+
+  const std::string unsolvable =
+      "Constraint search budget exceeded: The constraint model is too complex to solve within the "
+      "search budget";
+  const std::string unclassified =
+      "Constraint search budget exceeded: Negative coverage targets could not be classified "
+      "within the search budget";
+  // generate and extend still write their report, carrying the error object;
+  // analyze writes none. All of them end the stderr stream on the same line.
+  struct Case {
+    std::string args;
+    std::string message;
+    bool writes_report;
+  };
+  const std::vector<Case> cases = {
+      {"generate " + solvable_path, unsolvable, true},
+      {"generate " + guarded_path, unclassified, true},
+      {"extend --existing " + empty_rows_path + " " + solvable_path, unsolvable, true},
+      {"analyze --params " + solvable_path + " --tests " + empty_rows_path, unsolvable, false},
+  };
+  for (const auto& [args, message, writes_report] : cases) {
+    const auto result = RunCliCaptureStderr(args);
+    EXPECT_EQ(result.exit_code, 1) << args;
+    const std::string line = "error: " + message + "\n";
+    ASSERT_GE(result.stdout_text.size(), line.size()) << args << ": " << result.stdout_text;
+    EXPECT_EQ(result.stdout_text.substr(result.stdout_text.size() - line.size()), line) << args;
+    const std::string report =
+        result.stdout_text.substr(0, result.stdout_text.size() - line.size());
+    if (writes_report) {
+      EXPECT_NE(report.find(R"("error":{"code":1,"message":")" + message + R"("})"),
+                std::string::npos)
+          << args << ": " << report;
+    } else {
+      EXPECT_EQ(report, "") << args;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// extend, judged by the validator.
+// ---------------------------------------------------------------------------
+
+// The suite extend writes is measured again by `analyze`, which enumerates the
+// tuples itself: the extended suite covers every tuple the model allows, and the
+// rows that were handed in lead it unchanged.
+TEST(CliExtendTest, ExtendedSuiteIsCompleteByTheValidatorAndKeepsExistingRowsFirst) {
+  const std::string parameters =
+      R"("parameters":[{"name":"os","values":["Windows","Linux","Mac"]},)"
+      R"({"name":"browser","values":["Chrome","Safari"]},)"
+      R"({"name":"theme","values":["light","dark"]}],"seed":7)";
+  const std::vector<std::string> models = {
+      "{" + parameters + "}",
+      "{" + parameters + R"(,"constraints":["IF os = Linux THEN browser != Safari"]})",
+  };
+  const std::string first = R"({"os":"Windows","browser":"Chrome","theme":"light"})";
+  const std::string second = R"({"os":"Linux","browser":"Chrome","theme":"dark"})";
+  const std::string existing_path = TempPath("extend_recount_existing.json");
+  WriteFile(existing_path, "[" + first + "," + second + "]");
+
+  for (size_t i = 0; i < models.size(); ++i) {
+    const std::string model_path = TempPath("extend_recount_model_" + std::to_string(i) + ".json");
+    WriteFile(model_path, models[i]);
+    const auto extended = RunCli("extend --existing " + existing_path + " " + model_path);
+    ASSERT_EQ(extended.exit_code, 0) << "model " << i << ": " << extended.stdout_text;
+    EXPECT_NE(extended.stdout_text.find(R"("tests":[)" + first + "," + second + ","),
+              std::string::npos)
+        << "model " << i << ": " << extended.stdout_text;
+
+    const std::string suite_path = TempPath("extend_recount_suite_" + std::to_string(i) + ".json");
+    WriteFile(suite_path, extended.stdout_text);
+    const auto recount = RunCli("analyze --params " + model_path + " --tests " + suite_path);
+    EXPECT_EQ(recount.exit_code, 0) << "model " << i << ": " << recount.stdout_text;
+    EXPECT_NE(recount.stdout_text.find(R"("coverageRatio":1,)"), std::string::npos)
+        << "model " << i << ": " << recount.stdout_text;
+    EXPECT_NE(recount.stdout_text.find(R"("uncoveredCount":0,)"), std::string::npos)
+        << "model " << i << ": " << recount.stdout_text;
+    EXPECT_NE(recount.stdout_text.find(R"("invalidTests":[])"), std::string::npos)
+        << "model " << i << ": " << recount.stdout_text;
+  }
 }

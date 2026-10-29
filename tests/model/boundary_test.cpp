@@ -84,6 +84,26 @@ TEST(BoundaryTest, FloatExpansion) {
   EXPECT_NEAR(nums[5], 1.1, 1e-9);
 }
 
+// Generated float boundaries are snapped to the precision the range was written
+// in, so accumulated binary error neither leaks into the text nor defeats
+// de-duplication.
+TEST(BoundaryTest, FloatExpansionDeduplicatesAtTheWrittenPrecision) {
+  Parameter param("ratio", {});
+  BoundaryConfig config;
+  config.type = BoundaryConfig::Type::kFloat;
+  config.step = 0.1;
+
+  config.min_value = 0.1;
+  config.max_value = 0.3;
+  EXPECT_EQ(ExpandBoundaryValues(param, config).values,
+            (std::vector<std::string>{"0", "0.1", "0.2", "0.3", "0.4"}));
+
+  config.min_value = 0.7;
+  config.max_value = 0.9;
+  EXPECT_EQ(ExpandBoundaryValues(param, config).values,
+            (std::vector<std::string>{"0.6", "0.7", "0.8", "0.9", "1"}));
+}
+
 TEST(BoundaryTest, MergeWithExplicitValues) {
   // Explicit values include some boundary values and some extras.
   Parameter param("score", {"0", "50", "100"});

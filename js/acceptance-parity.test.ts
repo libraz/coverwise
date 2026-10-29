@@ -1020,3 +1020,105 @@ describe('which violator a surface names when a model has several', () => {
     }
   });
 });
+
+// A number or boolean parameter value is charged as the text the engine renders
+// for it, and a row's numbers are not charged at all, so the same input costs
+// the same on every entry. The rows alone sit under the budget here; it is the
+// rendered numeric values beside them that take the call over it.
+describe('numeric parameter values count toward the aggregate string budget', () => {
+  const ROW_TEXT = 'r'.repeat(20);
+  const ROWS = Math.floor((MAX_AGGREGATE_STRING_BYTES - 64 * 1024) / ROW_TEXT.length);
+  const rows = (): TestCase[] => Array.from({ length: ROWS }, () => ({ pad: ROW_TEXT }));
+  const numericValues = (): number[] =>
+    Array.from({ length: 16384 }, (_unused, index) => index + 0.125);
+
+  const rowsOnly = (): Parameter[] => [{ name: 'pad', values: ['p', 'q'] }];
+  const withNumbers = (): Parameter[] => [
+    { name: 'n1', values: numericValues() },
+    { name: 'n2', values: numericValues() },
+    ...rowsOnly(),
+  ];
+
+  for (const { name, api } of surfaces) {
+    it(`${name} accepts the rows alone and refuses them beside the numeric values`, {
+      timeout: MEASUREMENT_TIMEOUT_MS,
+    }, () => {
+      expect(
+        capture(() => api.analyzeCoverage(rowsOnly(), rows(), 1)),
+        name,
+      ).not.toBeInstanceOf(Error);
+      const analyzed = capture(() => api.analyzeCoverage(withNumbers(), rows(), 1));
+      expect(analyzed, name).toBeInstanceOf(Error);
+      expect((analyzed as Error).message).toBe(aggregateBudgetExceeded());
+
+      const extended = capture(() => api.extendTests(rows(), { parameters: withNumbers() }));
+      expect(extended, name).toBeInstanceOf(Error);
+      expect((extended as Error).message).toBe(aggregateBudgetExceeded());
+    });
+  }
+});
+
+// The binding's own shape checks must not word a rejection differently from the
+// model layer for an input the shared shape check lets through.
+describe('values beyond the unsigned 32-bit range are refused in one wording', () => {
+  const cases: Array<{ label: string; run: (api: (typeof surfaces)[number]['api']) => unknown }> = [
+    {
+      label: 'a generate strength',
+      run: (api) => api.generate({ parameters: twoBinaryParameters, strength: 2 ** 33 }),
+    },
+    {
+      label: 'an estimate strength',
+      run: (api) =>
+        api.estimateModel({ parameters: twoBinaryParameters, strength: Number.MAX_SAFE_INTEGER }),
+    },
+    {
+      label: 'an analyze strength',
+      run: (api) => api.analyzeCoverage(twoBinaryParameters, [], 2 ** 33),
+    },
+    {
+      label: 'a sub-model strength',
+      run: (api) =>
+        api.generate({
+          parameters: twoBinaryParameters,
+          subModels: [{ parameters: ['a', 'b'], strength: 2 ** 33 }],
+        }),
+    },
+    {
+      label: 'an empty sub-model parameter name',
+      run: (api) =>
+        api.generate({
+          parameters: twoBinaryParameters,
+          subModels: [{ parameters: ['a', ''], strength: 1 }],
+        }),
+    },
+  ];
+
+  for (const { label, run } of cases) {
+    it(`gives ${label} one code, message and detail on every surface`, () => {
+      const errors = surfaces.map(({ api }) => capture(() => run(api)) as CoverwiseError);
+      for (const error of errors) {
+        expect(error).toBeInstanceOf(Error);
+        expect(error.code).toBe('INVALID_INPUT');
+      }
+      expect(errors[1].message).toBe(errors[0].message);
+      expect(errors[1].detail).toBe(errors[0].detail);
+    });
+  }
+});
+
+// Extend's recorded rows are charged once, by the reader that saw them. Cells
+// that name no value keep their rendered text for the diagnostics, and a second
+// charge of that text by the engine would push this suite over the budget.
+describe('extend with drifted numeric existing rows', () => {
+  const NUMBER = 0.1234567890123456;
+  const ROWS = Math.ceil(MAX_AGGREGATE_STRING_BYTES / String(NUMBER).length) + 1000;
+
+  it('is accepted by every surface', { timeout: MEASUREMENT_TIMEOUT_MS }, () => {
+    expect(ROWS).toBeLessThanOrEqual(100_000);
+    const existing = Array.from({ length: ROWS }, () => ({ a: NUMBER, b: false }));
+    for (const { name, api } of surfaces) {
+      const result = capture(() => api.extendTests(existing, { parameters: twoBinaryParameters }));
+      expect(result, name).not.toBeInstanceOf(Error);
+    }
+  });
+});

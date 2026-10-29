@@ -60,11 +60,11 @@ namespace coverwise::model {
 |---|---|
 | `kOk` | 失敗していません。結果の他のフィールドはすべて有効です。 |
 | `kConstraintError` | 制約式がパースできなかったか、制約集合を満たす割り当てが存在しません。 |
-| `kInsufficientCoverage` | 完全なカバレッジに届かずに生成が終了しました。多くは `max_tests` による制限が原因です。 |
+| `kInsufficientCoverage` | カバレッジが不完全であることを呼び出し側や CLI が報告するために予約されています。エンジン自身はこの値を設定しません。`max_tests` による制限が効いた場合、`error` は OK のままで、結果には 1.0 未満の `coverage`、0 でない `uncovered_count`、警告が入ります。CLI はこの結果を終了コード 2 に対応づけます。 |
 | `kInvalidInput` | 受理ゲートがモデルを拒否しました。パラメータの不備、範囲外のオプション、上限の超過などです。 |
 | `kTupleExplosion` | 指定した強度とモデルでは、必要タプル集合が列挙できないほど大きすぎます。 |
 
-`message` は失敗を言い表す 1 文です。`detail` は補足情報で、問題のある値、食い違った 2 つの数値、`AnnotateConstraintError` が印を付けた制約式中の位置などが入ります。補足すべきことがなければ空になるため、両方を表示する呼び出し側は `detail` が空でないときだけ連結します。
+`message` は失敗を言い表す 1 文です。`detail` は補足情報で、問題のある値、食い違った 2 つの数値、制約式に対する構文のヒントなどが入ります。補足すべきことがなければ空になるため、両方を表示する呼び出し側は `detail` が空でないときだけ連結します。
 
 `Code` の数値はプロセスの終了コードではなく、そのように使ってはいけません。コマンドラインサーフェスは終了コードへ写像します。制約エラーは 1、カバレッジ不足は 2、不正入力とタプル爆発はどちらも 3 です。終了コードの契約全体は[CLI リファレンス](cli.md)にあります。
 
@@ -95,12 +95,15 @@ namespace coverwise::core {
   model::GenerateResult Extend(
     const std::vector<model::TestCase>& existing,
     const model::GenerateOptions& options,
-    model::ExtendMode mode = model::ExtendMode::kStrict
+    model::ExtendMode mode = model::ExtendMode::kStrict,
+    model::ChargedText charged = model::ChargedText::None()
   );
 }
 ```
 
-`existing` の行は生成に先立ってシードとして投入され、そのままの形で保持されます。カバレッジが完全になるまで、新しい行が後ろに追加されます。`existing.size()` より小さい `max_tests` は、呼び出し側が与えた行を黙って捨てるのではなく、不正入力として拒否されます。
+`charged` は、行のテキストのうち呼び出し側がすでに数えた分を受理ゲートに伝えます。行のテキストを自分で数えた呼び出し側は `ChargedTextReader::total()` を渡します。既定値では、ゲートが行の `unresolved` のテキストを計上します。
+
+`existing` の行は生成に先立ってシードとして投入され、そのままの形で保持されます。カバレッジが完全になるまで、新しい行が後ろに追加されます。`existing.size()` より小さい `max_tests` は、呼び出し側が与えた行を黙って捨てるのではなく、不正入力として拒否されます。「そのまま」の唯一の例外は境界値展開が走る場合です。宣言済みのどの値も指さないインデックスは、展開後の値リストでは表現できないため `kUnassigned` として返されます。その行には引き続き「保持されるがカバレッジからは除外」という警告が付きます。
 
 ### `coverwise::core::EstimateModel`
 
@@ -154,6 +157,7 @@ namespace coverwise::validator {
 | strength が `[1, パラメータ数]` の外 | ゼロ | 空 |
 | パラメータが不正 | ゼロ | 空 |
 | 制約モデルが充足不能 | ゼロ | 空 |
+| `tests` の行数が `kMaxTests` を超えた（`kInvalidInput`、`Test count N exceeds maximum of 100000`。列挙の前に検査されます） | ゼロ | 空 |
 | 列挙上限を超過 | ゼロ | 空 |
 | 列挙の途中で実行可能性の予算が尽きた | そこまでに列挙したタプルぶんの部分カウント | 完全 |
 
@@ -227,7 +231,7 @@ namespace coverwise::validator {
 }
 ```
 
-いずれかのパラメータが等価クラスを宣言しているかを調べ、宣言していればクラスカバレッジを計算して `result.class_coverage` に設定します。どのパラメータも宣言していない場合は optional が空のままとなり、結果は変わりません。自分で組み立てた結果にクラスカバレッジを付与したいときに使います。同じ測定を単体の値として得たい場合は `ComputeClassCoverage` を使います。
+いずれかのパラメータが等価クラスを宣言しているかを調べ、宣言していればクラスカバレッジを計算して `result.class_coverage` に設定します。どのパラメータも宣言していない場合は optional が空のままとなり、結果は変わりません。クラスカバレッジの計算が失敗した場合は `result.class_coverage` が未設定のままとなり、`result.error` が OK であれば失敗内容で置き換えられ、失敗のテキストが `result.warnings` に追加されます。自分で組み立てた結果にクラスカバレッジを付与したいときに使います。同じ測定を単体の値として得たい場合は `ComputeClassCoverage` を使います。
 
 ## 制約
 
@@ -256,7 +260,7 @@ Error AnnotateConstraintError(const std::string& expression, Error error);
 
 パーサーは `IF`/`THEN`/`ELSE`、`IMPLIES`、`AND`、`OR`、`NOT`、`IN`、`LIKE`、`=`、`!=`、数値比較、パラメータ間比較をサポートします。言語の定義は[制約構文](constraints.md)にあります。このページが扱うのは、それが生成する C++ の型だけです。
 
-`AnnotateConstraintError` は、式とそのパースが返したエラーを受け取り、問題の位置を `detail` に印付けした同じエラーを返します。「予期しないトークン」を、利用者が対処できる情報に変えるのがこの関数です。
+`AnnotateConstraintError` は、式とそのパースが返したエラーを受け取り、`message` の先頭に式を付けた同じエラーを返します。`detail` は変更されず、位置情報も持ちません。「予期しないトークン」を、それを生んだ制約に結びつけるのがこの関数です。
 
 ### `model::ConstraintNode` と `model::ConstraintResult`
 
@@ -344,7 +348,7 @@ struct GenerateOptions {
 
 `seed` の宣言型は `uint64_t` ですが、有効域は 0 から 2^32 - 1 までであり、受理ゲートがそれを強制します。これを超える値は下位 32 ビットに切り詰められるのではなく、有効域を明示したメッセージとともに不正入力として拒否されます。宣言型が広いのは、JSON から seed を読むサーフェスが範囲外の数値をゲートまでそのまま運び、拒否を 1 回だけ受け取れるようにするためです。そうしないと、値が別の有効な seed に折り返され、誰も要求していないスイートが生成されてしまいます。有効域の内側であれば、同じ seed と同じ受理済みモデルはどのサーフェスでも同じスイートを生成します。[決定性](determinism.md)を参照してください。
 
-`strength` は 1 以上、パラメータ数以下でなければなりません。`max_tests` はポジティブとネガティブを合わせたスイートを制限します。この制限で生成が途中で止まった場合、`error` は `kInsufficientCoverage` になります。
+`strength` は 1 以上、パラメータ数以下でなければなりません。`max_tests` はポジティブとネガティブを合わせたスイートを制限します。この制限で生成が途中で止まった場合も `error` は OK のままで、1.0 未満の `coverage`、0 でない `uncovered_count`、警告が報告されます。CLI はこの結果を終了コード 2 に対応づけます。
 
 ### `model::ExtendMode`
 
@@ -433,13 +437,14 @@ Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&);
 Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&, Error* error);
 ```
 
-境界値展開は、元の値に対して整数では `min-1`、`min`、`min+1`、`max-1`、`max`、`max+1` を、浮動小数点では `1` の代わりに `step` を使って追加し、重複を除去して数値順に並べます。生成結果は展開後のパラメータを返すため、`TestCase` の値インデックスは `GenerateResult::parameters` を基準に表示してください。
+境界値展開は、元の値に対して整数では `min-1`、`min`、`min+1`、`max-1`、`max`、`max+1` を、浮動小数点では `1` の代わりに `step` を使って追加します。浮動小数点の値は `min`・`max`・`step` のうち最大の小数桁数にそろえられ、重複を除去して数値順に並びます。生成結果は展開後のパラメータを返すため、`TestCase` の値インデックスは `GenerateResult::parameters` を基準に表示してください。
 
 ### `model::TestCase`
 
 ```cpp
 struct TestCase {
   std::vector<uint32_t> values;  // One index per parameter. UINT32_MAX = unassigned.
+  std::vector<std::optional<std::string>> unresolved;  // Caller text for positions that did not resolve; nullopt = the row carried no member for it, "" = the caller supplied an empty string. Empty vector for engine-produced rows.
 };
 ```
 
@@ -495,7 +500,7 @@ struct UncoveredTuple {
 };
 ```
 
-`tests` にはポジティブな行だけが入り、`negative_tests` には無効値をちょうど 1 つ含む行が入ります。無効値が設定されている場合、`negative_coverage` は実行可能な単一障害タプルを数えます。`max_tests` はポジティブとネガティブを合わせたスイートに適用されるため、ネガティブカバレッジは未完了になることがあります。その場合は `omitted_tuples` と警告を確認してください。サブモデルがある場合、`coverage` はグローバルおよび各サブモデルエンジンの最小比率であり、合否判定に使う値です。`warnings` は致命的でない診断、`error` は早期失敗時だけ非 OK になります。
+`tests` にはポジティブな行だけが入り、`negative_tests` には無効値をちょうど 1 つ含む行が入ります。無効値が設定されている場合、`negative_coverage` は実行可能な単一障害タプルを数えます。`max_tests` はポジティブとネガティブを合わせたスイートに適用されるため、ネガティブカバレッジは未完了になることがあります。その場合は `omitted_tuples` と警告を確認してください。`Extend` では、`tests` の保持された先頭部分にカバレッジから除外される行が含まれることがあり、1 行ごとに `Existing test N preserved but excluded from coverage: …` という警告が付きます。無効値をちょうど 1 つ含み、それ以外は制約を満たす保持行は `negative_coverage` に数えられ、`negative_tests` では再生成されません。サブモデルがある場合、`coverage` はグローバルおよび各サブモデルエンジンの最小比率であり、合否判定に使う値です。`warnings` は致命的でない診断、`error` は早期失敗時だけ非 OK になります。
 
 ### `model::SubModel`
 
@@ -515,6 +520,8 @@ struct WeightConfig {
   bool empty() const;
 };
 ```
+
+`GetWeight` は完全一致のキー検索です。`parameter` と `value` をバイト単位で照合し、大文字小文字の畳み込みもエイリアスの解決も行いません。エンジンは重みのキーを `ResolveValueName` で解決するため、たとえば `"Chrome"` というキーは生成時に適用されても、`GetWeight("browser", "chrome")` は既定値を返します。
 
 ### `model::ModelStats`
 
@@ -547,7 +554,7 @@ struct ModelStats {
 |---|---|
 | `kMaxParameters` | 1 モデルが宣言できるパラメータ数 |
 | `kMaxValuesPerParameter` | 1 パラメータが宣言できる値の個数 |
-| `kMaxTests` | `tests`・`seeds`・`existing` 配列の行数 |
+| `kMaxTests` | `tests`・`seeds`・`existing` 配列の行数。`Extend` では `existing` と `seeds` の合計 |
 | `kMaxConstraints` | 1 モデルの制約式の個数 |
 | `kMaxStringBytes` | 単一の入力文字列の UTF-8 バイト数 |
 | `kMaxAggregateStringBytes` | 1 入力に含まれる全文字列の合計 UTF-8 バイト数 |

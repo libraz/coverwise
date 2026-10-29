@@ -1,0 +1,55 @@
+{
+  "cases": [
+    {
+      "name": "parameters",
+      "entry": "generate",
+      "build": { "kind": "parameters", "count": 1025 },
+      "cli": "parameters exceed maximum of 1024",
+      "js": "Invalid parameters: maximum is 1024."
+    },
+    {
+      "name": "values-per-parameter",
+      "entry": "generate",
+      "build": { "kind": "values", "count": 16385 },
+      "cli": "parameter 'p0' values exceed maximum of 16384",
+      "js": "Parameter 'p0' has too many values (maximum 16384)."
+    },
+    {
+      "name": "rows",
+      "entry": "analyze",
+      "build": { "kind": "rows", "count": 100001 },
+      "cli": "tests exceed maximum of 100000",
+      "js": "Invalid tests: maximum is 100000 rows."
+    },
+    {
+      "name": "constraints",
+      "entry": "generate",
+      "build": { "kind": "constraints", "count": 257 },
+      "cli": "constraints exceed maximum of 256",
+      "js": "Invalid constraints: maximum is 256."
+    },
+    {
+      "name": "string-bytes",
+      "entry": "generate",
+      "build": { "kind": "long-value", "bytes": 65537 },
+      "cli": "exceeds 65536 UTF-8 bytes",
+      "js": "exceeds 65536 UTF-8 bytes"
+    },
+    {
+      "name": "aggregate-string-bytes",
+      "entry": "generate",
+      "build": { "kind": "long-values", "count": 17, "bytes": 65536 },
+      "cli": "Input strings exceed 1048576 UTF-8 bytes",
+      "js": "Input strings exceed 1048576 UTF-8 bytes"
+    },
+    {
+      "name": "tuple-explosion",
+      "entry": "generate",
+      "build": { "kind": "uniform", "parameters": 10, "values": 100, "strength": 5 },
+      "cli": "t-wise tuple count exceeds safety limit",
+      "cliBody": "\"error\":{\"code\":4",
+      "js": "t-wise tuple count exceeds safety limit",
+      "jsCode": "TUPLE_EXPLOSION"
+    }
+  ]
+}

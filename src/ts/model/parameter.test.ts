@@ -7,6 +7,7 @@ import {
   Parameter,
   resolveValueName,
   UNASSIGNED,
+  ValueResolver,
   validateParameters,
 } from './parameter.js';
 
@@ -186,6 +187,37 @@ describe('Parameter', () => {
       const p = new Parameter('browser', ['chrome']);
       p.setAliases([['Chromium']]);
       expect(p.findValueIndex('chromium', false)).toBe(0);
+    });
+  });
+
+  describe('ValueResolver', () => {
+    it('resolves exactly like resolveValueName', () => {
+      const p = new Parameter('os', ['Windows', 'Linux', 'linux', 'Mac']);
+      p.setAliases([['Win32', 'mac'], ['nix'], [], ['Mac']]);
+      const resolver = new ValueResolver(p);
+
+      for (const name of [
+        'Windows',
+        'WINDOWS',
+        'Win32',
+        'win32',
+        'Linux',
+        'LINUX',
+        'linux',
+        'nix',
+        'NIX',
+        'Mac',
+        'MAC',
+        'mac',
+        'missing',
+        '',
+      ]) {
+        expect(resolver.resolve(name), name).toBe(resolveValueName(p, name));
+      }
+      // A primary value wins over an alias spelled the same way.
+      expect(resolver.resolve('mac')).toBe(3);
+      // The first of two primaries that fold to one name wins.
+      expect(resolver.resolve('linux')).toBe(1);
     });
   });
 

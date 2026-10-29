@@ -126,7 +126,7 @@ report["coverageRatio"]  # 0.25
 [item["display"] for item in report["uncovered"]]  # ["os=win, browser=Safari", ...]
 ```
 
-CLI の `analyze` にできて、この関数からは到達できないことが 2 つあります。`parameters` は名前から値へのマッピングかパラメータの `list` 形式であり、モデルオブジェクトそのものではありません。`{"parameters": [...], "strength": 3}` を渡すと `strength` をパラメータ名として読み、`TypeError` になります。もう 1 つは強度で、この関数は `strength` を常に CLI へ明示的に渡します。CLI が説明する「`--params` のモデルオブジェクトから強度を受け継ぐ」挙動はここでは起こりません。強度は引数として渡してください。
+CLI の `analyze` にできて、この関数からは到達できないことが 2 つあります。`parameters` は名前から値へのマッピングかパラメータの `list` 形式であり、モデルオブジェクトそのものではありません。`{"parameters": [...], "strength": 3}` を渡すと `strength` をパラメータ名として読み、`TypeError` になります。もう 1 つは強度で、この関数は `strength` を常に CLI へ明示的に渡します。CLI が説明する「`--params` のモデルオブジェクトから強度を受け継ぐ」挙動はここでは起こりません。強度は引数として渡してください。 `strength` は `generate` と同じ規則で検証され、`2`・`2.0`・`None` は受け付けられ、`"2"` は受け付けられません。
 
 ### `extend_tests(existing, model=None, **fields)`
 
@@ -174,6 +174,8 @@ def test_login(os, browser, locale):
 
 上の全組み合わせは 3 × 3 × 2 = 18 ケースですが、制約付きのペアワイズスイートは実現可能なペアすべてを 9 ケースで網羅します。各ケースには読みやすい id（`os=macOS-browser=Chrome-locale=en`）が付きます。
 
+テスト関数は各値を宣言された Python の型（`int`・`bool`・`float`）で受け取ります。宣言済みのどの値にも一致しないセル（エイリアスの綴りなど）は文字列のままで、境界値パラメータは型に応じて `int` または `float` で届きます。id は変わらず、`retries=3-debug=true` のように描画されたテキストを使います。
+
 `parameters` は `generate` と同じ 2 つの形式を受け取ります。既定が `None` なのは、省略したときの失敗をはっきりさせるためだけです。省略すると `TypeError: a model requires 'parameters'` になります。`include_negative` はシグネチャの `*` によりキーワード専用なので、2 つ目の位置引数のモデルと取り違えることはありません。`include_negative=True` を渡すと、`"invalid": true` を付けた値を使う異常系テストも実行します。既定では除外されます。
 
 これ以外のキーワード引数はすべてモデルのフィールドとして `generate` へそのまま渡されます。対象は `strength`・`seed`・`maxTests`・`weights`・`subModels`、そして `constraints` と `seeds` です。`parametrize` が組み立てるのは `generate` が受け取るのと同じモデル文書であり、そこに何かを足すことはありません。
@@ -212,7 +214,7 @@ except coverwise.CoverwiseError as error:
 
 `code` は `CONSTRAINT_ERROR` か `INVALID_INPUT` のどちらかで、`exit_code` は必ず[CLI リファレンス](cli.md)が定める終了コードのいずれかになります。`stderr` には CLI が書いた診断がそのまま入ります。例外自身のメッセージは、そこから `error: ` の接頭辞を取り除いたものです。JavaScript API にはもう 1 つ `TUPLE_EXPLOSION` という分類がありますが、CLI はそれを `INVALID_INPUT` にまとめており、このパッケージは CLI が報告したとおりを報告します。カバレッジ不足はエラーではありません。上の `generate` を参照してください。
 
-サブプロセスを起動する前に捕まる失敗が 1 種類あります。モデルに含まれる非有限の数値、つまり `inf`・`-inf`・`nan` は JSON へ直列化できないため、直列化の段階で拒否され、`code == "INVALID_INPUT"`、`exit_code == 3` の `CoverwiseError` として送出されます。実行ファイルは動いていないので、`stderr` は空文字列、`report` は `None` です。この経路では例外のメッセージを読んでください。`stderr` には何も入りません。
+サブプロセスを起動する前に捕まる失敗が 1 種類あります。モデルに含まれる非有限の数値、つまり `inf`・`-inf`・`nan` は JSON へ直列化できないため、直列化の段階で拒否され、`code == "INVALID_INPUT"`、`exit_code == 3` の `CoverwiseError` として送出されます。実行ファイルは動いていないので、`stderr` は空文字列、`report` は `None` です。この経路では例外のメッセージを読んでください。`stderr` には何も入りません。対になっていない UTF-16 サロゲートを含む文字列も同じ扱いで、モデルが標準入力経由でも一時ファイル経由でも、実行ファイルを起動する前に拒否されます。
 
 失敗の内容がメッセージではなくレポートに書かれている場合もあります。`analyze` はスイートを測定してから、不正な行を含むことを理由に拒否するため、その行を指し示すレポートは例外に残ります。
 
@@ -270,6 +272,8 @@ coverwise stats input.json
 ```
 
 このコンソールスクリプトはサブプロセスを起動しません。`os.execv` で自分のプロセスをネイティブの実行ファイルに置き換えます。したがってシグナル・終了コード・3 つの標準ストリームは実行ファイル自身のものになり、途中でそれらを解釈し直す Python プロセスは残りません。`coverwise generate big.json | head -c 200` が wheel からでもソースビルドからでも同じ挙動になるのはこのためです。出力をプログラムで受け取りたいときは `coverwise.run()` を、シェルや CI ジョブから駆動するときはコマンドを使ってください。
+
+ネイティブの実行ファイルを起動できない場合、2 つのランチャー（`coverwise` と `python -m coverwise`）は標準エラーに診断を出して終了コード `127` で終わります。終了コード `0` から `3` は、ネイティブの実行ファイルだけが返します。
 
 入力と出力のスキーマ、そして終了コードは[CLI リファレンス](cli.md)を参照してください。
 

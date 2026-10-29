@@ -12,8 +12,8 @@ import {
 } from '../../src/ts/model/generate-options.js';
 import {
   Parameter as InternalParameter,
-  resolveValueName,
   UNASSIGNED,
+  ValueResolver,
   validateParameters as validateInternalParameters,
 } from '../../src/ts/model/parameter.js';
 import type {
@@ -34,6 +34,7 @@ import type {
   UncoveredTuple as PublicUncoveredTuple,
 } from '../types.js';
 import { CoverwiseError, errorCodeFromNumber } from '../types.js';
+import { hasCell, hasOwnField, ownKeys } from '../validation.js';
 
 /**
  * Convert a JS value (string, number, or boolean) to a string representation.
@@ -108,7 +109,7 @@ export function toInternalParams(params: PublicParameter[]): InternalParameter[]
     let hasClasses = false;
 
     for (const item of pub.values) {
-      if (typeof item === 'object' && item !== null && 'value' in item) {
+      if (typeof item === 'object' && item !== null && hasOwnField(item, 'value')) {
         // ParameterValue object form
         const pv = item as ParameterValue;
         values.push(valueToString(pv.value));
@@ -176,6 +177,11 @@ export function toInternalParams(params: PublicParameter[]): InternalParameter[]
   return expansion.params;
 }
 
+/** One resolver per parameter, built once for all the rows of a call. */
+export function valueResolvers(params: InternalParameter[]): ValueResolver[] {
+  return params.map((param) => new ValueResolver(param));
+}
+
 /**
  * Convert a public TestCase (key-value map) to an internal TestCase (index array).
  *
@@ -191,20 +197,21 @@ export function toInternalTestCase(
   tc: PublicTestCase,
   params: InternalParameter[],
   allowUnknown = true,
+  resolvers: readonly ValueResolver[] = valueResolvers(params),
 ): InternalTestCase {
   const values: number[] = new Array(params.length).fill(UNASSIGNED);
-  let unresolved: string[] | undefined;
+  let unresolved: (string | undefined)[] | undefined;
   for (let i = 0; i < params.length; ++i) {
     const paramName = params[i].name;
-    if (Object.hasOwn(tc, paramName)) {
+    if (hasCell(tc, paramName)) {
       const valStr = valueToString(tc[paramName]);
-      const idx = resolveValueName(params[i], valStr);
+      const idx = resolvers[i].resolve(valStr);
       if (idx === UNASSIGNED) {
         if (allowUnknown) {
           // Filled on first drift only: a row that matches the model costs
           // nothing, and a row that does not keeps the caller's own text so the
           // diagnostic can name it instead of an internal index.
-          unresolved ??= new Array(params.length).fill('');
+          unresolved ??= new Array<string | undefined>(params.length).fill(undefined);
           unresolved[i] = valStr;
           continue;
         }
@@ -265,16 +272,10 @@ export function toInternalOptions(
 ): InternalGenerateOptions {
   const weights = createWeightConfig();
   if (input.weights) {
-    for (const paramName of Object.keys(input.weights)) {
-      if (!Object.hasOwn(input.weights, paramName)) {
-        continue;
-      }
+    for (const paramName of ownKeys(input.weights)) {
       const paramWeights = input.weights[paramName];
       const inner: Record<string, number> = Object.create(null);
-      for (const valueName of Object.keys(paramWeights)) {
-        if (!Object.hasOwn(paramWeights, valueName)) {
-          continue;
-        }
+      for (const valueName of ownKeys(paramWeights)) {
         inner[valueName] = paramWeights[valueName];
       }
       weights.entries[paramName] = inner;
@@ -288,7 +289,8 @@ export function toInternalOptions(
 
   // A seed is asserted to be a real test case for this model, so a value outside
   // the domain is an error rather than an unassigned position.
-  const seeds = (input.seeds ?? []).map((tc) => toInternalTestCase(tc, params, false));
+  const resolvers = valueResolvers(params);
+  const seeds = (input.seeds ?? []).map((tc) => toInternalTestCase(tc, params, false, resolvers));
 
   // Boundary expansion is already applied in toInternalParams, so `params` is
   // the final value space. boundaryConfigs is intentionally left empty (no
@@ -330,7 +332,7 @@ function boundaryConfigFromParam(p: PublicParameter): BoundaryConfig | null {
   // JavaScript callers may still pass arbitrary objects at runtime.
   const raw = p as PublicParameter & { type?: unknown; range?: unknown; step?: unknown };
   // Own fields only, as the input validator and the WASM binding test them.
-  if (!Object.hasOwn(raw, 'type') && !Object.hasOwn(raw, 'range') && !Object.hasOwn(raw, 'step')) {
+  if (!hasOwnField(raw, 'type') && !hasOwnField(raw, 'range') && !hasOwnField(raw, 'step')) {
     return null;
   }
   if (raw.type !== 'integer' && raw.type !== 'float') {

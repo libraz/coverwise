@@ -5,10 +5,12 @@ import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.j
 import { ErrorCode, type ErrorInfo, okError } from '../model/error.js';
 import {
   acceptOptions,
+  type ChargedText,
   type GenerateOptions,
   hasBoundaryConfigs,
   optionsParameters,
 } from '../model/generate-options.js';
+import { MAX_TESTS } from '../model/limits.js';
 import type { Parameter } from '../model/parameter.js';
 import { type TestCase, UNASSIGNED } from '../model/test-case.js';
 import { isNumeric, toDouble } from '../util/string_util.js';
@@ -32,7 +34,7 @@ function validateSeedIndex(seed: TestCase, params: Parameter[], pi: number): str
   // and printing that sentinel tells the caller nothing about which part of
   // what they submitted no longer fits.
   const supplied = seed.unresolved?.[pi];
-  if (supplied) {
+  if (supplied !== undefined) {
     return `value '${supplied}' is not declared by parameter ${params[pi].name}`;
   }
   if (vi === UNASSIGNED) {
@@ -69,13 +71,13 @@ function captureSeedValidation(seed: TestCase, params: Parameter[]): SeedValidat
 }
 
 /// Validate that a seed can participate in positive coverage.
-export function validatePositiveSeed(
+function validatePositiveSeed(
   seed: TestCase,
   params: Parameter[],
   constraints: readonly ConstraintNode[],
-  original?: SeedValidationSnapshot,
+  original: SeedValidationSnapshot,
 ): string {
-  if (original && original.error.length > 0 && original.parameterIndex === null) {
+  if (original.error.length > 0 && original.parameterIndex === null) {
     return original.error;
   }
   const shapeError = validateSeedShape(seed, params);
@@ -84,7 +86,7 @@ export function validatePositiveSeed(
   }
 
   for (let pi = 0; pi < params.length; ++pi) {
-    if (original?.parameterIndex === pi) {
+    if (original.parameterIndex === pi) {
       return original.error;
     }
     const indexError = validateSeedIndex(seed, params, pi);
@@ -106,24 +108,91 @@ export function validatePositiveSeed(
   return '';
 }
 
+/// Whether a row has exactly one invalid value and otherwise fits the model.
+function isSingleFaultRow(
+  row: SeedRow,
+  params: Parameter[],
+  constraints: readonly ConstraintNode[],
+): boolean {
+  if (row.original.error.length > 0 || row.test.values.length !== params.length) {
+    return false;
+  }
+  let faults = 0;
+  for (let pi = 0; pi < params.length; ++pi) {
+    const vi = row.test.values[pi];
+    if (!Number.isInteger(vi) || vi < 0 || vi >= params[pi].size) {
+      return false;
+    }
+    if (params[pi].isInvalid(vi)) {
+      ++faults;
+    }
+  }
+  if (faults !== 1) {
+    return false;
+  }
+  return constraints.every(
+    (constraint) => constraint.evaluate(row.test.values) === ConstraintResult.True,
+  );
+}
+
+/// One row the engine is seeded with, in the order it is reported back.
+///
+/// Extend's `existing` rows come first and are kept verbatim even when they no
+/// longer fit the model; the caller's `seeds` follow and are dropped with a
+/// warning when they do not. Mirrors core::SeedRow in the C++ core.
+export interface SeedRow {
+  /// The row, with its indices moved onto the accepted value space.
+  test: TestCase;
+  /// Whether the row came from extend's `existing`.
+  preserved: boolean;
+  /// Position in the caller's own array, for diagnostics.
+  sourceIndex: number;
+  /// Shape/index error against the caller's declared value space, populated
+  /// only when boundary expansion ran.
+  original: SeedValidationSnapshot;
+}
+
+/// What part a seed row can play in coverage.
+export interface SeedClassification {
+  /// Why the row cannot count toward positive coverage; empty when it can.
+  error: string;
+  /// A preserved row with exactly one invalid value that otherwise satisfies
+  /// the model, which counts toward negative coverage instead.
+  singleFault: boolean;
+}
+
+/// Classify a seed row against the accepted parameters and constraints.
+export function classifySeedRow(
+  row: SeedRow,
+  params: Parameter[],
+  constraints: readonly ConstraintNode[],
+): SeedClassification {
+  const error = validatePositiveSeed(row.test, params, constraints, row.original);
+  // Only a preserved row is reported back, so only it can stand for a negative case.
+  const singleFault =
+    error.length > 0 && row.preserved && isSingleFaultRow(row, params, constraints);
+  return { error, singleFault };
+}
+
 /// Move recorded row value indices onto the expanded value space.
 ///
 /// Rows address values by index into the value list the caller declared, while
 /// boundary expansion sorts and inserts values, so every index that still names
-/// a declared value is looked up again by value identity. An invalid index is
-/// left alone for validation to describe; valid positions retain their identity
-/// even when another position is invalid. Mirrors RemapSeedValueIndices in the
-/// C++ core.
+/// a declared value is looked up again by value identity. An index that names
+/// no declared value becomes UNASSIGNED, so it cannot read as a value expansion
+/// inserted; validation describes it from the declared snapshot. Mirrors
+/// RemapSeedValueIndices in the C++ core.
 function remapSeedValueIndices(
   declared: Parameter[],
   expanded: Parameter[],
-  seeds: TestCase[],
-): TestCase[] {
-  return seeds.map((seed) => {
-    const values = [...seed.values];
+  rows: SeedRow[],
+): void {
+  for (const row of rows) {
+    const values = row.test.values;
     for (let pi = 0; pi < values.length && pi < declared.length; ++pi) {
       const oldIndex = values[pi];
       if (!Number.isInteger(oldIndex) || oldIndex < 0 || oldIndex >= declared[pi].values.length) {
+        values[pi] = UNASSIGNED;
         continue;
       }
       const oldValue = declared[pi].values[oldIndex];
@@ -138,18 +207,14 @@ function remapSeedValueIndices(
       // and every rule written against isNumeric, treats as plain text.
       if (newIndex === UNASSIGNED && isNumeric(oldValue)) {
         const numeric = toDouble(oldValue);
-        newIndex = expanded[pi].values.findIndex(
+        const found = expanded[pi].values.findIndex(
           (candidate) => isNumeric(candidate) && toDouble(candidate) === numeric,
         );
+        newIndex = found >= 0 ? found : UNASSIGNED;
       }
-      if (newIndex !== UNASSIGNED && newIndex >= 0) {
-        values[pi] = newIndex;
-      }
+      values[pi] = newIndex;
     }
-    // The text a position failed to resolve to belongs to the row, not to the
-    // value space, so it survives expansion unchanged.
-    return { values, unresolved: seed.unresolved };
-  });
+  }
 }
 
 /// Options that reached the engine through the acceptance gate.
@@ -165,13 +230,12 @@ export class EngineInput {
     private readonly accepted: {
       options: GenerateOptions;
       params: Parameter[];
-      preservedSeedCount: number;
-      originalSeedValidations: SeedValidationSnapshot[];
+      seedRows: SeedRow[];
     },
   ) {}
 
-  /// The accepted options, with boundary parameters already expanded and the
-  /// recorded rows remapped onto that value space.
+  /// The accepted options, with boundary parameters already expanded. `seeds`
+  /// is empty: the rows have moved to seedRows.
   get options(): GenerateOptions {
     return this.accepted.options;
   }
@@ -181,56 +245,81 @@ export class EngineInput {
     return this.accepted.params;
   }
 
-  /// How many leading `seeds` rows came from an extend call's `existing`.
-  ///
-  /// Those rows are reported back even when they no longer fit the model; a row
-  /// past this prefix is an ordinary seed and is dropped with a warning.
-  get preservedSeedCount(): number {
-    return this.accepted.preservedSeedCount;
-  }
-
-  /// Shape/index errors against the caller's declared value space, populated
-  /// only when boundary expansion ran.
-  get originalSeedValidations(): readonly SeedValidationSnapshot[] {
-    return this.accepted.originalSeedValidations;
+  /// Extend's `existing` rows followed by the caller's `seeds`.
+  get seedRows(): readonly SeedRow[] {
+    return this.accepted.seedRows;
   }
 
   /// Submit options to the acceptance gate and mint the engine's only input.
   ///
   /// The gate itself is model::acceptOptions, so every rule about what an
-  /// options object may contain is stated once and this path adds nothing to
-  /// it. Rows are addressed by index into the value list the caller declared, so
-  /// what is left here is moving them onto the value space the gate accepted.
-  /// Mirrors core::AcceptEngineInput in the C++ core, so both ports answer any
-  /// given options with the same code.
+  /// options object may contain is stated once. This is also the only place
+  /// extend's `existing` rows enter the engine: they are held to maxTests and
+  /// to the row limit together with `seeds`, charged by the gate under the same
+  /// rules as `seeds`, and remapped by value identity onto the expanded value
+  /// space the gate accepted, as every seed row is. `charged` is what the
+  /// calling surface already counted, handed to the gate unchanged. Mirrors
+  /// core::AcceptEngineInput in the C++ core, so both ports answer any given
+  /// options with the same code.
   static accept(
     options: GenerateOptions,
-    preservedSeedCount: number,
+    existing: readonly TestCase[],
+    charged: ChargedText,
   ): { input: EngineInput | null; error: ErrorInfo } {
-    const hasBoundaryExpansion = hasBoundaryConfigs(options);
-    const gate = acceptOptions(options);
+    let submitted = options;
+    if (existing.length > 0) {
+      if (options.maxTests > 0 && existing.length > options.maxTests) {
+        return {
+          input: null,
+          error: {
+            code: ErrorCode.InvalidInput,
+            message: 'maxTests cannot be smaller than the existing test count',
+            detail: `maxTests=${options.maxTests}, existing=${existing.length}`,
+          },
+        };
+      }
+      // Both arrays become one suite, so they share one row limit, and the
+      // refusal names the pair rather than a seed count the caller never wrote.
+      const rowCount = existing.length + options.seeds.length;
+      if (rowCount > MAX_TESTS) {
+        return {
+          input: null,
+          error: {
+            code: ErrorCode.InvalidInput,
+            message: `Existing and seed test count ${rowCount} exceeds maximum of ${MAX_TESTS}`,
+            detail: '',
+          },
+        };
+      }
+      // The gate charges the rows it is shown, so `existing` is shown to it as
+      // leading seeds and split off again below.
+      submitted = { ...options, seeds: [...existing, ...options.seeds] };
+    }
+    const remap = hasBoundaryConfigs(submitted) && submitted.seeds.length > 0;
+    const gate = acceptOptions(submitted, charged);
     if (gate.error.code !== ErrorCode.Ok) {
       return { input: null, error: gate.error };
     }
-    const accepted = gate.options;
-    // Check caller indices only after the model gate accepts. The gate carries
-    // seed rows through unchanged, while its parameter list has expanded.
-    const declared =
-      hasBoundaryExpansion && options.seeds.length > 0 ? optionsParameters(options) : [];
-    const originalSeedValidations = hasBoundaryExpansion
-      ? options.seeds.map((seed) => captureSeedValidation(seed, declared))
-      : [];
-    // Only expansion can move a value's index, so the rows are rebuilt for that
-    // case alone; otherwise they already address the value space in hand.
-    accepted.seeds = hasBoundaryExpansion
-      ? remapSeedValueIndices(declared, gate.params, options.seeds)
-      : options.seeds.map((seed) => ({ values: [...seed.values], unresolved: seed.unresolved }));
+    const declared = remap ? optionsParameters(submitted) : [];
+    const seedRows = submitted.seeds.map((seed, si): SeedRow => {
+      const preserved = si < existing.length;
+      return {
+        test: { values: [...seed.values], unresolved: seed.unresolved },
+        preserved,
+        sourceIndex: preserved ? si : si - existing.length,
+        original: remap
+          ? captureSeedValidation(seed, declared)
+          : { error: '', parameterIndex: null },
+      };
+    });
+    if (remap) {
+      remapSeedValueIndices(declared, gate.params, seedRows);
+    }
     return {
       input: new EngineInput({
-        options: accepted,
+        options: { ...gate.options, seeds: [] },
         params: gate.params,
-        preservedSeedCount,
-        originalSeedValidations,
+        seedRows,
       }),
       error: okError(),
     };

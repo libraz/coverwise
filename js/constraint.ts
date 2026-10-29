@@ -15,6 +15,16 @@
 
 import { asciiToUpper } from '../src/ts/util/string_util.js';
 import { CoverwiseError } from './types.js';
+import { entryFrame, readingInput } from './validation.js';
+
+/** Run a builder step inside the package's error frame; nothing but a CoverwiseError escapes. */
+function built<T>(step: () => T): T {
+  return entryFrame(() => readingInput(step));
+}
+
+function invalidOperand(builder: string, expected: string): never {
+  throw new CoverwiseError('INVALID_INPUT', `${builder} requires ${expected}`);
+}
 
 // --- Value formatting ---
 
@@ -142,7 +152,14 @@ type ValuePosition = 'comparison' | 'set';
  * values, with no parameter reference for it to be confused with, so a member
  * keeps its bare spelling whenever it survives as one token.
  */
-function formatValue(value: string | number | boolean, position: ValuePosition): string {
+function formatValue(
+  value: string | number | boolean,
+  position: ValuePosition,
+  builder: string,
+): string {
+  if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+    invalidOperand(builder, 'a string, number, or boolean operand');
+  }
   const text = typeof value === 'number' ? formatNumber(value) : String(value);
   return position === 'set' && canEmitBare(text, false) ? text : quote(text);
 }
@@ -169,9 +186,12 @@ function formatParameterName(name: string): string {
  * named `1` would otherwise become the literal comparison `> 1`, which is
  * satisfiable, silent, and covers a different suite.
  */
-function formatRelationalOperand(value: number | string): string {
+function formatRelationalOperand(value: number | string, builder: string): string {
   if (typeof value === 'number') {
     return formatNumber(value);
+  }
+  if (typeof value !== 'string') {
+    invalidOperand(builder, 'a number or a parameter name');
   }
   if (!canEmitBare(value, false)) {
     throw new CoverwiseError(
@@ -189,6 +209,9 @@ function formatRelationalOperand(value: number | string): string {
  * within a quoted pattern.
  */
 function formatPattern(pattern: string): string {
+  if (typeof pattern !== 'string') {
+    invalidOperand('like()', 'a string pattern');
+  }
   return canEmitBare(pattern, true) ? pattern : quote(pattern);
 }
 
@@ -238,13 +261,26 @@ type ConditionNode =
   | { kind: 'not'; operand: ConditionNode }
   | { kind: 'opaque'; expression: string };
 
-function nodeFromCondition(condition: Condition): ConditionNode {
+function nodeFromCondition(condition: Condition, builder: string): ConditionNode {
   if (condition instanceof ConditionImpl) {
     return condition.node;
   }
   // Condition is a public interface, so callers may provide their own
-  // implementation. Keep it usable without attempting to parse its text.
-  return { kind: 'opaque', expression: condition.toString() };
+  // implementation. Keep it usable without attempting to parse its text; a
+  // value with nothing of its own to say is not one.
+  if (
+    typeof condition !== 'object' ||
+    condition === null ||
+    typeof condition.toString !== 'function' ||
+    condition.toString === Object.prototype.toString
+  ) {
+    invalidOperand(builder, 'a Condition');
+  }
+  const expression: unknown = condition.toString();
+  if (typeof expression !== 'string') {
+    invalidOperand(builder, 'a Condition');
+  }
+  return { kind: 'opaque', expression };
 }
 
 function renderCondition(node: ConditionNode, parentPrecedence = 0): string {
@@ -287,28 +323,48 @@ class ConditionImpl implements Condition {
   }
 
   and(other: Condition): Condition {
-    return new ConditionImpl({ kind: 'and', left: this.node, right: nodeFromCondition(other) });
+    return built(
+      () =>
+        new ConditionImpl({
+          kind: 'and',
+          left: this.node,
+          right: nodeFromCondition(other, 'and()'),
+        }),
+    );
   }
 
   or(other: Condition): Condition {
-    return new ConditionImpl({ kind: 'or', left: this.node, right: nodeFromCondition(other) });
+    return built(
+      () =>
+        new ConditionImpl({
+          kind: 'or',
+          left: this.node,
+          right: nodeFromCondition(other, 'or()'),
+        }),
+    );
   }
 
   // biome-ignore lint/suspicious/noThenProperty: fluent API requires .then() for IF...THEN syntax
   then(consequence: Condition): IfConstraint {
-    return new ConstraintImpl(
-      `IF ${renderCondition(this.node)} THEN ${renderCondition(nodeFromCondition(consequence))}`,
+    return built(
+      () =>
+        new ConstraintImpl(
+          `IF ${renderCondition(this.node)} THEN ${renderCondition(nodeFromCondition(consequence, 'then()'))}`,
+        ),
     );
   }
 
   implies(consequence: Condition): Constraint {
-    return new ConstraintImpl(
-      `${renderCondition(this.node)} IMPLIES ${renderCondition(nodeFromCondition(consequence))}`,
+    return built(
+      () =>
+        new ConstraintImpl(
+          `${renderCondition(this.node)} IMPLIES ${renderCondition(nodeFromCondition(consequence, 'implies()'))}`,
+        ),
     );
   }
 
   toString(): string {
-    return renderCondition(this.node);
+    return built(() => renderCondition(this.node));
   }
 }
 
@@ -320,7 +376,12 @@ class ConstraintImpl implements IfConstraint {
   }
 
   else(alternative: Condition): Constraint {
-    return new ConstraintImpl(`${this.expr} ELSE ${alternative.toString()}`);
+    return built(
+      () =>
+        new ConstraintImpl(
+          `${this.expr} ELSE ${renderCondition(nodeFromCondition(alternative, 'else()'))}`,
+        ),
+    );
   }
 
   toString(): string {
@@ -332,71 +393,89 @@ class ConditionStartImpl implements ConditionStart {
   private readonly param: string;
 
   constructor(param: string) {
+    if (typeof param !== 'string') {
+      invalidOperand('when()', 'a parameter name string');
+    }
     // Quote the parameter name when it contains whitespace, operators, or other
     // special characters so a name like `end date` round-trips as one token.
     this.param = formatParameterName(param);
   }
 
   eq(value: string | number | boolean): Condition {
-    return new ConditionImpl({
-      kind: 'atom',
-      expression: `${this.param} = ${formatValue(value, 'comparison')}`,
-    });
+    return this.compare('=', value, 'eq()');
   }
 
   ne(value: string | number | boolean): Condition {
-    return new ConditionImpl({
-      kind: 'atom',
-      expression: `${this.param} != ${formatValue(value, 'comparison')}`,
-    });
+    return this.compare('!=', value, 'ne()');
   }
 
   gt(value: number | string): Condition {
-    return new ConditionImpl({
-      kind: 'atom',
-      expression: `${this.param} > ${formatRelationalOperand(value)}`,
-    });
+    return this.relate('>', value, 'gt()');
   }
 
   gte(value: number | string): Condition {
-    return new ConditionImpl({
-      kind: 'atom',
-      expression: `${this.param} >= ${formatRelationalOperand(value)}`,
-    });
+    return this.relate('>=', value, 'gte()');
   }
 
   lt(value: number | string): Condition {
-    return new ConditionImpl({
-      kind: 'atom',
-      expression: `${this.param} < ${formatRelationalOperand(value)}`,
-    });
+    return this.relate('<', value, 'lt()');
   }
 
   lte(value: number | string): Condition {
-    return new ConditionImpl({
-      kind: 'atom',
-      expression: `${this.param} <= ${formatRelationalOperand(value)}`,
-    });
+    return this.relate('<=', value, 'lte()');
   }
 
   in(...values: (string | number | boolean)[]): Condition {
-    // Reject an empty set at construction rather than emitting `IN {}`, which
-    // would only fail later when the generator parses the constraint.
-    if (values.length === 0) {
-      throw new CoverwiseError('INVALID_INPUT', 'in() requires at least one value');
-    }
-    const formatted = values.map((value) => formatValue(value, 'set')).join(', ');
-    return new ConditionImpl({
-      kind: 'atom',
-      expression: `${this.param} IN {${formatted}}`,
+    return built(() => {
+      // Reject an empty set at construction rather than emitting `IN {}`, which
+      // would only fail later when the generator parses the constraint.
+      if (values.length === 0) {
+        throw new CoverwiseError('INVALID_INPUT', 'in() requires at least one value');
+      }
+      const formatted = values.map((value) => formatValue(value, 'set', 'in()')).join(', ');
+      return new ConditionImpl({
+        kind: 'atom',
+        expression: `${this.param} IN {${formatted}}`,
+      });
     });
   }
 
   like(pattern: string): Condition {
-    return new ConditionImpl({
-      kind: 'atom',
-      expression: `${this.param} LIKE ${formatPattern(pattern)}`,
-    });
+    return built(
+      () =>
+        new ConditionImpl({
+          kind: 'atom',
+          expression: `${this.param} LIKE ${formatPattern(pattern)}`,
+        }),
+    );
+  }
+
+  private compare(
+    operator: '=' | '!=',
+    value: string | number | boolean,
+    builder: string,
+  ): Condition {
+    return built(
+      () =>
+        new ConditionImpl({
+          kind: 'atom',
+          expression: `${this.param} ${operator} ${formatValue(value, 'comparison', builder)}`,
+        }),
+    );
+  }
+
+  private relate(
+    operator: '>' | '>=' | '<' | '<=',
+    value: number | string,
+    builder: string,
+  ): Condition {
+    return built(
+      () =>
+        new ConditionImpl({
+          kind: 'atom',
+          expression: `${this.param} ${operator} ${formatRelationalOperand(value, builder)}`,
+        }),
+    );
   }
 }
 
@@ -414,7 +493,7 @@ class ConditionStartImpl implements ConditionStart {
  * when('start_date').lt('end_date') // start_date < end_date
  */
 export function when(param: string): ConditionStart {
-  return new ConditionStartImpl(param);
+  return built(() => new ConditionStartImpl(param));
 }
 
 /**
@@ -428,7 +507,9 @@ export function when(param: string): ConditionStart {
  * // NOT (os = "win" AND browser = "safari")
  */
 export function not(condition: Condition): Condition {
-  return new ConditionImpl({ kind: 'not', operand: nodeFromCondition(condition) });
+  return built(
+    () => new ConditionImpl({ kind: 'not', operand: nodeFromCondition(condition, 'not()') }),
+  );
 }
 
 /**
@@ -439,15 +520,20 @@ export function not(condition: Condition): Condition {
  * // os = "win" AND browser = "chrome"
  */
 export function allOf(...conditions: Condition[]): Condition {
-  if (conditions.length === 0) {
-    throw new CoverwiseError('INVALID_INPUT', 'allOf requires at least one condition');
-  }
-  if (conditions.length === 1) {
-    return conditions[0];
-  }
-  return conditions
-    .slice(1)
-    .reduce((combined, condition) => combined.and(condition), conditions[0]);
+  return built(() => {
+    if (conditions.length === 0) {
+      throw new CoverwiseError('INVALID_INPUT', 'allOf requires at least one condition');
+    }
+    for (const condition of conditions) {
+      nodeFromCondition(condition, 'allOf()');
+    }
+    if (conditions.length === 1) {
+      return conditions[0];
+    }
+    return conditions
+      .slice(1)
+      .reduce((combined, condition) => combined.and(condition), conditions[0]);
+  });
 }
 
 /**
@@ -458,11 +544,18 @@ export function allOf(...conditions: Condition[]): Condition {
  * // os = "win" OR os = "linux"
  */
 export function anyOf(...conditions: Condition[]): Condition {
-  if (conditions.length === 0) {
-    throw new CoverwiseError('INVALID_INPUT', 'anyOf requires at least one condition');
-  }
-  if (conditions.length === 1) {
-    return conditions[0];
-  }
-  return conditions.slice(1).reduce((combined, condition) => combined.or(condition), conditions[0]);
+  return built(() => {
+    if (conditions.length === 0) {
+      throw new CoverwiseError('INVALID_INPUT', 'anyOf requires at least one condition');
+    }
+    for (const condition of conditions) {
+      nodeFromCondition(condition, 'anyOf()');
+    }
+    if (conditions.length === 1) {
+      return conditions[0];
+    }
+    return conditions
+      .slice(1)
+      .reduce((combined, condition) => combined.or(condition), conditions[0]);
+  });
 }

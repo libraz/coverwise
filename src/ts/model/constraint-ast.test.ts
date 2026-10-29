@@ -18,7 +18,10 @@ import {
   RelOp,
   UNASSIGNED,
 } from './constraint-ast.js';
+import { parseConstraint } from './constraint-parser.js';
+import { ErrorCode } from './error.js';
 import { MAX_VALUES_PER_PARAMETER } from './limits.js';
+import { Parameter } from './parameter.js';
 
 const { True, False, Unknown } = ConstraintResult;
 
@@ -564,6 +567,34 @@ describe('atom construction and evaluation cost', () => {
     // apart leaves the bound room to sit far above anything contention produces
     // and still give the regression nowhere to hide.
     expect(longMs).toBeLessThan(shortMs * 5.0);
+  });
+
+  it('builds parameter comparisons from shared keys however many terms an expression has', {
+    timeout: MEASUREMENT_TIMEOUT_MS,
+  }, () => {
+    // Five constraints over two 16384-value parameters, built the way the
+    // engine builds a model's constraint list: one parse per expression.
+    const params = [
+      new Parameter('p0', makeValues(MAX_VALUES_PER_PARAMETER, 8)),
+      new Parameter('p1', makeValues(MAX_VALUES_PER_PARAMETER, 8)),
+    ];
+    const build = (terms: number): void => {
+      const expression = `p0 = p1${' OR p0 = p1'.repeat(terms - 1)}`;
+      for (let i = 0; i < 5; i++) {
+        expect(parseConstraint(expression, params).error.code).toBe(ErrorCode.Ok);
+      }
+    };
+
+    const [fewMs, manyMs] = fastestEach(
+      TIMING_RUNS,
+      () => build(1),
+      () => build(500),
+    );
+
+    // One key table per parameter makes the term count nearly free, so the
+    // ratio sits near 1. Building a table per term costs about 500x, and the
+    // bound leaves room above anything contention produces.
+    expect(manyMs).toBeLessThan(fewMs * 5.0);
   });
 
   it('evaluates a parameter comparison without looking at the value strings', {

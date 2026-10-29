@@ -10,7 +10,7 @@ Terms as coverwise uses them, each naming the field or function where the term s
 
 **Value** — One discrete option of a parameter. Written as a bare string, number or boolean, or as an object that also carries `invalid`, `aliases` or `class`. Values are compared with ASCII case folded, so one parameter may not hold two values that differ only by case.
 
-**Alias** — An alternative spelling the resolver accepts for a value. Declared in `aliases` on a value object. Output always names the declared spelling, never the alias.
+**Alias** — An alternative spelling the resolver accepts for a value. Declared in `aliases` on a value object. Generated and extended rows may spell a value with any of its declared aliases; every spelling resolves back to the same value.
 
 **Invalid value** — A value marked `invalid: true`. It never appears in a positive row and never counts toward positive coverage; it is the raw material of negative testing.
 

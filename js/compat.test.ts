@@ -53,6 +53,13 @@ import {
   PARAMETER_VALUE_FIELDS,
 } from '../tests/type/public-vocabulary.js';
 
+// --- Independent coverage recount ---
+
+import {
+  expectComplete,
+  expectReportedCoverageMatchesRecount,
+} from '../tests/util/coverage-oracle.js';
+
 // ---------------------------------------------------------------------------
 // Thin wrappers around adapter functions for compat-test convenience
 // ---------------------------------------------------------------------------
@@ -99,6 +106,7 @@ interface EngineResult {
   negativeTests: TestCase[] | undefined;
   coverage: number;
   uncovered: InternalUncoveredTuple[];
+  uncoveredCount: number;
   stats: GenerateResult['stats'];
   suggestions: Array<{ description: string; testCase: Record<string, string> }>;
   warnings: string[];
@@ -118,6 +126,7 @@ function tsGenerate(input: GenerateInput): EngineResult {
         : undefined,
     coverage: result.coverage,
     uncovered: result.uncovered,
+    uncoveredCount: result.uncoveredCount,
     stats: result.stats,
     suggestions: result.suggestions.map((s) => ({
       description: s.description,
@@ -161,6 +170,7 @@ function tsExtendTests(existing: TestCase[], input: GenerateInput): EngineResult
         : undefined,
     coverage: result.coverage,
     uncovered: result.uncovered,
+    uncoveredCount: result.uncoveredCount,
     stats: result.stats,
     suggestions: [],
     warnings: result.warnings,
@@ -172,6 +182,18 @@ function tsEstimateModel(input: GenerateInput): ModelStats {
   const params = toInternalParams(input.parameters);
   const opts = buildGenerateOptions(input, params);
   return tsEstimateModelRaw(opts);
+}
+
+/// The figures a coverage claim is made of, for comparing two engines' claims
+/// with each other (the recount decides which claim is true).
+function claimOf(result: { coverage: number; stats: GenerateResult['stats'] }) {
+  return { coverage: result.coverage, stats: result.stats };
+}
+
+/// A model the validator can recount directly: range expansion rewrites the
+/// value set the engines see, so those inputs are compared engine to engine only.
+function isRecountable(input: GenerateInput): boolean {
+  return input.parameters.every((p) => p.range === undefined);
 }
 
 // ===========================================================================
@@ -685,9 +707,11 @@ describe('WASM / TS compatibility', () => {
         const wasmResult = generate(input);
         const tsResult = tsGenerate(input);
 
-        expect(tsResult.coverage).toBe(wasmResult.coverage);
-        expect(tsResult.stats.totalTuples).toBe(wasmResult.stats.totalTuples);
-        expect(tsResult.stats.coveredTuples).toBe(wasmResult.stats.coveredTuples);
+        expect(claimOf(tsResult)).toEqual(claimOf(wasmResult));
+        if (isRecountable(input)) {
+          expectReportedCoverageMatchesRecount(input, wasmResult);
+          expectReportedCoverageMatchesRecount(input, tsResult);
+        }
         // Exact structural equality, not just length: a divergence in the
         // uncovered-tuple witnesses or the negative-test suite must fail parity.
         // Compare the human-readable tuple strings (the stable public contract).
@@ -870,9 +894,9 @@ describe('WASM / TS compatibility', () => {
       const wasmResult = extendTests(existing, input);
       const tsResult = tsExtendTests(existing, input);
 
-      expect(tsResult.coverage).toBe(wasmResult.coverage);
-      expect(tsResult.stats.totalTuples).toBe(wasmResult.stats.totalTuples);
-      expect(tsResult.stats.coveredTuples).toBe(wasmResult.stats.coveredTuples);
+      expect(claimOf(tsResult)).toEqual(claimOf(wasmResult));
+      expectComplete(input, wasmResult);
+      expectComplete(input, tsResult);
       // Exact suite equality: both engines share the RNG, so the extended
       // suite must be byte-identical, not merely the same length. The preserved
       // existing prefix is re-projected by the public API, so compare tests too.
@@ -892,8 +916,8 @@ describe('WASM / TS compatibility', () => {
       const wasmExtended = extendTests(wasmFull.tests, input);
       const tsExtended = tsExtendTests(wasmFull.tests, input);
 
-      expect(tsExtended.coverage).toBe(1.0);
-      expect(wasmExtended.coverage).toBe(1.0);
+      expectComplete(input, tsExtended);
+      expectComplete(input, wasmExtended);
       expect(tsExtended.stats.totalTuples).toBe(wasmExtended.stats.totalTuples);
     });
 
@@ -1022,8 +1046,7 @@ describe('WASM / TS compatibility', () => {
       expect(assignedRatios(pureResult.tests)).toEqual(assignedRatios(wasmResult.tests));
       // The expanded float value set: min-step..min+step, max-step..max+step.
       expect(assignedRatios(wasmResult.tests)).toEqual(['0.5', '1', '1.5', '2', '2.5'].sort());
-      expect(wasmResult.coverage).toBe(pureResult.coverage);
-      expect(wasmResult.stats.totalTuples).toBe(pureResult.stats.totalTuples);
+      expect(claimOf(wasmResult)).toEqual(claimOf(pureResult));
     });
   });
 
@@ -1158,11 +1181,10 @@ describe('WASM / TS compatibility', () => {
       expect(pureResult.warnings).toEqual([]);
 
       // Both reach full coverage with a non-empty suite.
-      expect(wasmResult.coverage).toBe(1.0);
-      expect(pureResult.coverage).toBe(1.0);
+      expectComplete(aliasInput, wasmResult);
+      expectComplete(aliasInput, pureResult, pureAnalyzeCoverage);
       expect(pureResult.tests.length).toBeGreaterThan(0);
-      expect(pureResult.coverage).toBe(wasmResult.coverage);
-      expect(pureResult.stats.totalTuples).toBe(wasmResult.stats.totalTuples);
+      expect(claimOf(pureResult)).toEqual(claimOf(wasmResult));
 
       // The constraint must hold: the chromium value (displayed as chromium or
       // its alias chrome) never pairs with os=mac.
@@ -1407,11 +1429,10 @@ describe('WASM / TS compatibility', () => {
       }
       expect(pure.classCoverage).toBeDefined();
       expect(pure.classCoverage?.totalClassTuples).toBeGreaterThan(0);
-      expect(pure.coverage).toBe(1);
 
       // The independent validator must agree with the engine's own claim.
+      expectComplete(input, pure, pureAnalyzeCoverage);
       const report = pureAnalyzeCoverage(input.parameters, pure.tests, 2, input.constraints);
-      expect(report.coverageRatio).toBe(1);
       expect(report.invalidTests).toEqual([]);
     });
 
@@ -1419,7 +1440,7 @@ describe('WASM / TS compatibility', () => {
       const wasm = generate(input);
       const pure = pureGenerate(input);
       expect(pure.tests).toEqual(wasm.tests);
-      expect(pure.coverage).toBe(wasm.coverage);
+      expect(claimOf(pure)).toEqual(claimOf(wasm));
       expect(pure.classCoverage).toEqual(wasm.classCoverage);
     });
   });
@@ -1500,6 +1521,102 @@ describe('WASM / TS compatibility', () => {
       for (const sep of ['\v', '\f']) {
         expect(messageFor(pureGenerate, sep)).toBe(messageFor(generate, sep));
       }
+    });
+  });
+
+  // The scenario table above is tiny by design; a divergence that needs a model
+  // with real branching (many parameters, uneven value counts, constraints that
+  // prune late) only shows at this size.
+  describe('realistic-size parity', () => {
+    /// The chosen sizes make the parameter count and value counts uneven.
+    const sizes = [2, 3, 4, 2, 5, 3, 8, 2, 4, 3, 6, 2, 3, 5, 4, 2, 7, 3];
+
+    const modelOf = (count: number): Parameter[] =>
+      sizes.slice(0, count).map((size, i) => ({
+        name: `p${i}`,
+        values: Array.from({ length: size }, (_, j) => `v${j}`),
+      }));
+
+    const constraints = [
+      'IF p0 = v1 THEN p3 != v0',
+      'IF p4 = v4 AND p5 = v2 THEN p1 != v2',
+      'IF p6 = v7 THEN p8 IN {v0, v1}',
+      'NOT (p2 = v3 AND p9 = v2)',
+      'IF p10 = v5 THEN p11 = v0 OR p12 = v2',
+    ];
+
+    const cases: Array<{ name: string; input: GenerateInput }> = [
+      {
+        name: 'pairwise over 18 uneven parameters',
+        input: { parameters: modelOf(18), strength: 2, seed: 17 },
+      },
+      {
+        name: 'constrained pairwise over 16 uneven parameters',
+        input: { parameters: modelOf(16), constraints, strength: 2, seed: 17 },
+      },
+      {
+        name: 'constrained 3-wise over 10 uneven parameters',
+        input: {
+          parameters: modelOf(10),
+          constraints: constraints.slice(0, 4),
+          strength: 3,
+          seed: 5,
+        },
+      },
+    ];
+
+    for (const { name, input } of cases) {
+      it(`${name}: WASM and pure agree and both recount complete`, { timeout: 120_000 }, () => {
+        const wasmResult = generate(input);
+        const pureResult = pureGenerate(input);
+
+        expect(pureResult).toEqual(wasmResult);
+        expectComplete(input, wasmResult);
+        expectComplete(input, pureResult, pureAnalyzeCoverage);
+      });
+    }
+  });
+
+  // A run that stops short of full coverage is the one where the uncovered
+  // diagnostics, their truncation and the suggestions all carry content, and
+  // where sub-model tuples overlap the global model's.
+  describe('sub-model runs that stop short of full coverage', () => {
+    const input: GenerateInput = {
+      parameters: [
+        { name: 'A', values: ['1', '2', '3'] },
+        { name: 'B', values: ['1', '2', '3'] },
+        { name: 'C', values: ['1', '2', '3'] },
+        { name: 'D', values: ['1', '2', '3'] },
+        { name: 'E', values: ['1', '2'] },
+      ],
+      strength: 2,
+      subModels: [
+        { parameters: ['A', 'B', 'C'], strength: 3 },
+        { parameters: ['C', 'D', 'E'], strength: 2 },
+      ],
+      maxTests: 4,
+      seed: 42,
+    };
+
+    it('generate returns identical whole results with uncovered diagnostics', () => {
+      const wasmResult = generate(input);
+      const pureResult = pureGenerate(input);
+
+      expect(wasmResult.uncoveredCount).toBeGreaterThan(0);
+      expect(wasmResult.suggestions.length).toBeGreaterThan(0);
+      expect(pureResult).toEqual(wasmResult);
+      expectReportedCoverageMatchesRecount(input, wasmResult);
+      expectReportedCoverageMatchesRecount(input, pureResult, pureAnalyzeCoverage);
+    });
+
+    it('extendTests returns identical whole results with uncovered diagnostics', () => {
+      const existing: TestCase[] = [{ A: '1', B: '1', C: '1', D: '1', E: '1' }];
+      const wasmResult = extendTests(existing, input);
+      const pureResult = pureExtendTests(existing, input);
+
+      expect(wasmResult.uncoveredCount).toBeGreaterThan(0);
+      expect(pureResult).toEqual(wasmResult);
+      expect(pureResult.omittedUncovered).toBe(wasmResult.omittedUncovered);
     });
   });
 });

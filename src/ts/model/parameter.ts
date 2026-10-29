@@ -217,6 +217,51 @@ export function resolveValueName(param: Parameter, name: string): number {
   return param.findValueIndex(name, false);
 }
 
+/**
+ * A parameter's value and alias names indexed once for repeated resolution.
+ *
+ * Resolves exactly as resolveValueName does -- ASCII case folding (unless
+ * caseSensitive), primary values before aliases, first match wins -- without
+ * scanning the value list for every name. Build one per parameter when resolving many names (the cells
+ * of a row set); it reads the parameter when constructed and does not follow
+ * later changes to it.
+ *
+ * Internal to the surfaces that read rows; not part of the documented API.
+ */
+export class ValueResolver {
+  private readonly index = new Map<string, number>();
+
+  constructor(
+    param: { values: string[]; allAliases: string[][] },
+    private readonly caseSensitive = false,
+  ) {
+    const add = (name: string, valueIndex: number): void => {
+      const folded = this.key(name);
+      if (!this.index.has(folded)) {
+        this.index.set(folded, valueIndex);
+      }
+    };
+    for (let i = 0; i < param.values.length; ++i) {
+      add(param.values[i], i);
+    }
+    const aliases = param.allAliases;
+    for (let i = 0; i < aliases.length; ++i) {
+      for (const alias of aliases[i]) {
+        add(alias, i);
+      }
+    }
+  }
+
+  /** Resolve a name the caller wrote; returns UNASSIGNED if no value or alias names it. */
+  resolve(name: string): number {
+    return this.index.get(this.key(name)) ?? UNASSIGNED;
+  }
+
+  private key(name: string): string {
+    return this.caseSensitive ? name : asciiToUpper(name);
+  }
+}
+
 /** Check if any parameter in the collection has invalid values. */
 export function hasInvalidValues(params: Parameter[]): boolean {
   return params.some((p) => p.hasInvalidValues);

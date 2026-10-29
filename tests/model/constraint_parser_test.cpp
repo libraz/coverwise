@@ -426,9 +426,36 @@ TEST(ConstraintParserTest, LikeCaseFoldingIsAsciiOnly) {
   ASSERT_TRUE(result.error.ok()) << result.error.message;
   EXPECT_EQ(result.constraint->Evaluate({0}), ConstraintResult::kTrue);
 
-  auto accented = ParseConstraint("label LIKE café", params);
+  auto accented = ParseConstraint("label LIKE café*", params);
   ASSERT_TRUE(accented.error.ok()) << accented.error.message;
   EXPECT_EQ(accented.constraint->Evaluate({1}), ConstraintResult::kFalse);
+}
+
+// Without a wildcard, LIKE is an equality test: it resolves aliases and case
+// variants the way `=` does, and rejects a value the parameter does not declare.
+TEST(ConstraintParserTest, LikeWithoutWildcardResolvesLikeEquality) {
+  Parameter browser("browser", {"chrome", "firefox", "safari"});
+  browser.set_aliases({{"cr"}, {}, {}});
+  std::vector<Parameter> params = {browser};
+
+  for (const char* expression :
+       {"browser LIKE chrome", "browser LIKE CHROME", "browser LIKE cr", "browser LIKE CR"}) {
+    auto result = ParseConstraint(expression, params);
+    ASSERT_TRUE(result.error.ok()) << expression << ": " << result.error.message;
+    EXPECT_EQ(result.constraint->Evaluate({0}), ConstraintResult::kTrue) << expression;
+    EXPECT_EQ(result.constraint->Evaluate({1}), ConstraintResult::kFalse) << expression;
+  }
+
+  auto unknown = ParseConstraint("browser LIKE xyz", params);
+  ASSERT_FALSE(unknown.error.ok());
+  EXPECT_EQ(unknown.error.code, coverwise::model::Error::Code::kConstraintError);
+  EXPECT_EQ(unknown.error.message, "Unknown value 'xyz' for parameter 'browser'");
+
+  // A wildcard pattern keeps matching by glob, aliases excluded.
+  auto glob = ParseConstraint("browser LIKE c*", params);
+  ASSERT_TRUE(glob.error.ok()) << glob.error.message;
+  EXPECT_EQ(glob.constraint->Evaluate({0}), ConstraintResult::kTrue);
+  EXPECT_EQ(glob.constraint->Evaluate({1}), ConstraintResult::kFalse);
 }
 
 // The set of combinations a LIKE constraint excludes is the cross-surface
@@ -1607,6 +1634,50 @@ TEST(ConstraintParserLimitsTest, LikeQuestionMatchesUnicodeCodepoints) {
   EXPECT_EQ(astral_one.constraint->Evaluate({1}), ConstraintResult::kFalse);
 }
 
+// A lone surrogate (as WTF-8 bytes) and a stray continuation byte are each one
+// unmatched unit: `?` consumes them and a literal U+00A0 never matches them.
+TEST(ConstraintParserLimitsTest, LikeTreatsMalformedBytesAsOneUnmatchedUnit) {
+  std::vector<Parameter> params = {{"text", {"\xED\xA0\x80", "x", "\xA0", "\xF8", "\xC2\xA0"}, {}}};
+
+  auto any_one = ParseConstraint("text LIKE ?", params);
+  ASSERT_TRUE(any_one.error.ok()) << any_one.error.message;
+  for (uint32_t i = 0; i < 5; ++i) {
+    EXPECT_EQ(any_one.constraint->Evaluate({i}), ConstraintResult::kTrue) << i;
+  }
+
+  auto nbsp = ParseConstraint("text LIKE *\xC2\xA0*", params);
+  ASSERT_TRUE(nbsp.error.ok()) << nbsp.error.message;
+  for (uint32_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(nbsp.constraint->Evaluate({i}), ConstraintResult::kFalse) << i;
+  }
+  EXPECT_EQ(nbsp.constraint->Evaluate({4}), ConstraintResult::kTrue);
+}
+
+// Comparison nodes share one key table per parameter, so many comparisons of
+// the same two wide parameters build in time bounded by the parameters.
+TEST(ConstraintParserLimitsTest, ManyParamComparisonsOverWideParametersShareKeys) {
+  std::vector<std::string> left_values;
+  std::vector<std::string> right_values;
+  for (size_t i = 0; i < 16384; ++i) {
+    left_values.push_back("v" + std::to_string(i));
+    right_values.push_back("v" + std::to_string(i + 8192));
+  }
+  std::vector<Parameter> params = {{"p0", left_values, {}}, {"p1", right_values, {}}};
+
+  std::string expression = "p0 = p1";
+  for (size_t i = 1; i < 500; ++i) expression += " OR p0 != p1";
+  auto result = ParseConstraint(expression, params);
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  // p0[8192] and p1[0] are both "v8192"; p0[0] ("v0") and p1[0] ("v8192") differ.
+  EXPECT_EQ(result.constraint->Evaluate({8192, 0}), ConstraintResult::kTrue);
+  EXPECT_EQ(result.constraint->Evaluate({0, 0}), ConstraintResult::kTrue);
+
+  auto only_equal = ParseConstraint("p0 = p1 AND p0 = p1", params);
+  ASSERT_TRUE(only_equal.error.ok()) << only_equal.error.message;
+  EXPECT_EQ(only_equal.constraint->Evaluate({8192, 0}), ConstraintResult::kTrue);
+  EXPECT_EQ(only_equal.constraint->Evaluate({0, 0}), ConstraintResult::kFalse);
+}
+
 TEST(ConstraintParserLimitsTest, ParamToParamComparisonHonorsCaseSensitivity) {
   // Regression: param-to-param comparison previously compared value strings
   // byte-strict even when name/value matching is case-insensitive by default,
@@ -1628,6 +1699,49 @@ TEST(ConstraintParserLimitsTest, ParamToParamComparisonHonorsCaseSensitivity) {
   auto eq_cs = ParseConstraint("a = b", params, cs);
   ASSERT_TRUE(eq_cs.error.ok()) << eq_cs.error.message;
   EXPECT_EQ(eq_cs.constraint->Evaluate({0, 0}), ConstraintResult::kFalse);
+}
+
+// The corpus is shared with the TypeScript tests, which read the same file, so
+// both parsers accept and reject the same expressions with the same text.
+namespace {
+
+struct ConstraintCase {
+  const char* expression;
+  bool accepted;
+  const char* message;
+  const char* detail;
+};
+
+const ConstraintCase kConstraintCases[] = {
+#define COVERWISE_CONSTRAINT_CASE(expression, accepted, message, detail) \
+  {expression, accepted, message, detail},
+#include "util/constraint_error_corpus.inc"
+#undef COVERWISE_CONSTRAINT_CASE
+};
+
+}  // namespace
+
+TEST(ConstraintParserCorpusTest, AcceptsAndRejectsEveryCorpusExpression) {
+  Parameter browser("browser", {"chrome", "firefox", "safari"});
+  browser.set_aliases({{"cr"}, {}, {}});
+  const std::vector<Parameter> params = {
+      {"os", {"win", "mac", "linux"}},
+      browser,
+      {"n", {"1", "2", "10"}},
+  };
+  for (const auto& entry : kConstraintCases) {
+    auto result = ParseConstraint(entry.expression, params);
+    if (entry.accepted) {
+      EXPECT_TRUE(result.error.ok()) << entry.expression << ": " << result.error.message;
+      EXPECT_NE(result.constraint, nullptr) << entry.expression;
+    } else {
+      EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kConstraintError)
+          << entry.expression;
+      EXPECT_EQ(result.error.message, entry.message) << entry.expression;
+      EXPECT_EQ(result.error.detail, entry.detail) << entry.expression;
+      EXPECT_EQ(result.constraint, nullptr) << entry.expression;
+    }
+  }
 }
 
 TEST(ConstraintParserLimitsTest, DeterministicFuzzCorpusNeverThrows) {

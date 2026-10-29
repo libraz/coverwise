@@ -92,6 +92,33 @@ uint32_t ResolveValueName(const Parameter& param, const std::string& name) {
   return param.find_value_index(name, /*case_sensitive=*/false);
 }
 
+ValueResolver::ValueResolver(const Parameter& param, bool case_sensitive)
+    : case_sensitive_(case_sensitive) {
+  const auto& aliases = param.all_aliases();
+  entries_.reserve(param.values.size());
+  for (uint32_t i = 0; i < static_cast<uint32_t>(param.values.size()); ++i) {
+    entries_.emplace_back(Key(param.values[i]), i);
+  }
+  for (uint32_t i = 0; i < static_cast<uint32_t>(aliases.size()); ++i) {
+    for (const auto& alias : aliases[i]) entries_.emplace_back(Key(alias), i);
+  }
+  // Stable, so the first of equal names stays the one linear search would find.
+  std::stable_sort(entries_.begin(), entries_.end(),
+                   [](const auto& a, const auto& b) { return a.first < b.first; });
+}
+
+std::string ValueResolver::Key(const std::string& name) const {
+  return case_sensitive_ ? name : util::FoldAsciiString(name);
+}
+
+uint32_t ValueResolver::Resolve(const std::string& name) const {
+  const std::string folded = Key(name);
+  const auto it =
+      std::lower_bound(entries_.begin(), entries_.end(), folded,
+                       [](const auto& entry, const std::string& key) { return entry.first < key; });
+  return it != entries_.end() && it->first == folded ? it->second : UINT32_MAX;
+}
+
 const std::string& Parameter::equivalence_class(uint32_t index) const {
   static const std::string kEmpty;
   if (equivalence_classes_.empty() || index >= static_cast<uint32_t>(equivalence_classes_.size())) {

@@ -17,15 +17,20 @@ import {
   ParamNotEqualsNode,
   RelationalNode,
   RelOp,
+  ValueKeyInterner,
+  type ValueKeys,
 } from './constraint-ast.js';
 import { MAX_AST_DEPTH, type Token, TokenType, tokenize } from './constraint-lexer.js';
 import { ErrorCode, type ErrorInfo, okError } from './error.js';
+import { ValueResolver } from './parameter.js';
 import { utf8ByteLength } from './utf8.js';
 
 /** Minimal parameter interface required by the constraint parser. */
 export interface Parameter {
   name: string;
   values: string[];
+  /** Aliases per value index; empty when none are declared. */
+  readonly allAliases: string[][];
   /** Find a value index by name, checking both primary values and aliases. */
   findValueIndex(name: string, caseSensitive: boolean): number;
 }
@@ -147,9 +152,9 @@ function resolveValue(
   paramIndex: number,
   valueName: string,
   params: Parameter[],
-  caseSensitive: boolean,
+  resolver: ValueResolver,
 ): ResolvedValue {
-  const idx = params[paramIndex].findValueIndex(valueName, caseSensitive);
+  const idx = resolver.resolve(valueName);
   if (idx !== NOT_FOUND) {
     return { valueIndex: idx, error: okError() };
   }
@@ -173,13 +178,8 @@ function isParameterName(name: string, params: Parameter[], caseSensitive: boole
   return false;
 }
 
-function isValueOfParam(
-  paramIndex: number,
-  name: string,
-  params: Parameter[],
-  caseSensitive: boolean,
-): boolean {
-  return params[paramIndex].findValueIndex(name, caseSensitive) !== NOT_FOUND;
+function isValueOfParam(name: string, resolver: ValueResolver): boolean {
+  return resolver.resolve(name) !== NOT_FOUND;
 }
 
 // --- Recursive descent parser ---
@@ -188,6 +188,9 @@ class Parser {
   private pos: number;
   private nodeCount = 0;
   private readonly numericCaches: Array<NumericValueCache | undefined>;
+  private readonly valueKeys: Array<ValueKeys | undefined>;
+  private readonly resolvers: Array<ValueResolver | undefined>;
+  private readonly interner: ValueKeyInterner;
   /** Current prefix-NOT recursion depth (bounds the stack). */
   private notDepth = 0;
 
@@ -198,6 +201,27 @@ class Parser {
   ) {
     this.pos = 0;
     this.numericCaches = new Array(params.length);
+    this.valueKeys = new Array(params.length);
+    this.resolvers = new Array(params.length);
+    this.interner = new ValueKeyInterner(options.caseSensitive);
+  }
+
+  private resolverFor(paramIndex: number): ValueResolver {
+    let resolver = this.resolvers[paramIndex];
+    if (resolver === undefined) {
+      resolver = new ValueResolver(this.params[paramIndex], this.options.caseSensitive);
+      this.resolvers[paramIndex] = resolver;
+    }
+    return resolver;
+  }
+
+  private keysFor(paramIndex: number): ValueKeys {
+    let keys = this.valueKeys[paramIndex];
+    if (keys === undefined) {
+      keys = this.interner.intern(this.params[paramIndex].values);
+      this.valueKeys[paramIndex] = keys;
+    }
+    return keys;
   }
 
   private numericCacheFor(paramIndex: number): NumericValueCache {
@@ -507,19 +531,14 @@ class Parser {
       // quoted RHS is always a literal value, never a parameter reference, so a
       // quoted token that collides with a parameter name is not silently turned
       // into a param-to-param comparison.
-      const rhsIsValue = isValueOfParam(
-        leftParam,
-        valueTok.text,
-        this.params,
-        this.options.caseSensitive,
-      );
+      const rhsIsValue = isValueOfParam(valueTok.text, this.resolverFor(leftParam));
       const rhsIsParam =
         !valueTok.wasQuoted &&
         isParameterName(valueTok.text, this.params, this.options.caseSensitive);
 
       // If it's a value of the left param, prefer param=value interpretation
       if (rhsIsValue) {
-        const rv = resolveValue(leftParam, valueTok.text, this.params, this.options.caseSensitive);
+        const rv = resolveValue(leftParam, valueTok.text, this.params, this.resolverFor(leftParam));
         if (rv.error.code !== ErrorCode.Ok) {
           return { constraint: null, error: rv.error };
         }
@@ -543,6 +562,8 @@ class Parser {
               this.params[leftParam].values,
               this.params[rp2.paramIndex].values,
               this.options.caseSensitive,
+              this.keysFor(leftParam),
+              this.keysFor(rp2.paramIndex),
             ),
           );
         }
@@ -553,6 +574,8 @@ class Parser {
             this.params[leftParam].values,
             this.params[rp2.paramIndex].values,
             this.options.caseSensitive,
+            this.keysFor(leftParam),
+            this.keysFor(rp2.paramIndex),
           ),
         );
       }
@@ -621,7 +644,7 @@ class Parser {
     }
     {
       const valTok = this.advance();
-      const rv = resolveValue(paramIdx, valTok.text, this.params, this.options.caseSensitive);
+      const rv = resolveValue(paramIdx, valTok.text, this.params, this.resolverFor(paramIdx));
       if (rv.error.code !== ErrorCode.Ok) {
         return { constraint: null, error: rv.error };
       }
@@ -644,7 +667,7 @@ class Parser {
         };
       }
       const valTok = this.advance();
-      const rv = resolveValue(paramIdx, valTok.text, this.params, this.options.caseSensitive);
+      const rv = resolveValue(paramIdx, valTok.text, this.params, this.resolverFor(paramIdx));
       if (rv.error.code !== ErrorCode.Ok) {
         return { constraint: null, error: rv.error };
       }
@@ -685,6 +708,15 @@ class Parser {
       };
     }
     const patternTok = this.advance();
+
+    // Without a wildcard, LIKE is an ordinary equality test on the value.
+    if (!/[*?]/.test(patternTok.text)) {
+      const rv = resolveValue(paramIdx, patternTok.text, this.params, this.resolverFor(paramIdx));
+      if (rv.error.code !== ErrorCode.Ok) {
+        return { constraint: null, error: rv.error };
+      }
+      return this.makeNode(new EqualsNode(paramIdx, rv.valueIndex));
+    }
 
     return this.makeNode(
       new LikeNode(
@@ -853,8 +885,8 @@ class Parser {
  * Produces the uniform cross-surface message
  * `Invalid constraint "<expression>": <original message>` so every surface
  * (CLI, WASM, pure-JS generate and analyze) reports constraint failures in a
- * single format that names the source expression. The detail field is left
- * unchanged; each surface appends it consistently.
+ * single format that names the source expression. Only the message is
+ * prefixed; the detail field is returned unchanged and carries no position.
  */
 export function annotateConstraintError(expression: string, error: ErrorInfo): ErrorInfo {
   return { ...error, message: `Invalid constraint "${expression}": ${error.message}` };

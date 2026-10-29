@@ -114,7 +114,7 @@ result = coverwise.generate(
 
 len(result["tests"])              # 10
 result["stats"]["totalTuples"]    # 21
-result["coverage"]                # 1.0
+result["coverage"]                # 1
 
 for test in result["tests"]:
     print(test)

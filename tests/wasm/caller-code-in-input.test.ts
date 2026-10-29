@@ -12,6 +12,7 @@ import {
   type TestCase,
   type WeightConfig,
 } from '../../js/index.js';
+import { expectComplete } from '../util/coverage-oracle.js';
 
 /// Reading a field of a caller-supplied object runs the caller's code. A Vue
 /// ref, a store proxy and a class instance with a computed property are all
@@ -240,8 +241,9 @@ describe('input whose property reads run caller code', () => {
         void caught(() => call(attach));
         // An exception unwinding through the WebAssembly frames must not cost
         // the process its engine: the next caller gets a suite, not a corpse.
-        const result = generate({ parameters: model() });
-        expect(result.coverage).toBe(1);
+        const input = { parameters: model() };
+        const result = generate(input);
+        expectComplete(input, result);
         expect(result.tests.length).toBeGreaterThan(0);
       });
     });

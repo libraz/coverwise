@@ -175,8 +175,8 @@ std::string ValidatePositiveTest(const model::TestCase& test,
       // The index here is kUnassigned whenever the row drifted from the model,
       // and printing that sentinel tells the caller nothing about which part of
       // what they submitted no longer fits.
-      if (pi < test.unresolved.size() && !test.unresolved[pi].empty()) {
-        return "value '" + test.unresolved[pi] + "' is not declared by parameter " +
+      if (pi < test.unresolved.size() && test.unresolved[pi].has_value()) {
+        return "value '" + *test.unresolved[pi] + "' is not declared by parameter " +
                params[pi].name;
       }
       if (vi == model::kUnassigned) {
@@ -263,6 +263,16 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
   // discovered part-way through a descent.
   report.error = model::ValidateParameters(params);
   if (!report.error.ok()) return report;
+
+  // The row bound every surface applies to a tests array, checked before any
+  // row is looked at.
+  if (tests.size() > model::kMaxTests) {
+    report.error = {model::Error::Code::kInvalidInput,
+                    "Test count " + std::to_string(tests.size()) + " exceeds maximum of " +
+                        std::to_string(model::kMaxTests),
+                    ""};
+    return report;
+  }
 
   report.error = ValidateSatisfiableModel(params, constraints);
   if (!report.error.ok()) return report;
@@ -365,6 +375,7 @@ CoverageReport ValidateCoverage(const std::vector<model::Parameter>& params,
           assignment[combo[j]] = model::kUnassigned;
         }
         if (tuple_budget.exceeded) {
+          report.omitted_uncovered = report.uncovered_count - report.uncovered.size();
           report.error = {model::Error::Code::kConstraintError, "Constraint search budget exceeded",
                           "Tuple feasibility could not be determined within the search budget"};
           return report;

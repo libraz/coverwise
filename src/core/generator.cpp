@@ -99,6 +99,10 @@ bool AllComplete(const CoverageEngine& global, const std::vector<CoverageEngine>
   return true;
 }
 
+/// @brief Consecutive constructions that may gain nothing before greedy gives
+/// way to deterministic completion.
+constexpr uint32_t kMaxGreedyRetries = 50;
+
 /// @brief Scratch state held for the length of one generation pass.
 ///
 /// Everything a hot loop would otherwise rebuild per iteration is owned here and
@@ -148,18 +152,30 @@ std::vector<std::vector<bool>> BuildNegativeMask(const std::vector<model::Parame
   return mask;
 }
 
-/// @brief Generate deterministic single-fault negative coverage.
+/// @brief Generate single-fault negative coverage.
 ///
-/// Reuses the positive engine after its metrics have been collected, so the
-/// negative pass never adds a second full tuple bitmap to peak memory.
-model::Error GenerateNegativeTests(const std::vector<model::Parameter>& params,
-                                   const std::vector<model::Constraint>& constraints,
-                                   CoverageEngine& fresh_cov, uint32_t max_tests,
-                                   size_t positive_test_count, GenerationScratch& scratch,
-                                   std::vector<model::TestCase>& negative_tests,
-                                   model::NegativeCoverage& metrics,
-                                   std::vector<std::string>& warnings) {
+/// Rows are chosen by the same coverage-gain construction as positive rows,
+/// with deterministic completion covering whatever greedy leaves. Reuses the
+/// positive engine after its metrics have been collected, so the negative pass
+/// never adds a second full tuple bitmap to peak memory.
+///
+/// @param preserved_negatives Single-fault rows already in the suite; their
+///        tuples are credited rather than generated again.
+model::Error GenerateNegativeTests(
+    const std::vector<model::Parameter>& params, const std::vector<model::Constraint>& constraints,
+    const std::vector<std::vector<double>>& weights,
+    const std::vector<model::TestCase>& preserved_negatives, CoverageEngine& fresh_cov,
+    uint32_t max_tests, size_t positive_test_count, util::Rng& rng, GenerationScratch& scratch,
+    std::vector<model::TestCase>& negative_tests, model::NegativeCoverage& metrics,
+    std::vector<std::string>& warnings) {
   bool stopped_at_max_tests = false;
+  auto at_max_tests = [&]() {
+    return max_tests > 0 &&
+           positive_test_count + negative_tests.size() >= static_cast<size_t>(max_tests);
+  };
+  auto score_values = [&fresh_cov](const model::TestCase& partial, uint32_t pi, uint32_t* scores) {
+    fresh_cov.AddValueScores(partial, pi, scores);
+  };
 
   for (uint32_t pi = 0; pi < static_cast<uint32_t>(params.size()); ++pi) {
     for (uint32_t vi = 0; vi < params[pi].size(); ++vi) {
@@ -181,16 +197,36 @@ model::Error GenerateNegativeTests(const std::vector<model::Parameter>& params,
       }
       const bool no_feasible_target = fresh_cov.TotalTuples() == 0;
 
+      // A single-fault row's only invalid value is the one it holds here.
+      for (const auto& row : preserved_negatives) {
+        if (row.values[pi] == vi) fresh_cov.AddTestCase(row);
+      }
+
       // The mask is fixed for the whole inner loop, so the solver order derived
       // from it is built once here rather than once per witness.
       scratch.solve_order = BuildAllowedSolveParameterOrder(params, neg_mask);
 
-      // Cover every feasible requested-strength tuple containing the fixed
-      // invalid value. FirstUncovered + CompleteAssignment is the same
-      // deterministic completion path used by positive generation.
+      uint32_t retries = 0;
       while (!fresh_cov.IsComplete()) {
-        if (max_tests > 0 &&
-            positive_test_count + negative_tests.size() >= static_cast<size_t>(max_tests)) {
+        if (at_max_tests()) {
+          stopped_at_max_tests = true;
+          break;
+        }
+        auto built = algo::GreedyConstruct(params, score_values, constraints, rng, scratch.greedy,
+                                           neg_mask, weights);
+        if (!built || built->score == 0) {
+          if (++retries >= kMaxGreedyRetries) break;
+          continue;
+        }
+        retries = 0;
+        fresh_cov.AddTestCase(built->test_case);
+        negative_tests.push_back(std::move(built->test_case));
+      }
+
+      // Cover every feasible tuple greedy left, by the same deterministic
+      // FirstUncovered + CompleteAssignment path positive generation uses.
+      while (!fresh_cov.IsComplete()) {
+        if (at_max_tests()) {
           stopped_at_max_tests = true;
           break;
         }
@@ -256,8 +292,9 @@ std::vector<std::vector<double>> ResolveWeights(const std::vector<model::Paramet
     // presence (not GetWeight's 1.0 sentinel) so an explicit weight of 1.0 is
     // honored rather than mistaken for the default.
     std::vector<bool> named(params[pi].size(), false);
+    const model::ValueResolver resolver(params[pi]);
     for (const auto& [value_name, weight] : pit->second) {
-      const uint32_t vi = model::ResolveValueName(params[pi], value_name);
+      const uint32_t vi = resolver.Resolve(value_name);
       if (vi == model::kUnassigned) continue;
       // A value named by more than one key keeps the weight written under the
       // spelling the model declares, as it did when that spelling was probed
@@ -282,7 +319,6 @@ model::GenerateResult RejectedResult(const std::vector<model::Parameter>& parame
 
 model::GenerateResult GenerateImpl(const EngineInput& input) {
   const GenerateOptions& opts = input.options();
-  const size_t preserved_seed_count = input.preserved_seed_count();
 
   model::GenerateResult result;
   result.parameters = opts.parameters;
@@ -413,38 +449,37 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
 
   // Pre-load seed tests into all engines. In strict extension mode the existing
   // prefix is retained byte-for-byte even when it no longer matches the model;
-  // invalid preserved rows are excluded from coverage accounting.
+  // invalid preserved rows are excluded from positive coverage accounting, and a
+  // preserved single-fault row is credited to the negative pass instead.
   bool dropped_for_max_tests = false;
-  const auto& original_seed_validations = input.original_seed_validations();
-  for (size_t si = 0; si < opts.seeds.size(); ++si) {
-    const auto& seed_test = opts.seeds[si];
+  std::vector<model::TestCase> preserved_negatives;
+  const auto& seed_rows = input.seed_rows();
+  for (const auto& row : seed_rows) {
     if (opts.max_tests > 0 && result.tests.size() >= static_cast<size_t>(opts.max_tests)) {
       dropped_for_max_tests = true;
       break;
     }
-    const SeedValidationSnapshot* original =
-        si < original_seed_validations.size() ? &original_seed_validations[si] : nullptr;
-    const std::string seed_error =
-        ValidatePositiveSeed(seed_test, opts.parameters, constraints, original);
-    if (!seed_error.empty()) {
-      if (si < preserved_seed_count) {
-        result.tests.push_back(seed_test);
-        result.warnings.push_back("Existing test " + std::to_string(si) +
-                                  " preserved but excluded from coverage: " + seed_error);
+    const SeedClassification classification = ClassifySeedRow(row, opts.parameters, constraints);
+    if (!classification.error.empty()) {
+      if (row.preserved) {
+        result.tests.push_back(row.test);
+        result.warnings.push_back("Existing test " + std::to_string(row.source_index) +
+                                  " preserved but excluded from coverage: " + classification.error);
+        if (classification.single_fault) preserved_negatives.push_back(row.test);
       } else {
-        result.warnings.push_back("Seed test " + std::to_string(si - preserved_seed_count) +
-                                  " ignored: " + seed_error);
+        result.warnings.push_back("Seed test " + std::to_string(row.source_index) +
+                                  " ignored: " + classification.error);
       }
       continue;
     }
-    coverage.AddTestCase(seed_test);
+    coverage.AddTestCase(row.test);
     for (auto& eng : sub_engines) {
-      eng.AddTestCase(seed_test);
+      eng.AddTestCase(row.test);
     }
-    result.tests.push_back(seed_test);
+    result.tests.push_back(row.test);
   }
   if (dropped_for_max_tests) {
-    result.warnings.push_back("Seed test count (" + std::to_string(opts.seeds.size()) +
+    result.warnings.push_back("Seed test count (" + std::to_string(seed_rows.size()) +
                               ") exceeds maxTests (" + std::to_string(opts.max_tests) +
                               "); some seeds were dropped");
   }
@@ -465,7 +500,6 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
   };
 
   // Constructive greedy generation loop (positive tests only).
-  constexpr uint32_t kMaxRetries = 50;
   uint32_t retries = 0;
   while (!AllComplete(coverage, sub_engines) &&
          (opts.max_tests == 0 || result.tests.size() < static_cast<size_t>(opts.max_tests))) {
@@ -477,14 +511,14 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
     // A failed construction (no constraint-satisfying value for some parameter)
     // is treated like a zero-score candidate: retry with a different shuffle.
     if (!built) {
-      if (++retries >= kMaxRetries) break;
+      if (++retries >= kMaxGreedyRetries) break;
       continue;
     }
     // Construction already summed the gain of every combination it completed,
     // and coverage does not change while a test case is being built, so the
     // candidate needs no second full scan of the coverage bitmaps.
     if (built->score == 0) {
-      if (++retries >= kMaxRetries) break;
+      if (++retries >= kMaxGreedyRetries) break;
       continue;
     }
     auto& tc = built->test_case;
@@ -670,9 +704,10 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
   // have been captured. This keeps the peak tuple bitmap budget unchanged.
   if (has_invalid) {
     model::NegativeCoverage negative_coverage;
-    model::Error negative_error = GenerateNegativeTests(
-        opts.parameters, constraints, coverage, opts.max_tests, result.tests.size(), scratch,
-        result.negative_tests, negative_coverage, result.warnings);
+    model::Error negative_error =
+        GenerateNegativeTests(opts.parameters, constraints, resolved_weights, preserved_negatives,
+                              coverage, opts.max_tests, result.tests.size(), rng, scratch,
+                              result.negative_tests, negative_coverage, result.warnings);
     // A pass that stopped on an exhausted search budget never reached the
     // omitted/ratio finalization, so its counters do not describe a whole tuple
     // universe. Leave the field unset instead of publishing a self-contradictory
@@ -694,29 +729,20 @@ model::GenerateResult GenerateImpl(const EngineInput& input) {
 }  // namespace
 
 model::GenerateResult Generate(const GenerateOptions& options) {
-  auto accepted = AcceptEngineInput(options, 0);
+  auto accepted = AcceptEngineInput(options, {}, model::ChargedText::None());
   if (!accepted.ok()) return RejectedResult(options.parameters, accepted.error());
   return GenerateImpl(*accepted);
 }
 
 model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
-                             const GenerateOptions& options, ExtendMode mode) {
-  GenerateOptions opts = options;
-
+                             const GenerateOptions& options, ExtendMode mode,
+                             model::ChargedText charged) {
   // Only kStrict is supported today: existing tests are seeded verbatim and kept
   // as-is, with new tests appended to improve coverage. Switch explicitly so a
   // future mode cannot be silently treated as strict, and reject any other value
   // rather than returning a suite the caller's rows never reached.
   switch (mode) {
     case ExtendMode::kStrict:
-      if (opts.max_tests > 0 && existing.size() > static_cast<size_t>(opts.max_tests)) {
-        return RejectedResult(options.parameters,
-                              {model::Error::Code::kInvalidInput,
-                               "maxTests cannot be smaller than the existing test count",
-                               "maxTests=" + std::to_string(opts.max_tests) +
-                                   ", existing=" + std::to_string(existing.size())});
-      }
-      opts.seeds.insert(opts.seeds.begin(), existing.begin(), existing.end());
       break;
     default:
       return RejectedResult(options.parameters, {model::Error::Code::kInvalidInput,
@@ -725,7 +751,7 @@ model::GenerateResult Extend(const std::vector<model::TestCase>& existing,
                                                  "Supported modes: strict"});
   }
 
-  auto accepted = AcceptEngineInput(std::move(opts), existing.size());
+  auto accepted = AcceptEngineInput(options, existing, charged);
   if (!accepted.ok()) return RejectedResult(options.parameters, accepted.error());
   return GenerateImpl(*accepted);
 }
@@ -834,7 +860,7 @@ ModelStats EstimateModelImpl(const EngineInput& input) {
 }  // namespace
 
 ModelStats EstimateModel(const GenerateOptions& options) {
-  auto accepted = AcceptEngineInput(options, 0);
+  auto accepted = AcceptEngineInput(options, {}, model::ChargedText::None());
   if (!accepted.ok()) {
     ModelStats stats;
     stats.error = accepted.error();

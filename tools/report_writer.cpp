@@ -19,8 +19,8 @@ using coverwise::model::SurfaceError;
 
 namespace {
 
-/// @brief Write a parsed scalar JSON value back out unchanged.
-void WriteScalar(JsonWriter& w, const JsonValue& value) {
+/// @brief Write a parsed JSON value of any type back out unchanged.
+void WriteValue(JsonWriter& w, const JsonValue& value) {
   switch (value.type) {
     case JsonType::kString:
       w.WriteString(value.string_val);
@@ -31,10 +31,68 @@ void WriteScalar(JsonWriter& w, const JsonValue& value) {
     case JsonType::kBool:
       w.WriteBool(value.bool_val);
       return;
-    default:
+    case JsonType::kArray:
+      w.BeginArray();
+      for (const auto& element : value.Items()) {
+        w.Sep();
+        WriteValue(w, element);
+      }
+      w.EndArray();
+      return;
+    case JsonType::kObject:
+      w.BeginObject();
+      for (size_t i = 0; i < value.Items().size(); ++i) {
+        w.Key(value.KeyAt(i));
+        WriteValue(w, value.Items()[i]);
+      }
+      w.EndObject();
+      return;
+    case JsonType::kNull:
       w.WriteNull();
       return;
   }
+}
+
+/// @brief Write an `uncovered` array; one element shape for every report.
+void WriteUncovered(JsonWriter& w, const std::vector<coverwise::model::UncoveredTuple>& uncovered) {
+  w.Key("uncovered");
+  w.BeginArray();
+  for (const auto& u : uncovered) {
+    w.Sep();
+    w.BeginObject();
+    w.Key("tuple");
+    w.BeginArray();
+    for (const auto& s : u.tuple) {
+      w.Sep();
+      w.WriteString(s);
+    }
+    w.EndArray();
+    w.Key("params");
+    w.BeginArray();
+    for (const auto& p : u.params) {
+      w.Sep();
+      w.WriteString(p);
+    }
+    w.EndArray();
+    w.Key("indices");
+    w.BeginArray();
+    for (const auto& [parameter_index, value_index] : u.indices) {
+      w.Sep();
+      w.BeginArray();
+      w.Sep();
+      w.WriteNumber(parameter_index);
+      w.Sep();
+      w.WriteNumber(value_index);
+      w.EndArray();
+    }
+    w.EndArray();
+    w.Key("reason");
+    w.WriteString(u.reason);
+    w.Key("display");
+    w.WriteString(u.ToString());
+    w.EndObject();
+  }
+  w.EndArray();
 }
 
 /// @brief Write the result's tests, echoing a preserved prefix verbatim.
@@ -47,17 +105,11 @@ void WriteScalar(JsonWriter& w, const JsonValue& value) {
 void WriteResultTests(JsonWriter& w, const coverwise::model::GenerateResult& result,
                       const std::vector<coverwise::model::Parameter>& params,
                       const JsonValue* preserved_rows) {
-  const size_t preserved_count = preserved_rows == nullptr ? 0 : preserved_rows->array_val.size();
+  const size_t preserved_count = preserved_rows == nullptr ? 0 : preserved_rows->Items().size();
   for (size_t ti = 0; ti < result.tests.size(); ++ti) {
     w.Sep();
     if (ti < preserved_count) {
-      const auto& row = preserved_rows->array_val[ti];
-      w.BeginObject();
-      for (size_t k = 0; k < row.object_keys.size(); ++k) {
-        w.Key(row.object_keys[k]);
-        WriteScalar(w, row.object_vals[k]);
-      }
-      w.EndObject();
+      WriteValue(w, preserved_rows->Items()[ti]);
       continue;
     }
     const auto& tc = result.tests[ti];
@@ -126,45 +178,7 @@ void WriteGenerateResult(const coverwise::model::GenerateResult& result,
   w.Key("coverage");
   w.WriteNumber(result.coverage);
 
-  // uncovered
-  w.Key("uncovered");
-  w.BeginArray();
-  for (const auto& u : result.uncovered) {
-    w.Sep();
-    w.BeginObject();
-    w.Key("tuple");
-    w.BeginArray();
-    for (const auto& s : u.tuple) {
-      w.Sep();
-      w.WriteString(s);
-    }
-    w.EndArray();
-    w.Key("params");
-    w.BeginArray();
-    for (const auto& p : u.params) {
-      w.Sep();
-      w.WriteString(p);
-    }
-    w.EndArray();
-    w.Key("indices");
-    w.BeginArray();
-    for (const auto& [parameter_index, value_index] : u.indices) {
-      w.Sep();
-      w.BeginArray();
-      w.Sep();
-      w.WriteNumber(parameter_index);
-      w.Sep();
-      w.WriteNumber(value_index);
-      w.EndArray();
-    }
-    w.EndArray();
-    w.Key("reason");
-    w.WriteString(u.reason);
-    w.Key("display");
-    w.WriteString(u.ToString());
-    w.EndObject();
-  }
-  w.EndArray();
+  WriteUncovered(w, result.uncovered);
 
   // stats
   w.Key("stats");
@@ -255,44 +269,7 @@ void WriteCoverageReport(const coverwise::validator::CoverageReport& report) {
   w.Key("coverageRatio");
   w.WriteNumber(report.coverage_ratio);
 
-  w.Key("uncovered");
-  w.BeginArray();
-  for (const auto& u : report.uncovered) {
-    w.Sep();
-    w.BeginObject();
-    w.Key("tuple");
-    w.BeginArray();
-    for (const auto& s : u.tuple) {
-      w.Sep();
-      w.WriteString(s);
-    }
-    w.EndArray();
-    w.Key("params");
-    w.BeginArray();
-    for (const auto& p : u.params) {
-      w.Sep();
-      w.WriteString(p);
-    }
-    w.EndArray();
-    w.Key("indices");
-    w.BeginArray();
-    for (const auto& [parameter_index, value_index] : u.indices) {
-      w.Sep();
-      w.BeginArray();
-      w.Sep();
-      w.WriteNumber(parameter_index);
-      w.Sep();
-      w.WriteNumber(value_index);
-      w.EndArray();
-    }
-    w.EndArray();
-    w.Key("reason");
-    w.WriteString(u.reason);
-    w.Key("display");
-    w.WriteString(u.ToString());
-    w.EndObject();
-  }
-  w.EndArray();
+  WriteUncovered(w, report.uncovered);
 
   w.Key("uncoveredCount");
   w.WriteNumber(static_cast<double>(report.uncovered_count));

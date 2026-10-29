@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -45,8 +44,14 @@ void Utf8Codepoints(const std::string& value, std::vector<uint32_t>& result) {
     }
     const bool overlong = (length == 2 && codepoint < 0x80) || (length == 3 && codepoint < 0x800) ||
                           (length == 4 && codepoint < 0x10000);
-    if (!valid || overlong || (codepoint >= 0xD800 && codepoint <= 0xDFFF) ||
-        codepoint > 0x10FFFF) {
+    // A lone continuation byte (or a byte that never starts a sequence) is malformed.
+    const bool stray = length == 1 && first >= 0x80;
+    const bool surrogate = codepoint >= 0xD800 && codepoint <= 0xDFFF;
+    if (valid && !overlong && surrogate) {
+      // An encoded surrogate is one unmatched unit, like a lone surrogate in a JS string.
+      result.push_back(0x110000u + first);
+      i += length;
+    } else if (!valid || overlong || stray || codepoint > 0x10FFFF) {
       // Preserve malformed input deterministically as one unmatched byte.
       result.push_back(0x110000u + first);
       ++i;
@@ -397,32 +402,15 @@ bool LikeNode::GlobMatch(const std::string& pattern, const std::string& text) {
 
 // --- Parameter-to-parameter comparison ---
 
-namespace {
-
-/// @brief Intern two parameters' value strings into a comparable key pair.
-///
-/// Folding follows @p case_sensitive, so the policy is baked into the keys and
-/// comparisons never look at the strings again.
-std::pair<ValueKeys, ValueKeys> InternValuePair(const std::vector<std::string>& left_values,
-                                                const std::vector<std::string>& right_values,
-                                                bool case_sensitive) {
-  std::unordered_map<std::string, uint32_t> table;
-  table.reserve(left_values.size() + right_values.size());
-  const auto intern = [&](const std::vector<std::string>& values) {
-    ValueKeys keys(values.size());
-    for (size_t i = 0; i < values.size(); ++i) {
-      const std::string folded = case_sensitive ? values[i] : util::FoldAsciiString(values[i]);
-      const auto next = static_cast<uint32_t>(table.size());
-      keys[i] = table.emplace(folded, next).first->second;
-    }
-    return keys;
-  };
-  ValueKeys left = intern(left_values);
-  ValueKeys right = intern(right_values);
-  return {std::move(left), std::move(right)};
+ValueKeysPtr ValueKeyInterner::Intern(const std::vector<std::string>& values) {
+  auto keys = std::make_shared<ValueKeys>(values.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    const std::string folded = case_sensitive_ ? values[i] : util::FoldAsciiString(values[i]);
+    const auto next = static_cast<uint32_t>(table_.size());
+    (*keys)[i] = table_.emplace(folded, next).first->second;
+  }
+  return keys;
 }
-
-}  // namespace
 
 // --- ParamEqualsNode ---
 
@@ -430,10 +418,17 @@ ParamEqualsNode::ParamEqualsNode(uint32_t left_param, uint32_t right_param,
                                  const std::vector<std::string>& left_values,
                                  const std::vector<std::string>& right_values, bool case_sensitive)
     : left_param_(left_param), right_param_(right_param) {
-  auto keys = InternValuePair(left_values, right_values, case_sensitive);
-  left_keys_ = std::move(keys.first);
-  right_keys_ = std::move(keys.second);
+  ValueKeyInterner interner(case_sensitive);
+  left_keys_ = interner.Intern(left_values);
+  right_keys_ = interner.Intern(right_values);
 }
+
+ParamEqualsNode::ParamEqualsNode(uint32_t left_param, uint32_t right_param, ValueKeysPtr left_keys,
+                                 ValueKeysPtr right_keys)
+    : left_param_(left_param),
+      right_param_(right_param),
+      left_keys_(std::move(left_keys)),
+      right_keys_(std::move(right_keys)) {}
 
 ConstraintResult ParamEqualsNode::Evaluate(const std::vector<uint32_t>& assignment) const {
   if (left_param_ >= assignment.size() || right_param_ >= assignment.size()) {
@@ -444,10 +439,11 @@ ConstraintResult ParamEqualsNode::Evaluate(const std::vector<uint32_t>& assignme
   if (lv == kUnassigned || rv == kUnassigned) {
     return ConstraintResult::kUnknown;
   }
-  if (lv >= left_keys_.size() || rv >= right_keys_.size()) {
+  if (lv >= left_keys_->size() || rv >= right_keys_->size()) {
     return ConstraintResult::kFalse;
   }
-  return left_keys_[lv] == right_keys_[rv] ? ConstraintResult::kTrue : ConstraintResult::kFalse;
+  return (*left_keys_)[lv] == (*right_keys_)[rv] ? ConstraintResult::kTrue
+                                                 : ConstraintResult::kFalse;
 }
 
 // --- ParamNotEqualsNode ---
@@ -457,10 +453,17 @@ ParamNotEqualsNode::ParamNotEqualsNode(uint32_t left_param, uint32_t right_param
                                        const std::vector<std::string>& right_values,
                                        bool case_sensitive)
     : left_param_(left_param), right_param_(right_param) {
-  auto keys = InternValuePair(left_values, right_values, case_sensitive);
-  left_keys_ = std::move(keys.first);
-  right_keys_ = std::move(keys.second);
+  ValueKeyInterner interner(case_sensitive);
+  left_keys_ = interner.Intern(left_values);
+  right_keys_ = interner.Intern(right_values);
 }
+
+ParamNotEqualsNode::ParamNotEqualsNode(uint32_t left_param, uint32_t right_param,
+                                       ValueKeysPtr left_keys, ValueKeysPtr right_keys)
+    : left_param_(left_param),
+      right_param_(right_param),
+      left_keys_(std::move(left_keys)),
+      right_keys_(std::move(right_keys)) {}
 
 ConstraintResult ParamNotEqualsNode::Evaluate(const std::vector<uint32_t>& assignment) const {
   if (left_param_ >= assignment.size() || right_param_ >= assignment.size()) {
@@ -471,10 +474,11 @@ ConstraintResult ParamNotEqualsNode::Evaluate(const std::vector<uint32_t>& assig
   if (lv == kUnassigned || rv == kUnassigned) {
     return ConstraintResult::kUnknown;
   }
-  if (lv >= left_keys_.size() || rv >= right_keys_.size()) {
+  if (lv >= left_keys_->size() || rv >= right_keys_->size()) {
     return ConstraintResult::kFalse;
   }
-  return left_keys_[lv] == right_keys_[rv] ? ConstraintResult::kFalse : ConstraintResult::kTrue;
+  return (*left_keys_)[lv] == (*right_keys_)[rv] ? ConstraintResult::kFalse
+                                                 : ConstraintResult::kTrue;
 }
 
 }  // namespace model

@@ -1044,3 +1044,85 @@ describe('builder output through generate()', () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Operands outside the declared types
+// ---------------------------------------------------------------------------
+
+describe('builders given operands outside their declared types', () => {
+  const stray: Array<[string, unknown]> = [
+    ['undefined', undefined],
+    ['null', null],
+    ['an object', {}],
+    ['a symbol', Symbol('operand')],
+    ['a number where text is required', 5],
+  ];
+
+  /** Every builder, each handed one stray operand in the position it reads. */
+  const builders: Array<[string, (operand: never) => unknown, Array<[string, unknown]>]> = [
+    ['when', (operand) => when(operand), stray.filter(([label]) => !label.startsWith('a number'))],
+    [
+      'eq',
+      (operand) => when('a').eq(operand),
+      stray.filter(([label]) => !label.includes('number')),
+    ],
+    [
+      'ne',
+      (operand) => when('a').ne(operand),
+      stray.filter(([label]) => !label.includes('number')),
+    ],
+    [
+      'gt',
+      (operand) => when('a').gt(operand),
+      stray.filter(([label]) => !label.includes('number')),
+    ],
+    [
+      'lte',
+      (operand) => when('a').lte(operand),
+      stray.filter(([label]) => !label.includes('number')),
+    ],
+    [
+      'in',
+      (operand) => when('a').in(operand),
+      stray.filter(([label]) => !label.includes('number')),
+    ],
+    ['like', (operand) => when('a').like(operand), stray],
+    ['not', (operand) => not(operand), stray],
+    ['allOf', (operand) => allOf(operand), stray],
+    ['anyOf', (operand) => anyOf(operand), stray],
+    ['and', (operand) => when('a').eq('x').and(operand), stray],
+    ['then', (operand) => when('a').eq('x').then(operand), stray],
+    ['else', (operand) => when('a').eq('x').then(when('b').eq('y')).else(operand), stray],
+  ];
+
+  for (const [builder, call, operands] of builders) {
+    for (const [label, operand] of operands) {
+      it(`${builder}() reports ${label} as INVALID_INPUT`, () => {
+        let thrown: unknown;
+        try {
+          call(operand as never);
+        } catch (error) {
+          thrown = error;
+        }
+        expect(thrown).toBeInstanceOf(CoverwiseError);
+        expect((thrown as CoverwiseError).code).toBe('INVALID_INPUT');
+      });
+    }
+  }
+
+  it('reports a custom condition whose text cannot be read as INVALID_INPUT', () => {
+    const hostile = {
+      toString: () => {
+        throw new Error('refused');
+      },
+    };
+    let thrown: unknown;
+    try {
+      not(hostile as never);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(CoverwiseError);
+    expect((thrown as CoverwiseError).code).toBe('INVALID_INPUT');
+  });
+});

@@ -4,6 +4,19 @@ import { BoundaryType, expandBoundaryValues } from './boundary.js';
 import { Parameter, resolveValueName } from './parameter.js';
 
 describe('expandBoundaryValues', () => {
+  it('de-duplicates float boundaries at the precision the range was written in', () => {
+    const expand = (minValue: number, maxValue: number) =>
+      expandBoundaryValues(new Parameter('ratio', []), {
+        type: BoundaryType.Float,
+        minValue,
+        maxValue,
+        step: 0.1,
+      }).values;
+
+    expect(expand(0.1, 0.3)).toEqual(['0', '0.1', '0.2', '0.3', '0.4']);
+    expect(expand(0.7, 0.9)).toEqual(['0.6', '0.7', '0.8', '0.9', '1']);
+  });
+
   it('preserves spelling and metadata by numeric value identity', () => {
     const param = new Parameter('score', ['1.0', 'other'], [true, false]);
     param.setAliases([['one'], ['fallback']]);

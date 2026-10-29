@@ -2,6 +2,7 @@
 
 #include "core/generator.h"
 #include "model/constraint_parser.h"
+#include "support/coverage_oracle.h"
 #include "validator/constraint_validator.h"
 #include "validator/coverage_validator.h"
 
@@ -11,6 +12,8 @@ using coverwise::model::GenerateOptions;
 using coverwise::model::Parameter;
 using coverwise::model::ParseConstraint;
 using coverwise::model::TestCase;
+using coverwise::test_support::MatchesOracle;
+using coverwise::test_support::RecomputeCoverage;
 using coverwise::validator::ComputeClassCoverage;
 using coverwise::validator::ValidateConstraints;
 using coverwise::validator::ValidateCoverage;
@@ -978,6 +981,34 @@ TEST(IntegrationNegativeTest, OneInvalidPerTest) {
     }
     EXPECT_EQ(invalid_count, 1u) << "Negative test must have exactly 1 invalid value";
   }
+}
+
+// On a constrained model every negative row holds exactly one invalid value and
+// satisfies every constraint, and the reported negative counts equal an
+// independent enumeration of the feasible single-fault tuples the rows hit.
+TEST(IntegrationNegativeTest, ConstrainedNegativeSuiteMatchesAnIndependentCount) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1", "bad"}, {false, false, true}},
+      {"B", {"b0", "b1", "b2"}, {}},
+      {"C", {"c0", "c1", "none"}, {false, false, true}},
+      {"D", {"d0", "d1"}, {}},
+  };
+  opts.constraint_expressions = {"IF A=a1 THEN B!=b2", "IF B=b0 THEN C!=c1", "IF A=bad THEN D!=d0"};
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  ASSERT_TRUE(result.negative_coverage.has_value());
+  EXPECT_FALSE(result.negative_tests.empty());
+  EXPECT_TRUE(MatchesOracle(result, opts));
+  const auto oracle = RecomputeCoverage(result, opts);
+  ASSERT_TRUE(oracle.error.ok()) << oracle.error.message;
+  EXPECT_GT(oracle.negative_total, 0u);
+  EXPECT_EQ(oracle.negative_covered, oracle.negative_total);
+  EXPECT_DOUBLE_EQ(result.negative_coverage->coverage_ratio, 1.0);
 }
 
 TEST(IntegrationNegativeTest, NegativeTestCoverage) {

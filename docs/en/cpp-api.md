@@ -60,11 +60,11 @@ namespace coverwise::model {
 |---|---|
 | `kOk` | No failure. Every other field of the result is meaningful. |
 | `kConstraintError` | A constraint expression did not parse, or the constraint set has no satisfying assignment. |
-| `kInsufficientCoverage` | Generation stopped short of full coverage, usually because `max_tests` bound it. |
+| `kInsufficientCoverage` | Reserved for callers and the CLI to report incomplete coverage. The engine does not set it: when `max_tests` binds, `error` stays OK and the result carries `coverage` below 1.0, a non-zero `uncovered_count` and a warning. The CLI maps that outcome to exit code 2. |
 | `kInvalidInput` | The model was rejected by the acceptance gate — a malformed parameter, an out-of-domain option, an exceeded limit. |
 | `kTupleExplosion` | The required tuple set is too large to enumerate for the requested strength and model. |
 
-`message` is a single sentence naming the failure. `detail` is optional context — the offending value, the two numbers that disagree, the position inside a constraint expression that `AnnotateConstraintError` marked. It is empty when there is nothing further to say, so a caller that renders both joins them only when `detail` is non-empty.
+`message` is a single sentence naming the failure. `detail` is optional context — the offending value, the two numbers that disagree, a syntax hint for a constraint expression. It is empty when there is nothing further to say, so a caller that renders both joins them only when `detail` is non-empty.
 
 The numeric values of `Code` are not process exit codes and must not be used as such. The command-line surface maps them: constraint errors exit 1, insufficient coverage exits 2, and both invalid input and tuple explosion exit 3. See the [CLI reference](cli.md) for the exit-code contract in full.
 
@@ -95,12 +95,15 @@ namespace coverwise::core {
   model::GenerateResult Extend(
     const std::vector<model::TestCase>& existing,
     const model::GenerateOptions& options,
-    model::ExtendMode mode = model::ExtendMode::kStrict
+    model::ExtendMode mode = model::ExtendMode::kStrict,
+    model::ChargedText charged = model::ChargedText::None()
   );
 }
 ```
 
-The `existing` rows are seeded ahead of generation and kept verbatim; new rows are appended until coverage is complete. A `max_tests` smaller than `existing.size()` is rejected as invalid input rather than silently dropping rows the caller supplied.
+`charged` tells the acceptance gate how much row text the caller has already counted. A caller that counted the row text itself passes `ChargedTextReader::total()`; with the default, the gate charges the rows' `unresolved` text.
+
+The `existing` rows are seeded ahead of generation and kept verbatim; new rows are appended until coverage is complete. A `max_tests` smaller than `existing.size()` is rejected as invalid input rather than silently dropping rows the caller supplied. The one exception to "verbatim": when boundary expansion runs, an index that named no declared value is returned as `kUnassigned`, because it cannot be expressed against the expanded value list. The row still carries its "preserved but excluded from coverage" warning.
 
 ### `coverwise::core::EstimateModel`
 
@@ -154,6 +157,7 @@ Read `error` before any count. On every non-ok exit `coverage_ratio` is left at 
 | Strength outside `[1, parameter count]` | Zero | Empty |
 | Invalid parameters | Zero | Empty |
 | Unsatisfiable constraint model | Zero | Empty |
+| `tests` has more than `kMaxTests` rows (`kInvalidInput`, `Test count N exceeds maximum of 100000`; checked before any enumeration) | Zero | Empty |
 | Enumeration limit exceeded | Zero | Empty |
 | Feasibility budget exhausted part-way through enumeration | Partial counts for the tuples already enumerated | Complete |
 
@@ -227,7 +231,7 @@ namespace coverwise::validator {
 }
 ```
 
-It checks whether any parameter declares equivalence classes and, if one does, computes class coverage and sets `result.class_coverage`. When no parameter declares any, the optional is left empty and the result is unchanged. Use it to attach class coverage to a result you assembled yourself; `ComputeClassCoverage` is the same measurement as a standalone value.
+It checks whether any parameter declares equivalence classes and, if one does, computes class coverage and sets `result.class_coverage`. When no parameter declares any, the optional is left empty and the result is unchanged. If the class-coverage computation fails, `result.class_coverage` stays unset, `result.error` takes the failure when it was OK, and the failure text is appended to `result.warnings`. Use it to attach class coverage to a result you assembled yourself; `ComputeClassCoverage` is the same measurement as a standalone value.
 
 ## Constraints
 
@@ -256,7 +260,7 @@ Error AnnotateConstraintError(const std::string& expression, Error error);
 
 The parser supports `IF`/`THEN`/`ELSE`, `IMPLIES`, `AND`, `OR`, `NOT`, `IN`, `LIKE`, `=`, `!=`, numeric comparisons, and parameter-to-parameter comparisons. [Constraint syntax](constraints.md) is the language definition; this page covers only the C++ types it produces.
 
-`AnnotateConstraintError` takes the expression and the error a parse of it returned, and gives back the same error with the offending position marked in `detail`. It is what turns "unexpected token" into something a user can act on.
+`AnnotateConstraintError` takes the expression and the error a parse of it returned, and gives back the same error with `message` prefixed by the expression. It leaves `detail` unchanged and carries no position of its own. It is what ties "unexpected token" to the constraint that produced it.
 
 ### `model::ConstraintNode` and `model::ConstraintResult`
 
@@ -344,7 +348,7 @@ struct GenerateOptions {
 
 `seed` is declared as `uint64_t` but its domain is 0 through 2^32 - 1, and the acceptance gate enforces that: a larger value is rejected as invalid input with a message naming the domain, rather than being truncated to its low 32 bits. The wider declared type is there so a surface that reads a seed from JSON can carry an out-of-range number as far as the gate and get one rejection, instead of wrapping it into a different valid seed and generating a suite nobody asked for. Within the domain, the same seed and the same accepted model produce the same suite on every surface; see [Determinism](determinism.md).
 
-`strength` must be between 1 and the parameter count. `max_tests` bounds the combined positive and negative suite; a bound that stops generation short leaves `error` at `kInsufficientCoverage`.
+`strength` must be between 1 and the parameter count. `max_tests` bounds the combined positive and negative suite; a bound that stops generation short leaves `error` OK and reports `coverage` below 1.0, a non-zero `uncovered_count` and a warning; the CLI maps that outcome to exit code 2.
 
 ### `model::ExtendMode`
 
@@ -433,13 +437,14 @@ Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&);
 Parameter ExpandBoundaryValues(const Parameter&, const BoundaryConfig&, Error* error);
 ```
 
-Boundary expansion merges, de-duplicates, and numerically sorts the original values with `min-1`, `min`, `min+1`, `max-1`, `max`, and `max+1` for integers; for floats it uses `step` in place of `1`. Generation returns the expanded parameters, so render `TestCase` value indices against `GenerateResult::parameters`.
+Boundary expansion merges, de-duplicates, and numerically sorts the original values with `min-1`, `min`, `min+1`, `max-1`, `max`, and `max+1` for integers; for floats it uses `step` in place of `1`, snaps each float to the largest number of decimal places among `min`, `max` and `step`, and then de-duplicates. Generation returns the expanded parameters, so render `TestCase` value indices against `GenerateResult::parameters`.
 
 ### `model::TestCase`
 
 ```cpp
 struct TestCase {
   std::vector<uint32_t> values;  // One index per parameter. UINT32_MAX = unassigned.
+  std::vector<std::optional<std::string>> unresolved;  // Caller text for positions that did not resolve; nullopt = the row carried no member for it, "" = the caller supplied an empty string. Empty vector for engine-produced rows.
 };
 ```
 
@@ -495,7 +500,7 @@ struct UncoveredTuple {
 };
 ```
 
-`tests` contains only positive rows; `negative_tests` contains rows with exactly one invalid value. When invalid values are configured, `negative_coverage` counts feasible single-fault tuples. A `max_tests` limit applies to the combined positive and negative suite, so negative coverage can be incomplete and the result records `omitted_tuples` and warnings. `coverage` is the minimum ratio across the global and any sub-model engines; it is the pass/fail metric when sub-models are in use. `warnings` carries non-fatal diagnostics, while `error` is non-OK only for an early failure.
+`tests` contains only positive rows; `negative_tests` contains rows with exactly one invalid value. When invalid values are configured, `negative_coverage` counts feasible single-fault tuples. A `max_tests` limit applies to the combined positive and negative suite, so negative coverage can be incomplete and the result records `omitted_tuples` and warnings. In `Extend`, the preserved prefix of `tests` may hold rows excluded from coverage, and each one is flagged by an `Existing test N preserved but excluded from coverage: …` warning. A preserved row that has exactly one invalid value and otherwise satisfies the constraints counts toward `negative_coverage` and is not generated again in `negative_tests`. `coverage` is the minimum ratio across the global and any sub-model engines; it is the pass/fail metric when sub-models are in use. `warnings` carries non-fatal diagnostics, while `error` is non-OK only for an early failure.
 
 ### `model::SubModel`
 
@@ -515,6 +520,8 @@ struct WeightConfig {
   bool empty() const;
 };
 ```
+
+`GetWeight` is an exact-key lookup: it matches `parameter` and `value` byte for byte and does not fold case or follow aliases. The engine resolves weight keys through `ResolveValueName`, so a key such as `"Chrome"` can apply during generation while `GetWeight("browser", "chrome")` still returns the default.
 
 ### `model::ModelStats`
 
@@ -547,7 +554,7 @@ The limits the acceptance gate applies are declared as public constants in `mode
 |---|---|
 | `kMaxParameters` | Parameters one model may declare |
 | `kMaxValuesPerParameter` | Values one parameter may declare |
-| `kMaxTests` | Rows in a `tests`, `seeds` or `existing` array |
+| `kMaxTests` | Rows in a `tests`, `seeds` or `existing` array; in `Extend`, `existing` and `seeds` together |
 | `kMaxConstraints` | Constraint expressions in one model |
 | `kMaxStringBytes` | UTF-8 bytes in any single input string |
 | `kMaxAggregateStringBytes` | UTF-8 bytes across all of one input's strings |

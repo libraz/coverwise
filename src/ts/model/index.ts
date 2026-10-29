@@ -30,6 +30,7 @@ export {
   Parameter,
   resolveValueName,
   UNASSIGNED,
+  ValueResolver,
 } from './parameter.js';
 export {
   type ClassCoverage,

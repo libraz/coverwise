@@ -38,6 +38,35 @@ function formatFloat(value: number): string {
   return jsNumberToString(value);
 }
 
+/** Number of decimal places in the shortest round-trip rendering of `value`. */
+function decimalPlaces(value: number): number {
+  const text = jsNumberToString(Math.abs(value));
+  const exponentAt = text.indexOf('e');
+  const mantissa = exponentAt === -1 ? text : text.slice(0, exponentAt);
+  const dot = mantissa.indexOf('.');
+  let places = dot === -1 ? 0 : mantissa.length - dot - 1;
+  if (exponentAt !== -1) {
+    places -= Number.parseInt(text.slice(exponentAt + 1), 10);
+  }
+  return Math.max(places, 0);
+}
+
+/** Round `value` to `places` decimals, so accumulated binary error does not leak. */
+function snapToDecimals(value: number, places: number): number {
+  if (places > 15) {
+    return value;
+  }
+  let scale = 1;
+  for (let i = 0; i < places; i++) {
+    scale *= 10;
+  }
+  const scaled = value * scale;
+  if (!(Math.abs(scaled) < 9007199254740992)) {
+    return value;
+  }
+  return Math.floor(scaled + 0.5) / scale;
+}
+
 /**
  * Expand a parameter's values to include boundary values.
  *
@@ -71,6 +100,15 @@ export function expandBoundaryValues(param: Parameter, config: BoundaryConfig): 
       config.maxValue,
       config.maxValue + config.step,
     ];
+    // Snap to the precision the caller wrote, so 0.3 - 0.1 is 0.2 rather than 0.19999999999999998.
+    const places = Math.max(
+      decimalPlaces(config.minValue),
+      decimalPlaces(config.maxValue),
+      decimalPlaces(config.step),
+    );
+    boundaryNums = boundaryNums.map((bv) =>
+      Number.isFinite(bv) ? snapToDecimals(bv, places) : bv,
+    );
   }
 
   // Keep the original value index for each numeric identity so spelling and

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -267,10 +268,28 @@ class LikeNode : public ConstraintNode {
 /// @brief Comparison keys for one parameter's value strings.
 ///
 /// Entry @c i is the key of value index @c i. Two values compare equal exactly
-/// when their keys are equal. Both parameters of a comparison are interned
-/// together, so keys are only meaningful against the partner they were built
-/// with.
+/// when their keys are equal. Keys are only meaningful against keys produced by
+/// the same ValueKeyInterner.
 using ValueKeys = std::vector<uint32_t>;
+using ValueKeysPtr = std::shared_ptr<const ValueKeys>;
+
+/// @brief Assigns equal keys to equal value strings across any number of parameters.
+///
+/// Folding follows @p case_sensitive, so the policy is baked into the keys and
+/// comparisons never look at the strings again. A parser holds one interner and
+/// one key table per parameter, so building comparison nodes costs the size of
+/// the parameters involved rather than a table per node.
+class ValueKeyInterner {
+ public:
+  explicit ValueKeyInterner(bool case_sensitive = false) : case_sensitive_(case_sensitive) {}
+
+  /// @brief Intern one parameter's value strings.
+  ValueKeysPtr Intern(const std::vector<std::string>& values);
+
+ private:
+  bool case_sensitive_;
+  std::unordered_map<std::string, uint32_t> table_;
+};
 
 /// @brief Parameter-to-parameter equality comparison.
 ///
@@ -287,6 +306,11 @@ class ParamEqualsNode : public ConstraintNode {
   ParamEqualsNode(uint32_t left_param, uint32_t right_param,
                   const std::vector<std::string>& left_values,
                   const std::vector<std::string>& right_values, bool case_sensitive = false);
+
+  /// @param left_keys Keys of the left parameter's values.
+  /// @param right_keys Keys of the right parameter's values, from the same interner.
+  ParamEqualsNode(uint32_t left_param, uint32_t right_param, ValueKeysPtr left_keys,
+                  ValueKeysPtr right_keys);
   ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override;
 
  private:
@@ -295,8 +319,8 @@ class ParamEqualsNode : public ConstraintNode {
   // Value strings are interned at construction, the same way RelationalNode
   // precomputes its numeric conversions, so Evaluate compares two integers and
   // never touches a value string.
-  ValueKeys left_keys_;
-  ValueKeys right_keys_;
+  ValueKeysPtr left_keys_;
+  ValueKeysPtr right_keys_;
 };
 
 /// @brief Parameter-to-parameter inequality comparison.
@@ -314,13 +338,18 @@ class ParamNotEqualsNode : public ConstraintNode {
   ParamNotEqualsNode(uint32_t left_param, uint32_t right_param,
                      const std::vector<std::string>& left_values,
                      const std::vector<std::string>& right_values, bool case_sensitive = false);
+
+  /// @param left_keys Keys of the left parameter's values.
+  /// @param right_keys Keys of the right parameter's values, from the same interner.
+  ParamNotEqualsNode(uint32_t left_param, uint32_t right_param, ValueKeysPtr left_keys,
+                     ValueKeysPtr right_keys);
   ConstraintResult Evaluate(const std::vector<uint32_t>& assignment) const override;
 
  private:
   uint32_t left_param_;
   uint32_t right_param_;
-  ValueKeys left_keys_;
-  ValueKeys right_keys_;
+  ValueKeysPtr left_keys_;
+  ValueKeysPtr right_keys_;
 };
 
 }  // namespace model

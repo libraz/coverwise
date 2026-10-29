@@ -26,6 +26,9 @@ const hooks = vi.hoisted(() => ({
   validCalls: 0,
   /** Value index of the parameter-0 value that marks a negative-phase mask. */
   exhaustOnFixedValue: -1,
+  /** Make greedy construction fail in the negative phase, so every negative
+   *  row comes from the completion path that calls the solver. */
+  failNegativeGreedy: false,
   reset(): void {
     hooks.callsWithOrder = 0;
     hooks.callsWithoutOrder = 0;
@@ -34,8 +37,24 @@ const hooks = vi.hoisted(() => ({
     hooks.stackRefs = [];
     hooks.validCalls = 0;
     hooks.exhaustOnFixedValue = -1;
+    hooks.failNegativeGreedy = false;
   },
 }));
+
+vi.mock('../algo/greedy.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../algo/greedy.js')>();
+  return {
+    ...actual,
+    greedyConstruct: (...args: Parameters<typeof actual.greedyConstruct>) => {
+      const allowedValues = args[5];
+      // A negative-phase mask pins parameter 0 to a single value.
+      if (hooks.failNegativeGreedy && allowedValues?.[0]?.filter(Boolean).length === 1) {
+        return null;
+      }
+      return actual.greedyConstruct(...args);
+    },
+  };
+});
 
 vi.mock('./constraint-solver.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./constraint-solver.js')>();
@@ -164,6 +183,7 @@ describe('generate solver interaction', () => {
     // The solver rebuilds the order itself whenever the caller omits it, so a
     // loop whose mask never changes must pass one in. Counting the calls that
     // left it out is the cheapest way to see a per-witness rebuild come back.
+    hooks.failNegativeGreedy = true;
     const result = generate(negativeModel());
 
     expect(result.error.code).toBe(ErrorCode.Ok);
@@ -200,6 +220,7 @@ describe('generate solver interaction', () => {
 
   it('leaves negative coverage unset when a witness exhausts the search budget', () => {
     hooks.exhaustOnFixedValue = 2;
+    hooks.failNegativeGreedy = true;
 
     const result = generate(negativeModel());
 

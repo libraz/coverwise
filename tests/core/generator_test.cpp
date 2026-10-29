@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -15,6 +16,7 @@
 #include "model/options_validation.h"
 #include "model/parameter.h"
 #include "model/test_case.h"
+#include "support/coverage_oracle.h"
 #include "validator/constraint_validator.h"
 #include "validator/coverage_validator.h"
 
@@ -28,6 +30,8 @@ using coverwise::model::Parameter;
 using coverwise::model::SubModel;
 using coverwise::model::TestCase;
 using coverwise::model::WeightConfig;
+using coverwise::test_support::IsCompleteByOracle;
+using coverwise::test_support::MatchesOracle;
 
 // ---------------------------------------------------------------------------
 // Generate tests
@@ -44,7 +48,7 @@ TEST(GeneratorTest, BasicPairwiseTwoByTwo) {
 
   auto result = Generate(opts);
 
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.uncovered.empty());
   EXPECT_EQ(result.stats.total_tuples, 4u);  // 2 * 2
   EXPECT_EQ(result.stats.covered_tuples, 4u);
@@ -64,7 +68,7 @@ TEST(GeneratorTest, ThreeParamsVaryingValues) {
   auto result = Generate(opts);
 
   // C(3,2)=3 pairs: (os,browser)=6, (os,arch)=6, (browser,arch)=4 => 16 tuples
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.uncovered.empty());
   EXPECT_EQ(result.stats.total_tuples, 16u);
   EXPECT_EQ(result.stats.covered_tuples, 16u);
@@ -100,13 +104,11 @@ TEST(GeneratorTest, DifferentSeedsMayDiffer) {
 
   opts.seed = 1;
   auto result1 = Generate(opts);
+  EXPECT_TRUE(IsCompleteByOracle(result1, opts));
 
   opts.seed = 999;
   auto result2 = Generate(opts);
-
-  // Both must achieve full coverage.
-  EXPECT_DOUBLE_EQ(result1.coverage, 1.0);
-  EXPECT_DOUBLE_EQ(result2.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result2, opts));
 
   // With different seeds, test ordering may differ. Check at least one difference
   // exists somewhere (test values or order). This is probabilistic but very likely.
@@ -136,7 +138,7 @@ TEST(GeneratorTest, WithConstraints) {
 
   auto result = Generate(opts);
 
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.warnings.empty());
 
   // Verify no test case violates the constraint: os=mac AND browser=ie.
@@ -162,6 +164,7 @@ TEST(GeneratorTest, MaxTestsLimit) {
 
   EXPECT_LE(result.tests.size(), 3u);
   EXPECT_LT(result.coverage, 1.0);
+  EXPECT_TRUE(MatchesOracle(result, opts));
   EXPECT_FALSE(result.uncovered.empty());
   EXPECT_GT(result.stats.total_tuples, result.stats.covered_tuples);
 }
@@ -184,7 +187,7 @@ TEST(GeneratorTest, SeedTestsIncluded) {
 
   auto result = Generate(opts);
 
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
 
   // Seed tests should appear in the result.
   EXPECT_GE(result.tests.size(), 2u);
@@ -213,7 +216,7 @@ TEST(GeneratorTest, InvalidAndConstraintViolatingSeedsIgnored) {
 
   auto result = Generate(opts);
 
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   for (const auto& tc : result.tests) {
     EXPECT_NE(tc.values[1], 1u) << "Positive test contains invalid browser=ie";
     EXPECT_FALSE(tc.values[0] == 1u && tc.values[1] == 0u)
@@ -260,7 +263,7 @@ TEST(GeneratorTest, SubModelHigherStrength) {
 
   auto result = Generate(opts);
 
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.warnings.empty());
 
   // More tests are needed for 3-wise sub-model coverage compared to pure pairwise.
@@ -289,7 +292,7 @@ TEST(GeneratorTest, ConstraintsAndSubModelsCombined) {
 
   auto result = Generate(opts);
 
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.uncovered.empty());
   EXPECT_TRUE(result.warnings.empty());
 
@@ -299,18 +302,6 @@ TEST(GeneratorTest, ConstraintsAndSubModelsCombined) {
     bool is_safari = (tc.values[1] == 2);
     EXPECT_FALSE(is_mac && is_safari) << "Constraint violation: os=mac, browser=safari";
   }
-
-  // Independently validate pairwise coverage using the validator.
-  // The validator does not know about constraints, so constraint-excluded tuples
-  // (e.g. os=mac,browser=safari) will appear uncovered. Verify that the only
-  // uncovered tuples are those involving the constrained combination.
-  auto cov_report = coverwise::validator::ValidateCoverage(opts.parameters, result.tests, 2);
-  // All non-constrained tuples must be covered. The constraint excludes
-  // os=mac + browser=safari, which removes 1 pair from the (os, browser)
-  // combination. The remaining pairs among other parameter combos are unaffected.
-  // Total pairwise tuples = C(4,2) sums: (3*3)+(3*2)+(3*2)+(3*2)+(3*2)+(2*2) = 9+6+6+6+6+4 = 37.
-  // Only os=mac,browser=safari is excluded -> at most 1 tuple may be uncovered.
-  EXPECT_LE(cov_report.uncovered.size(), 1u);
 
   // Independently validate constraints using the constraint validator.
   std::vector<coverwise::model::Constraint> constraints;
@@ -365,6 +356,7 @@ TEST(GeneratorTest, OverlappingSubModelCountsEachUncoveredTupleOnce) {
 
   ASSERT_TRUE(result.error.ok());
   ASSERT_LT(result.coverage, 1.0);
+  EXPECT_TRUE(MatchesOracle(result, opts));
 
   // The engines together report more shortfall than the model actually has:
   // stats sums the engines, while uncovered_count describes their union.
@@ -396,7 +388,7 @@ TEST(GeneratorTest, OverlappingSubModelReportsNoShortfallWhenComplete) {
   auto result = Generate(opts);
 
   ASSERT_TRUE(result.error.ok());
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.uncovered.empty());
   EXPECT_EQ(result.uncovered_count, 0u);
   EXPECT_EQ(result.omitted_uncovered, 0u);
@@ -512,7 +504,7 @@ TEST(GeneratorTest, NegativeTesting) {
   auto result = Generate(opts);
 
   // Positive tests should achieve full coverage of valid tuples.
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
 
   // Positive tests must not contain invalid values.
   for (const auto& tc : result.tests) {
@@ -533,6 +525,30 @@ TEST(GeneratorTest, NegativeTesting) {
     }
     EXPECT_EQ(invalid_count, 1u) << "Negative test must have exactly 1 invalid value";
   }
+}
+
+// Negative rows are chosen by coverage gain, so each invalid value needs about
+// v_valid^(t-1) rows rather than one row per uncovered tuple.
+TEST(GeneratorTest, NegativeRowsAreChosenByCoverageGain) {
+  constexpr uint32_t kParams = 10;
+  constexpr uint32_t kValidValues = 3;
+  GenerateOptions opts;
+  for (uint32_t pi = 0; pi < kParams; ++pi) {
+    const std::string name = "P" + std::to_string(pi);
+    opts.parameters.push_back(Parameter(name, {name + "a", name + "b", name + "c", name + "bad"},
+                                        {false, false, false, true}));
+  }
+  opts.strength = 2;
+  opts.seed = 42;
+
+  auto result = Generate(opts);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
+  ASSERT_TRUE(result.negative_coverage.has_value());
+  EXPECT_DOUBLE_EQ(result.negative_coverage->coverage_ratio, 1.0);
+  // Each invalid value needs at least kValidValues rows; allow three times that.
+  EXPECT_LE(result.negative_tests.size(), static_cast<size_t>(3 * kValidValues * kParams));
 }
 
 TEST(GeneratorTest, NegativeTestingCoversRequestedThreeWiseTuples) {
@@ -697,7 +713,7 @@ TEST(GeneratorTest, LargeModelFullCoverage) {
 
   auto result = Generate(opts);
 
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.uncovered.empty());
   EXPECT_EQ(result.stats.total_tuples, result.stats.covered_tuples);
   EXPECT_GT(result.tests.size(), 0u);
@@ -818,7 +834,7 @@ TEST(GeneratorErrorSignalTest, SuccessfulGenerationLeavesErrorOk) {
   auto result = Generate(opts);
 
   EXPECT_TRUE(result.error.ok());
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
 }
 
 TEST(GeneratorSemanticValidationTest, RejectsMetadataLengthMismatch) {
@@ -879,6 +895,33 @@ TEST(GeneratorErrorSignalTest, IncompleteCoverageReportsBelowOneWithoutError) {
 
   EXPECT_TRUE(result.error.ok());
   EXPECT_LT(result.coverage, 1.0);
+  EXPECT_TRUE(MatchesOracle(result, opts));
+}
+
+// A run that maxTests stops short leaves the error ok on both entry points;
+// coverage below one and a nonzero uncovered count are the signal.
+TEST(GeneratorErrorSignalTest, MaxTestsBoundRunLeavesErrorOkWithUncoveredCount) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1", "a2", "a3"}, {}},
+      {"B", {"b0", "b1", "b2", "b3"}, {}},
+      {"C", {"c0", "c1", "c2", "c3"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 3;
+  opts.max_tests = 3;
+
+  auto generated = Generate(opts);
+  EXPECT_TRUE(generated.error.ok()) << generated.error.message;
+  EXPECT_LT(generated.coverage, 1.0);
+  EXPECT_GT(generated.uncovered_count, 0u);
+  EXPECT_TRUE(MatchesOracle(generated, opts));
+
+  auto extended = Extend({TestCase{{0, 0, 0}}}, opts, ExtendMode::kStrict);
+  EXPECT_TRUE(extended.error.ok()) << extended.error.message;
+  EXPECT_LT(extended.coverage, 1.0);
+  EXPECT_GT(extended.uncovered_count, 0u);
+  EXPECT_TRUE(MatchesOracle(extended, opts));
 }
 
 // ---------------------------------------------------------------------------
@@ -897,7 +940,7 @@ TEST(GeneratorExtendTest, ExtendEmptyIsLikeGenerate) {
   std::vector<TestCase> empty_existing;
   auto result = Extend(empty_existing, opts, ExtendMode::kStrict);
 
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.uncovered.empty());
   EXPECT_EQ(result.stats.total_tuples, 4u);
 }
@@ -916,7 +959,7 @@ TEST(GeneratorExtendTest, ExtendPartialImprovesCoverage) {
   std::vector<TestCase> existing = {TestCase{{0, 0, 0}}};
   auto result = Extend(existing, opts, ExtendMode::kStrict);
 
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.uncovered.empty());
 
   // The existing test should be included.
@@ -950,7 +993,7 @@ TEST(GeneratorExtendTest, StrictPreservesInvalidExistingPrefixAndExcludesItFromC
   for (size_t i = 0; i < existing.size(); ++i) {
     EXPECT_EQ(result.tests[i].values, existing[i].values);
   }
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_EQ(result.stats.covered_tuples, result.stats.total_tuples);
   EXPECT_EQ(std::count_if(result.warnings.begin(), result.warnings.end(),
                           [](const auto& warning) {
@@ -989,6 +1032,174 @@ TEST(GeneratorExtendTest, RejectsMaxTestsBelowExistingCount) {
   EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
   EXPECT_NE(result.error.message.find("existing test count"), std::string::npos);
   EXPECT_TRUE(result.tests.empty());
+}
+
+TEST(GeneratorExtendTest, ConstrainedExtendIsCompleteByTheValidator) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox", "safari"}, {}},
+      {"arch", {"x64", "arm"}, {}},
+  };
+  opts.constraint_expressions = {"IF os=mac THEN browser!=chrome", "IF arch=arm THEN os!=win"};
+  opts.strength = 2;
+  opts.seed = 5;
+  const std::vector<TestCase> existing = {TestCase{{1, 2, 1}}, TestCase{{0, 0, 0}}};
+
+  auto result = Extend(existing, opts, ExtendMode::kStrict);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
+  ASSERT_GE(result.tests.size(), existing.size());
+  for (size_t i = 0; i < existing.size(); ++i) {
+    EXPECT_EQ(result.tests[i].values, existing[i].values);
+  }
+}
+
+TEST(GeneratorExtendTest, SubModelExtendIsCompleteByTheValidator) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"a0", "a1", "a2"}, {}},
+      {"B", {"b0", "b1", "b2"}, {}},
+      {"C", {"c0", "c1"}, {}},
+      {"D", {"d0", "d1"}, {}},
+  };
+  opts.strength = 2;
+  opts.seed = 9;
+  SubModel sm;
+  sm.parameter_names = {"A", "B", "C"};
+  sm.strength = 3;
+  opts.sub_models = {sm};
+  const std::vector<TestCase> existing = {TestCase{{0, 0, 0, 0}}, TestCase{{1, 2, 1, 0}}};
+
+  auto result = Extend(existing, opts, ExtendMode::kStrict);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
+  ASSERT_GE(result.tests.size(), existing.size());
+  for (size_t i = 0; i < existing.size(); ++i) {
+    EXPECT_EQ(result.tests[i].values, existing[i].values);
+  }
+}
+
+TEST(GeneratorExtendTest, ExtendingACompleteSuiteAppendsNothing) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"os", {"win", "mac", "linux"}, {}},
+      {"browser", {"chrome", "firefox"}, {}},
+      {"arch", {"x64", "arm"}, {}},
+  };
+  opts.constraint_expressions = {"IF os=mac THEN arch=arm"};
+  opts.strength = 2;
+  opts.seed = 11;
+  auto generated = Generate(opts);
+  ASSERT_TRUE(IsCompleteByOracle(generated, opts));
+
+  auto result = Extend(generated.tests, opts, ExtendMode::kStrict);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  EXPECT_EQ(result.tests.size(), generated.tests.size());
+  for (size_t i = 0; i < generated.tests.size(); ++i) {
+    EXPECT_EQ(result.tests[i].values, generated.tests[i].values);
+  }
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
+}
+
+// Existing and seed rows become one suite, so they share one row limit, and the
+// refusal names the pair instead of a seed count the caller never supplied.
+TEST(GeneratorExtendTest, ExistingAndSeedsShareOneRowLimitNamedAsSuch) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  opts.seeds.assign(50000, TestCase{{1, 1}});
+  const std::vector<TestCase> existing(60000, TestCase{{0, 0}});
+
+  auto result = Extend(existing, opts, ExtendMode::kStrict);
+
+  EXPECT_EQ(result.error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_EQ(result.error.message, "Existing and seed test count 110000 exceeds maximum of 100000");
+}
+
+// A preserved row whose index named no declared value must not be read through
+// the expanded value list, where it would name a generated value and count.
+TEST(GeneratorExtendTest, OutOfRangePreservedIndexCountsTowardNoClassCoverage) {
+  GenerateOptions opts;
+  Parameter os("os", {"win", "mac"});
+  os.set_equivalence_classes({"desktop", "apple"});
+  opts.parameters = {Parameter("n", {"5"}), os};
+  opts.boundary_configs["n"] = {coverwise::model::BoundaryConfig::Type::kInteger, 4.0, 6.0, 1.0};
+  opts.strength = 2;
+  opts.max_tests = 1;
+  const std::vector<TestCase> existing = {TestCase{{1, 1}}};
+
+  auto result = Extend(existing, opts, ExtendMode::kStrict);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  ASSERT_EQ(result.tests.size(), 1u);
+  EXPECT_EQ(result.tests[0].values[0], coverwise::model::kUnassigned);
+  EXPECT_EQ(result.tests[0].values[1], 1u);
+  ASSERT_TRUE(result.class_coverage.has_value());
+  EXPECT_EQ(result.class_coverage->covered_class_tuples, 0u);
+  EXPECT_TRUE(MatchesOracle(result, opts));
+}
+
+// A surface that read the rows itself hands its total over, and the engine
+// does not charge the rows a second time; without one, the gate charges them.
+TEST(GeneratorExtendTest, RowsASurfaceAlreadyCountedAreNotChargedAgain) {
+  GenerateOptions opts;
+  opts.parameters = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1"}, {}},
+  };
+  std::vector<TestCase> existing(20, TestCase{{coverwise::model::kUnassigned, 0}});
+  for (auto& row : existing) {
+    row.unresolved = {std::string(60000, '9'), std::nullopt};
+  }
+
+  auto uncounted = Extend(existing, opts, ExtendMode::kStrict);
+  EXPECT_EQ(uncounted.error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_EQ(uncounted.error.message, coverwise::model::AggregateBudgetExceededMessage());
+
+  // The cells are drifted numbers, which a surface reader does not charge, so
+  // its total is empty and its own gate call accepts the model.
+  coverwise::model::ChargedTextReader reader;
+  ASSERT_TRUE(coverwise::model::AcceptOptions(opts, reader.total()).ok());
+  auto counted = Extend(existing, opts, ExtendMode::kStrict, reader.total());
+  ASSERT_TRUE(counted.error.ok()) << counted.error.message;
+  ASSERT_GE(counted.tests.size(), existing.size());
+  EXPECT_TRUE(IsCompleteByOracle(counted, opts));
+}
+
+// A preserved single-fault row stays in the flagged prefix and is credited to
+// negative coverage, so the negative pass does not emit it a second time.
+TEST(GeneratorExtendTest, PreservedSingleFaultRowIsNotEmittedAgain) {
+  GenerateOptions opts;
+  opts.parameters = {
+      Parameter("A", {"a1", "a2", "bad"}, {false, false, true}),
+      Parameter("B", {"b1", "b2"}),
+      Parameter("C", {"c1", "c2"}),
+  };
+  opts.strength = 3;
+  opts.seed = 4;
+  const TestCase single_fault{{2, 0, 0}};
+
+  auto result = Extend({single_fault}, opts, ExtendMode::kStrict);
+
+  ASSERT_TRUE(result.error.ok()) << result.error.message;
+  ASSERT_FALSE(result.tests.empty());
+  EXPECT_EQ(result.tests[0].values, single_fault.values);
+  EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
+                      "Existing test 0 preserved but excluded from coverage: value A=bad is "
+                      "marked invalid"),
+            result.warnings.end());
+  for (const auto& row : result.negative_tests) {
+    EXPECT_NE(row.values, single_fault.values);
+  }
+  ASSERT_TRUE(result.negative_coverage.has_value());
+  EXPECT_DOUBLE_EQ(result.negative_coverage->coverage_ratio, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,6 +1326,7 @@ TEST(GeneratorParityTest, IncompleteCoverageMaxTestsWarning) {
   auto result = Generate(opts);
 
   EXPECT_LT(result.coverage, 1.0);
+  EXPECT_TRUE(MatchesOracle(result, opts));
   EXPECT_NE(std::find(result.warnings.begin(), result.warnings.end(),
                       "Generation stopped at maxTests (3) before reaching 100% coverage"),
             result.warnings.end());
@@ -1140,7 +1352,7 @@ TEST(GeneratorParityTest, UnreachableTupleIsExcludedFromUniverse) {
   auto result = Generate(opts);
 
   EXPECT_TRUE(result.error.ok());
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.uncovered.empty());
   EXPECT_TRUE(result.warnings.empty());
 }
@@ -1269,7 +1481,7 @@ TEST(GeneratorEdgeCaseTest, StrengthOne) {
   };
   opts.strength = 1;
   auto result = Generate(opts);
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   // All 5 values should be covered
   EXPECT_EQ(result.stats.total_tuples, 5u);
 }
@@ -1285,6 +1497,7 @@ TEST(GeneratorEdgeCaseTest, MaxTestsOne) {
   auto result = Generate(opts);
   EXPECT_EQ(result.tests.size(), 1u);
   EXPECT_LT(result.coverage, 1.0);
+  EXPECT_TRUE(MatchesOracle(result, opts));
   EXPECT_FALSE(result.uncovered.empty());
   ASSERT_FALSE(result.suggestions.empty());
   EXPECT_EQ(result.suggestions[0].test_case.values.size(), opts.parameters.size());
@@ -1308,7 +1521,7 @@ TEST(GeneratorEdgeCaseTest, ParameterWithSingleValue) {
       {"browser", {"chrome", "firefox"}, {}},
   };
   auto result = Generate(opts);
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   // All tests must have os=win (index 0)
   for (const auto& tc : result.tests) {
     EXPECT_EQ(tc.values[0], 0u);
@@ -1373,12 +1586,10 @@ TEST(GenerateCompletionTest, ReachesFullCoverageAtStrengthEqualsParamCount) {
     opts.strength = 4;
     opts.seed = seed;
     auto result = Generate(opts);
-    EXPECT_DOUBLE_EQ(result.coverage, 1.0) << "seed=" << seed;
+    EXPECT_TRUE(IsCompleteByOracle(result, opts)) << "seed=" << seed;
     EXPECT_TRUE(result.uncovered.empty()) << "seed=" << seed;
     // t == n is the full cross product: exactly 4^4 distinct tests.
     EXPECT_EQ(result.tests.size(), 256u) << "seed=" << seed;
-    auto cov = coverwise::validator::ValidateCoverage(opts.parameters, result.tests, 4);
-    EXPECT_DOUBLE_EQ(cov.coverage_ratio, 1.0) << "seed=" << seed;
   }
 }
 
@@ -1393,7 +1604,7 @@ TEST(GenerateCompletionTest, ReachesFullCoverageForHighStrengthMixedModel) {
   opts.strength = 4;
   opts.seed = 3;
   auto result = Generate(opts);
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.uncovered.empty());
 }
 
@@ -1458,7 +1669,7 @@ TEST(GenerateCompletionTest, ReachesFullCoverageUnderStallingConstraints) {
   opts.seed = 5;
   opts.constraint_expressions = {"IF os=mac THEN browser!=edge", "IF os=win THEN browser!=safari"};
   auto result = Generate(opts);
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_TRUE(result.uncovered.empty());
 
   std::vector<coverwise::model::Constraint> constraints;
@@ -1624,7 +1835,7 @@ TEST(GeneratorAcceptanceTest, WeightsMayNameAValueExpansionProduces) {
   auto result = Generate(opts);
 
   ASSERT_TRUE(result.error.ok()) << result.error.message;
-  EXPECT_DOUBLE_EQ(result.coverage, 1.0);
+  EXPECT_TRUE(IsCompleteByOracle(result, opts));
   EXPECT_FALSE(result.tests.empty());
 }
 
@@ -1875,8 +2086,10 @@ TEST(GeneratorAcceptanceTest, StrictExtensionPreservesOutOfRangeAndUnassignedRow
 
   ASSERT_TRUE(result.error.ok()) << result.error.message;
   ASSERT_GE(result.tests.size(), existing.size());
+  // Index 1 named no declared value; in the expanded list it would read as 4.
+  EXPECT_EQ(result.tests[0].values, (std::vector<uint32_t>{coverwise::model::kUnassigned, 0}));
+  EXPECT_EQ(result.tests[1].values, existing[1].values);
   for (size_t i = 0; i < 2; ++i) {
-    EXPECT_EQ(result.tests[i].values, existing[i].values);
     EXPECT_EQ(result.tests[i].unresolved, existing[i].unresolved);
   }
   const uint32_t five = coverwise::model::ResolveValueName(result.parameters[0], "5");

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -926,6 +927,25 @@ TEST(CoverageValidatorTest, ExhaustedTupleSearchStopsValidationWithoutCountingTh
   EXPECT_EQ(report.uncovered_count, 2u);
 }
 
+TEST(CoverageValidatorTest, ExhaustedTupleSearchStillAccountsForTheOmittedUncoveredTuples) {
+  // Far more uncovered tuples than the report lists are seen before the search
+  // runs out, so the partial counts must still satisfy the accounting identity.
+  std::vector<Parameter> params;
+  std::vector<std::string> wide;
+  for (uint32_t i = 0; i < 1100; ++i) wide.push_back("w" + std::to_string(i));
+  params.push_back({"gate", {"g0", "g1"}, {}});
+  params.push_back({"wide", wide, {}});
+  for (uint32_t i = 2; i < 24; ++i) params.push_back({"P" + std::to_string(i), {"0", "1"}, {}});
+  std::vector<coverwise::model::Constraint> constraints;
+  constraints.push_back(std::make_unique<GatedLateRejectConstraint>());
+
+  auto report = ValidateCoverage(params, {}, 2, constraints);
+
+  EXPECT_EQ(report.error.message, "Constraint search budget exceeded");
+  EXPECT_GT(report.uncovered_count, report.uncovered.size());
+  EXPECT_EQ(report.uncovered.size() + report.omitted_uncovered, report.uncovered_count);
+}
+
 TEST(CoverageValidatorTest, RejectionReasonNamesTheValueTheRowCarried) {
   // A recorded row that names a value the model no longer declares keeps
   // kUnassigned at that position, so the caller's own text is the only thing
@@ -937,7 +957,7 @@ TEST(CoverageValidatorTest, RejectionReasonNamesTheValueTheRowCarried) {
   };
   TestCase drifted;
   drifted.values = {coverwise::model::kUnassigned, 0};
-  drifted.unresolved = {"edge", ""};
+  drifted.unresolved = {std::optional<std::string>("edge"), std::nullopt};
   TestCase omitted;
   omitted.values = {coverwise::model::kUnassigned, 0};
 
@@ -946,6 +966,42 @@ TEST(CoverageValidatorTest, RejectionReasonNamesTheValueTheRowCarried) {
   ASSERT_EQ(report.invalid_tests.size(), 2u);
   EXPECT_EQ(report.invalid_tests[0].reason, "value 'edge' is not declared by parameter browser");
   EXPECT_EQ(report.invalid_tests[1].reason, "missing value for parameter browser");
+}
+
+TEST(CoverageValidatorTest, RejectionReasonNamesAnEmptyStringTheRowCarried) {
+  // An empty string the row supplied is text the model does not declare, which
+  // is a different fault from a row that carried no member for the parameter.
+  std::vector<Parameter> params = {
+      {"browser", {"chrome", "firefox"}, {}},
+      {"os", {"linux", "mac"}, {}},
+  };
+  TestCase empty_text;
+  empty_text.values = {coverwise::model::kUnassigned, 0};
+  empty_text.unresolved = {std::optional<std::string>(""), std::nullopt};
+  TestCase omitted;
+  omitted.values = {coverwise::model::kUnassigned, 0};
+
+  auto report = ValidateCoverage(params, {empty_text, omitted}, 2);
+
+  ASSERT_EQ(report.invalid_tests.size(), 2u);
+  EXPECT_EQ(report.invalid_tests[0].reason, "value '' is not declared by parameter browser");
+  EXPECT_EQ(report.invalid_tests[1].reason, "missing value for parameter browser");
+}
+
+TEST(CoverageValidatorTest, RowCountAboveTheLimitIsInvalidInputBeforeAnyRowIsRead) {
+  std::vector<Parameter> params = {{"A", {"a0", "a1"}, {}}};
+  std::vector<TestCase> at_limit(coverwise::model::kMaxTests, TestCase{{0}});
+  EXPECT_TRUE(ValidateCoverage(params, at_limit, 1).error.ok());
+
+  std::vector<TestCase> over_limit(coverwise::model::kMaxTests + 1, TestCase{{0}});
+  auto report = ValidateCoverage(params, over_limit, 1);
+
+  EXPECT_EQ(report.error.code, coverwise::model::Error::Code::kInvalidInput);
+  EXPECT_EQ(report.error.message, "Test count " + std::to_string(over_limit.size()) +
+                                      " exceeds maximum of " +
+                                      std::to_string(coverwise::model::kMaxTests));
+  EXPECT_TRUE(report.invalid_tests.empty());
+  EXPECT_EQ(report.total_tuples, 0u);
 }
 
 TEST(CoverageValidatorTest, InvalidTestsIsEmptyWhenEveryRowIsAccepted) {

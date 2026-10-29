@@ -205,13 +205,15 @@ TEST(GreedyConstructTest, ConstraintPruning) {
 
   // Generate many test cases; none should have (A=0, B=1).
   Rng rng(12);
+  int a0_assigned = 0;
   for (int i = 0; i < 20; ++i) {
     rng.Seed(static_cast<uint64_t>(i));
     auto tc = Unwrap(Construct(params, MakeScoreFn(engine), constraints, rng));
-    if (tc.values[0] == 0) {
-      EXPECT_NE(tc.values[1], 1u) << "Constraint violated: A=a0 and B=b1";
-    }
+    EXPECT_FALSE(tc.values[0] == 0 && tc.values[1] == 1) << "Constraint violated: A=a0 and B=b1";
+    if (tc.values[0] == 0) ++a0_assigned;
   }
+  // The constrained branch was exercised, so the check above is not vacuous.
+  EXPECT_GT(a0_assigned, 0);
 }
 
 TEST(GreedyConstructTest, ConstraintUnknownAllowed) {

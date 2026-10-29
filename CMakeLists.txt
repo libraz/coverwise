@@ -143,6 +143,7 @@ if(COVERWISE_TOP_LEVEL AND NOT COVERWISE_BUILD_WASM)
     model/error.h
     model/generate_options.h
     model/limits.h
+    model/options_validation.h
     model/parameter.h
     model/test_case.h
     util/string_util.h

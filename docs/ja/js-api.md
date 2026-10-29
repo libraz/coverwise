@@ -69,7 +69,7 @@ rule.toString(); // 'IF os = "Windows" THEN browser != "Safari"'
 
 ### `@libraz/coverwise/wasm`
 
-コンパイル済みバイナリそのもので、JavaScript も型も含みません。バンドラが `.wasm` ファイルをアセットとして解決し、その URL を返せるようにするためのものです。ローダが実行時に探す必要がなくなります。
+コンパイル済みバイナリそのもので、JavaScript も型も含みません。`.wasm` ファイルを、バンドラが解決してコピーできるアセットとして公開します。`init()` は引数を取らず、この URL を渡すことはできません。ローダは引き続き `coverwise.js` の隣でバイナリを探すため、ファイルはそこに出力される必要があります。
 
 ```typescript
 // Vite and other bundlers that support the `?url` suffix.
@@ -355,6 +355,8 @@ const newTests = result.tests.slice(existing.length);
 
 `maxTests` は既存の行も含めた結果全体を数えます。そのため `existing.length` より小さい `maxTests` は、自分の入力すら収まらないスイートを求めることになり、その場で拒否されます。コードは `INVALID_INPUT`、メッセージは `maxTests cannot be smaller than the existing test count` です。`existing.length` 以上の `maxTests` は有効で、追加できる行数の上限として働きます。
 
+`tests` の保持された先頭部分には、カバレッジから除外される行が含まれることがあり、1 行ごとに `Existing test N preserved but excluded from coverage: …` という警告が付きます。無効値をちょうど 1 つ含み、それ以外は制約を満たす保持行は `negativeCoverage` に数えられ、`negativeTests` では再生成されません。
+
 ## `estimateModel(input)`
 
 生成を実行せずにモデルの規模を見積もります。
@@ -480,7 +482,8 @@ const result = generate({
 
 エンジンを伴う 2 つのエントリポイントは、エンジンに到達する前に同一のバリデーションを実行します。したがって `@libraz/coverwise` と `@libraz/coverwise/pure` は、まったく同じ入力を受理し、まったく同じ入力を同じメッセージで拒否します。ここで走る検査は次のとおりです。
 
-- `strength` — 正の整数である必要があります。非整数、負、ゼロは拒否されます。上限、すなわちパラメータ数を超えないという条件は、1 つ後ろの層でエンジンが検査します。
+- `strength` — `[1, 4294967295]` の整数である必要があり、それ以外は `Invalid strength: X. Must be an integer in [1, 4294967295].` で拒否されます。サブモデルの `strength` も同じ上限です。より厳しい上限、すなわちパラメータ数を超えないという条件は、1 つ後ろの層でエンジンが検査します。
+- 文字列 — 対になっていない UTF-16 サロゲートを含む文字列は、行のキーを含むすべてのフィールドで `<context> contains an unpaired surrogate, which is not valid UTF-8` として拒否されます。
 - `seed` — `[0, 4294967295]` の uint32 整数である必要があります。
 - `maxTests` — `[0, 4294967295]` の uint32 整数である必要があります。`0` は無制限です。
 - `parameters` — 配列である必要があります。空であってはならないという条件はこの層ではなくエンジンの規則で、`At least one parameter is required` というメッセージで届きます。
@@ -525,7 +528,7 @@ try {
 
 | コード | JavaScript から届くか | 発生源 |
 |---|---|---|
-| `INVALID_INPUT` | 届く | 上記のバリデーションが拒否するもの全般、および後述の初期化まわりの 2 つの失敗 |
+| `INVALID_INPUT` | 届く | 上記のバリデーションが拒否するもの全般（対になっていない UTF-16 サロゲートを含む文字列も含みます）、および後述の初期化まわりの 2 つの失敗 |
 | `CONSTRAINT_ERROR` | 届く | パースできない制約式、未知のパラメータを指す制約式、モデルを充足不能にする制約式 |
 | `TUPLE_EXPLOSION` | 届く | タプル集合の大きさ、またはパラメータの組み合わせ数がエンジン内部の作業量予算を超えるモデル |
 | `INSUFFICIENT_COVERAGE` | 届かない | JavaScript のどちらのエンジンからも発生しません。C++ の語彙と CLI の終了コードに対応させるために存在します |

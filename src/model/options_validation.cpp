@@ -44,7 +44,7 @@ const Parameter* FindParameter(const std::vector<Parameter>& params, const std::
 /// counted nowhere else, and leaving it would put the one path with no reader
 /// outside the published budget entirely.
 Error ValidateStringBudget(const GenerateOptions& options, ChargedText charged) {
-  size_t aggregate = charged.bytes();
+  uint64_t aggregate = charged.bytes();
   // A caller's own total can exhaust the budget on its own, and a model always
   // has at least a parameter name to charge, but the verdict must not depend on
   // there being something left to walk.
@@ -123,7 +123,8 @@ Error ValidateStringBudget(const GenerateOptions& options, ChargedText charged) 
   if (!charged.rows_counted()) {
     for (size_t row = 0; row < options.seeds.size(); ++row) {
       for (const auto& text : options.seeds[row].unresolved) {
-        if (auto error = account(text, ChargedString::kRowValue, {"seeds", row}); !error.ok()) {
+        if (!text.has_value()) continue;
+        if (auto error = account(*text, ChargedString::kRowValue, {"seeds", row}); !error.ok()) {
           return error;
         }
       }
@@ -275,8 +276,9 @@ Error ValidateOptions(const GenerateOptions& options, ChargedText charged) {
     // value is caught here rather than resolved by whichever key the surface's
     // map happened to hand over first.
     std::vector<const std::string*> claimed_by(param->values.size(), nullptr);
+    const ValueResolver resolver(*param);
     for (const auto& [value_name, weight] : value_weights) {
-      const uint32_t value_index = ResolveValueName(*param, value_name);
+      const uint32_t value_index = resolver.Resolve(value_name);
       if (value_index == UINT32_MAX) {
         return Invalid("Unknown value in weights: " + param_name + "=" + value_name);
       }

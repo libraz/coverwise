@@ -115,22 +115,25 @@ describe('greedyConstruct', () => {
     // Constraint: IF param0=1 (mac) THEN param1!=1 (ie)
     const constraint = new ImpliesNode(new EqualsNode(0, 1), new NotEqualsNode(1, 1));
 
-    const rng = new Rng(42);
-    const tc = construct(params, prefers(1), [constraint], rng);
-    expect(tc).not.toBeNull();
-    if (tc === null) {
-      return;
+    // Whichever parameter is assigned first takes the preferred value, so
+    // without pruning every seed would produce (mac, ie).
+    let macAssigned = 0;
+    for (let seed = 0; seed < 20; ++seed) {
+      const tc = construct(params, prefers(1), [constraint], new Rng(seed));
+      expect(tc).not.toBeNull();
+      if (tc === null) {
+        return;
+      }
+      expect(tc.values[0] === 1 && tc.values[1] === 1).toBe(false);
+      expect(tc.values[0]).not.toBe(UNASSIGNED);
+      expect(tc.values[1]).not.toBe(UNASSIGNED);
+      if (tc.values[0] === 1) {
+        ++macAssigned;
+      }
     }
-
-    // os should be mac (value 1) since it's preferred.
-    // browser should NOT be ie (value 1) because it's pruned.
-    if (tc.values[0] === 1) {
-      // mac was assigned
-      expect(tc.values[1]).not.toBe(1); // ie must be pruned
-    }
-    // Either way, all values must be assigned.
-    expect(tc.values[0]).not.toBe(UNASSIGNED);
-    expect(tc.values[1]).not.toBe(UNASSIGNED);
+    // Both assignment orders occurred, so the pruned branch was exercised.
+    expect(macAssigned).toBeGreaterThan(0);
+    expect(macAssigned).toBeLessThan(20);
   });
 
   it('respects allowedValues mask', () => {

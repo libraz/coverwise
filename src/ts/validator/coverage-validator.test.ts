@@ -7,7 +7,7 @@ import { fastestEach } from '../../../tests/util/timing.js';
 import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
 import { parseConstraint } from '../model/constraint-parser.js';
 import { ErrorCode } from '../model/error.js';
-import { MAX_STRING_BYTES } from '../model/limits.js';
+import { MAX_STRING_BYTES, MAX_TESTS } from '../model/limits.js';
 import { MAX_PARAMETERS, Parameter } from '../model/parameter.js';
 import type { GenerateResult, TestCase } from '../model/test-case.js';
 import { createGenerateResult, UNASSIGNED } from '../model/test-case.js';
@@ -994,6 +994,22 @@ describe('feasibility search budget', () => {
     expect(report.coveredTuples).toBe(0);
     expect(report.uncoveredCount).toBe(2);
   }, 30_000);
+
+  it('still accounts for the omitted uncovered tuples when the tuple search runs out', () => {
+    // Far more uncovered tuples than the report lists are seen before the
+    // search runs out, so the partial counts must satisfy the accounting identity.
+    const wide = Array.from({ length: 1100 }, (_, i) => `w${i}`);
+    const params = [
+      new Parameter('gate', ['g0', 'g1']),
+      new Parameter('wide', wide),
+      ...binaryParams(24).slice(2),
+    ];
+    const report = validateCoverage(params, [], 2, [new GatedLateRejectConstraint()]);
+
+    expect(report.error.message).toBe('Constraint search budget exceeded');
+    expect(report.uncoveredCount).toBeGreaterThan(report.uncovered.length);
+    expect(report.uncovered.length + report.omittedUncovered).toBe(report.uncoveredCount);
+  }, 30_000);
 });
 
 /// Ceiling on a hang, not a performance budget: these gates measure suites big
@@ -1302,7 +1318,7 @@ describe('validateCoverage invalidTests', () => {
     const recorded = [new Parameter('browser', ['chrome', 'firefox']), new Parameter('os', ['x'])];
     const report = validateCoverage(
       recorded,
-      [{ values: [UNASSIGNED, 0], unresolved: ['edge', ''] }, { values: [UNASSIGNED, 0] }],
+      [{ values: [UNASSIGNED, 0], unresolved: ['edge', undefined] }, { values: [UNASSIGNED, 0] }],
       2,
     );
 
@@ -1310,6 +1326,34 @@ describe('validateCoverage invalidTests', () => {
       { testIndex: 0, reason: "value 'edge' is not declared by parameter browser" },
       { testIndex: 1, reason: 'missing value for parameter browser' },
     ]);
+  });
+
+  it('names an empty string the rejected row carried, unlike a row that omitted the member', () => {
+    const recorded = [new Parameter('browser', ['chrome', 'firefox']), new Parameter('os', ['x'])];
+    const report = validateCoverage(
+      recorded,
+      [{ values: [UNASSIGNED, 0], unresolved: ['', undefined] }, { values: [UNASSIGNED, 0] }],
+      2,
+    );
+
+    expect(report.invalidTests).toEqual([
+      { testIndex: 0, reason: "value '' is not declared by parameter browser" },
+      { testIndex: 1, reason: 'missing value for parameter browser' },
+    ]);
+  });
+
+  it('rejects a row count above the limit before reading any row', () => {
+    const single = [new Parameter('A', ['a0', 'a1'])];
+    const atLimit = Array.from({ length: MAX_TESTS }, () => ({ values: [0] }));
+    expect(validateCoverage(single, atLimit, 1).error.code).toBe(ErrorCode.Ok);
+
+    const report = validateCoverage(single, [...atLimit, { values: [0] }], 1);
+    expect(report.error.code).toBe(ErrorCode.InvalidInput);
+    expect(report.error.message).toBe(
+      `Test count ${MAX_TESTS + 1} exceeds maximum of ${MAX_TESTS}`,
+    );
+    expect(report.invalidTests).toEqual([]);
+    expect(report.totalTuples).toBe(0);
   });
 
   it('is empty when every row is accepted', () => {

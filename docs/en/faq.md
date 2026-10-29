@@ -108,10 +108,10 @@ So that it can be trusted as ground truth. The validator is a layer of its own: 
 There is not one, and `coverwise --version` is treated as an unknown command: usage on standard error, exit 3. `coverwise --help` is the only self-description the binary offers, and it writes to standard output and exits 0.
 
 **Why does piping into `head` end in exit code 3?**
-Because a reader that closes the pipe makes the write to standard output fail, and a run that could not deliver its output did not succeed. The CLI reports that as invalid input, which is the code it uses for every condition outside a coverage result.
+Because a reader that closes the pipe while the report is still being written makes the write to standard output fail, and a run that could not deliver its output did not succeed. That happens when the document is larger than the reader consumes; a small document fits in the pipe before the reader closes it, and the run exits 0. The CLI reports that as invalid input, which is the code it uses for every condition outside a coverage result.
 
 ```bash
-coverwise generate input.json | head -c 200
+coverwise generate big.json | head -c 200
 # error: cannot write to standard output
 # exit status 3
 ```

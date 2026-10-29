@@ -5,6 +5,7 @@
 #define COVERWISE_MODEL_OPTIONS_VALIDATION_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -98,7 +99,7 @@ class ChargedText {
   static ChargedText None() { return ChargedText(0, false); }
 
   /// @brief UTF-8 bytes already spent before the gate walks the options.
-  size_t bytes() const { return bytes_; }
+  uint64_t bytes() const { return bytes_; }
 
   /// @brief Whether a reader already counted the caller's row values.
   bool rows_counted() const { return rows_counted_; }
@@ -106,9 +107,9 @@ class ChargedText {
  private:
   friend class ChargedTextReader;
 
-  ChargedText(size_t bytes, bool rows_counted) : bytes_(bytes), rows_counted_(rows_counted) {}
+  ChargedText(uint64_t bytes, bool rows_counted) : bytes_(bytes), rows_counted_(rows_counted) {}
 
-  size_t bytes_;
+  uint64_t bytes_;
   bool rows_counted_;
 };
 
@@ -126,13 +127,13 @@ class ChargedText {
 class ChargedTextReader {
  public:
   /// @brief Charge @p bytes of caller text against this call's total.
-  void Charge(size_t bytes) { bytes_ += bytes; }
+  void Charge(uint64_t bytes) { bytes_ += bytes; }
 
   /// @brief Everything read so far, for the gate.
   ChargedText total() const { return ChargedText(bytes_, true); }
 
  private:
-  size_t bytes_ = 0;
+  uint64_t bytes_ = 0;
 };
 
 /// @brief Validate a GenerateOptions object against the full acceptance rules.

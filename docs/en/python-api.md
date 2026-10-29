@@ -126,7 +126,7 @@ report["coverageRatio"]  # 0.25
 [item["display"] for item in report["uncovered"]]  # ["os=win, browser=Safari", ...]
 ```
 
-Two things the CLI's `analyze` can do are not reachable through this function. `parameters` is a name-to-values mapping or the parameter list form, never a whole model object: passing `{"parameters": [...], "strength": 3}` reads `strength` as a parameter name and raises a `TypeError`. And `strength` is always sent to the CLI explicitly, so the inheritance the CLI describes — an `analyze` run taking its strength from a `--params` model object — never happens here. Pass the strength as the argument.
+Two things the CLI's `analyze` can do are not reachable through this function. `parameters` is a name-to-values mapping or the parameter list form, never a whole model object: passing `{"parameters": [...], "strength": 3}` reads `strength` as a parameter name and raises a `TypeError`. And `strength` is always sent to the CLI explicitly, so the inheritance the CLI describes — an `analyze` run taking its strength from a `--params` model object — never happens here. Pass the strength as the argument. `strength` is validated by the same rule as in `generate`: `2`, `2.0` and `None` are accepted, and `"2"` is not.
 
 ### `extend_tests(existing, model=None, **fields)`
 
@@ -174,6 +174,8 @@ def test_login(os, browser, locale):
 
 The full cross-product above is 3 × 3 × 2 = 18 cases; the constrained pairwise suite covers every feasible pair in 9, and each case gets a readable id (`os=macOS-browser=Chrome-locale=en`).
 
+The test function receives each value in its declared Python type (`int`, `bool`, `float`). A cell that matches no declared value, such as an alias spelling, stays a string, and boundary parameters arrive as `int` or `float` according to their type. Ids are unchanged: they use the rendered text, such as `retries=3-debug=true`.
+
 `parameters` takes the same two forms `generate` takes. It defaults to `None` only so the failure is a clear one: omitting it raises `TypeError: a model requires 'parameters'`. `include_negative` is keyword-only — the `*` in the signature — so it can never be mistaken for a second positional model. Passing `include_negative=True` also runs the generated negative tests, which exercise the values marked `"invalid": true`; they are excluded by default.
 
 Every further keyword is a model field passed straight through to `generate`. That includes `constraints` and `seeds` as well as `strength`, `seed`, `maxTests`, `weights` and `subModels`: `parametrize` builds the same model document `generate` accepts, and adds nothing to it.
@@ -212,7 +214,7 @@ except coverwise.CoverwiseError as error:
 
 `code` is `CONSTRAINT_ERROR` or `INVALID_INPUT`, and `exit_code` is always one of the codes the [CLI reference](cli.md) documents. `stderr` is the diagnostic exactly as the CLI wrote it; the exception's own message is that same text with the `error: ` prefix removed. The JavaScript API reports one further category, `TUPLE_EXPLOSION`; the CLI folds it into `INVALID_INPUT`, and this package reports what the CLI reports. Insufficient coverage is not an error — see `generate` above.
 
-One class of failure is caught before any subprocess starts. A non-finite number in the model — `inf`, `-inf` or `nan` — cannot be serialized as JSON, so it is rejected during serialization and raised as `CoverwiseError` with `code == "INVALID_INPUT"` and `exit_code == 3`. No executable ran, so `stderr` is the empty string and `report` is `None`. Read the exception's message on that path; `stderr` has nothing in it.
+One class of failure is caught before any subprocess starts. A non-finite number in the model — `inf`, `-inf` or `nan` — cannot be serialized as JSON, so it is rejected during serialization and raised as `CoverwiseError` with `code == "INVALID_INPUT"` and `exit_code == 3`. No executable ran, so `stderr` is the empty string and `report` is `None`. Read the exception's message on that path; `stderr` has nothing in it. A string containing an unpaired UTF-16 surrogate is rejected the same way, before the executable starts, whether the model travels on standard input or through a temporary file.
 
 Some failures are diagnosed by a report rather than by a message. `analyze` measures a suite and only then rejects it for containing invalid rows, so the report naming those rows survives on the exception:
 
@@ -270,6 +272,8 @@ coverwise stats input.json
 ```
 
 The console script does not start a subprocess: it replaces its own process with the native executable through `os.execv`. Signals, exit codes and the three standard streams are therefore the executable's own, with no Python process in the middle to reinterpret them — which is what makes `coverwise generate big.json | head -c 200` behave the same way from a wheel as from a source build. Use `coverwise.run()` when a program needs the output back; use the command when a shell or a CI job is driving it.
+
+When the native executable cannot be launched, both launchers (`coverwise` and `python -m coverwise`) print a diagnostic to standard error and exit `127`. Exit codes `0` to `3` come only from the native executable.
 
 See the [CLI reference](cli.md) for input schemas, output schemas, and exit codes.
 

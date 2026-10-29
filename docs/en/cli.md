@@ -211,7 +211,7 @@ A model that declares `subModels` is rejected with exit code `3`. Sub-models giv
 
 Seven of the nine pairs appear in the suite, so `analyze` exits with code `2`. `uncoveredCount` counts every uncovered tuple, while the `uncovered` array stops at a fixed diagnostic cap and `omittedUncovered` reports how many were left out; the array therefore always holds exactly `uncoveredCount - omittedUncovered` entries. `coverageRatio` is written in shortest round-trip form rather than rounded for display.
 
-**Rows the model does not describe.** A test case naming a parameter or a value the `--params` model does not declare is not analyzed. It is reported in `invalidTests` with the reason it was excluded, and it contributes no coverage, so the ratio is measured over the remaining rows. The full report is still written to standard output, and `analyze` then exits with code `3` — an invalid row outranks insufficient coverage, because a suite that does not match its model has to be corrected before a coverage number about it means anything. Read `invalidTests` before reading the ratio.
+**Rows the model does not describe.** A test case that uses a value the `--params` model does not declare for a parameter, or that omits a declared parameter, is not analyzed. It is reported in `invalidTests` with the reason it was excluded, and it contributes no coverage, so the ratio is measured over the remaining rows. The full report is still written to standard output, and `analyze` then exits with code `3` — an invalid row outranks insufficient coverage, because a suite that does not match its model has to be corrected before a coverage number about it means anything. Keys naming a parameter the model does not declare are not an error: they are ignored, and the row is counted by its declared parameters alone. Read `invalidTests` before reading the ratio.
 
 ### `extend`
 
@@ -447,8 +447,8 @@ Class coverage is measured only over the parameters that declare a class, at the
   "uncoveredCount": 0,
   "omittedUncovered": 0,
   "negativeTests": [
-    { "os": "Windows", "browser": "IE" },
-    { "os": "Linux", "browser": "IE" }
+    { "os": "Linux", "browser": "IE" },
+    { "os": "Windows", "browser": "IE" }
   ],
   "negativeCoverage": {
     "totalTuples": 2,
@@ -473,7 +473,7 @@ Class coverage is measured only over the parameters that declare a class, at the
 
 ### The error object
 
-When a `generate` or `extend` run fails, the report is still written and carries a final `error` object. Two constraints that cannot both hold produce one:
+When a `generate` or `extend` run fails after the model has been read and accepted, the report is still written and carries a final `error` object. Input, read and limit failures (exit code `3`) happen before any report exists: they write nothing to standard output and only the `error:` line to standard error. Two constraints that cannot both hold produce one:
 
 ```json
 {
@@ -529,7 +529,7 @@ Read `error.message` when a run failed and `warnings` when it did not. The two c
 | `2` | Insufficient coverage, whatever the reason — a `maxTests` cap, an infeasible tuple, or a suite that leaves pairs uncovered. |
 | `3` | Invalid input, a usage error, or a failed write to standard output. |
 
-Exit code `3` covers more than a malformed model. A wrong invocation exits `3`, `analyze` exits `3` when the suite holds rows the model does not describe, and a write to standard output that fails — a reader that closed the pipe, a full disk, a closed descriptor — is reported as `error: cannot write to standard output` and exits `3`.
+Exit code `3` covers more than a malformed model. A wrong invocation exits `3`, `analyze` exits `3` when the suite holds rows the model does not describe, a string containing an unpaired UTF-16 surrogate (`\ud800` escape without its partner) is rejected as invalid input, and a write to standard output that fails — a reader that closed the pipe, a full disk, a closed descriptor — is reported as `error: cannot write to standard output` and exits `3`.
 
 ## Input limits
 

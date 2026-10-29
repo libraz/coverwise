@@ -441,6 +441,11 @@ class JsArray {
   /// @brief The element at @p index, whose own shape is still unestablished.
   JsValue At(uint32_t index) const { return JsValue(detail::ReadIndex(value_, index)); }
 
+  /// @brief The element at @p index as a string, which may be empty.
+  std::string RequireStringAt(uint32_t index, const std::string& message) const {
+    return At(index).RequireScalar(message).RequireString(message);
+  }
+
   /// @brief The element at @p index as a non-empty string.
   std::string RequireNonEmptyStringAt(uint32_t index, const std::string& message) const {
     const std::string text = At(index).RequireScalar(message).RequireString(message);

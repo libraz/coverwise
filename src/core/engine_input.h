@@ -12,6 +12,7 @@
 
 #include "model/error.h"
 #include "model/generate_options.h"
+#include "model/options_validation.h"
 
 namespace coverwise {
 namespace core {
@@ -27,11 +28,38 @@ struct SeedValidationSnapshot {
   std::optional<size_t> parameter_index;
 };
 
-/// @brief Validate that a seed can participate in positive coverage.
-std::string ValidatePositiveSeed(const model::TestCase& seed,
-                                 const std::vector<model::Parameter>& params,
-                                 const std::vector<model::Constraint>& constraints,
-                                 const SeedValidationSnapshot* original = nullptr);
+/// @brief One row the engine is seeded with, in the order it is reported back.
+///
+/// Extend's `existing` rows come first and are kept verbatim even when they no
+/// longer fit the model; the caller's `seeds` follow and are dropped with a
+/// warning when they do not.
+struct SeedRow {
+  /// @brief The row, with its indices moved onto the accepted value space.
+  model::TestCase test;
+  /// @brief Whether the row came from extend's `existing`.
+  bool preserved = false;
+  /// @brief Position in the caller's own array, for diagnostics.
+  size_t source_index = 0;
+  /// @brief Shape/index error against the caller's declared value space.
+  ///
+  /// Populated only when boundary expansion ran. Expansion can make an
+  /// originally out-of-range index name a generated value, so the error
+  /// survives acceptance with its parameter position for ordered validation.
+  SeedValidationSnapshot original;
+};
+
+/// @brief What part a seed row can play in coverage.
+struct SeedClassification {
+  /// @brief Why the row cannot count toward positive coverage; empty when it can.
+  std::string error;
+  /// @brief A preserved row with exactly one invalid value that otherwise
+  /// satisfies the model, which counts toward negative coverage instead.
+  bool single_fault = false;
+};
+
+/// @brief Classify a seed row against the accepted parameters and constraints.
+SeedClassification ClassifySeedRow(const SeedRow& row, const std::vector<model::Parameter>& params,
+                                   const std::vector<model::Constraint>& constraints);
 
 /// @brief Options that reached the engine through the acceptance gate.
 ///
@@ -48,36 +76,23 @@ class EngineInput {
   EngineInput& operator=(EngineInput&&) = default;
 
   /// @brief The accepted options, with boundary parameters already expanded.
+  ///
+  /// `seeds` is empty: the rows have moved to seed_rows().
   const model::GenerateOptions& options() const { return options_; }
 
-  /// @brief How many leading `seeds` rows came from an extend call's `existing`.
-  ///
-  /// Those rows are reported back even when they no longer fit the model; a row
-  /// past this prefix is an ordinary seed and is dropped with a warning.
-  size_t preserved_seed_count() const { return preserved_seed_count_; }
-
-  /// @brief Shape/index errors against the caller's declared value space.
-  ///
-  /// Populated only when boundary expansion ran. Expansion can make an
-  /// originally out-of-range index name a generated value, so those errors
-  /// survive acceptance with their parameter position for ordered validation.
-  const std::vector<SeedValidationSnapshot>& original_seed_validations() const {
-    return original_seed_validations_;
-  }
+  /// @brief Extend's `existing` rows followed by the caller's `seeds`.
+  const std::vector<SeedRow>& seed_rows() const { return seed_rows_; }
 
  private:
   friend AcceptedEngineInput AcceptEngineInput(model::GenerateOptions options,
-                                               size_t preserved_seed_count);
+                                               const std::vector<model::TestCase>& existing,
+                                               model::ChargedText charged);
 
-  EngineInput(model::GenerateOptions options, size_t preserved_seed_count,
-              std::vector<SeedValidationSnapshot> original_seed_validations)
-      : options_(std::move(options)),
-        preserved_seed_count_(preserved_seed_count),
-        original_seed_validations_(std::move(original_seed_validations)) {}
+  EngineInput(model::GenerateOptions options, std::vector<SeedRow> seed_rows)
+      : options_(std::move(options)), seed_rows_(std::move(seed_rows)) {}
 
   model::GenerateOptions options_;
-  size_t preserved_seed_count_ = 0;
-  std::vector<SeedValidationSnapshot> original_seed_validations_;
+  std::vector<SeedRow> seed_rows_;
 };
 
 /// @brief Expected<EngineInput, Error> for the engine's acceptance path.
@@ -97,7 +112,8 @@ class AcceptedEngineInput {
 
  private:
   friend AcceptedEngineInput AcceptEngineInput(model::GenerateOptions options,
-                                               size_t preserved_seed_count);
+                                               const std::vector<model::TestCase>& existing,
+                                               model::ChargedText charged);
 
   explicit AcceptedEngineInput(model::Error error) : error_(std::move(error)) {}
   explicit AcceptedEngineInput(EngineInput value) : value_(std::move(value)) {}
@@ -109,13 +125,18 @@ class AcceptedEngineInput {
 /// @brief Submit options to model::AcceptOptions and mint the engine's token.
 ///
 /// Every public entry point of the engine goes through here, so all of them
-/// return exactly the codes the model gate returns for the same options. Seed
-/// rows are addressed by index into the value list the caller declared, so the
-/// rows are remapped by value identity onto the expanded value space the gate
-/// accepted.
+/// return exactly the codes the model gate returns for the same options. This
+/// is also the only place extend's `existing` rows enter the engine: they are
+/// held to maxTests and to the row limit together with `seeds`, charged by the
+/// gate under the same rules as `seeds`, and remapped by value identity onto the
+/// expanded value space the gate accepted, as every seed row is.
 ///
-/// @param preserved_seed_count Leading `seeds` rows to keep verbatim.
-AcceptedEngineInput AcceptEngineInput(model::GenerateOptions options, size_t preserved_seed_count);
+/// @param existing Extend's rows to keep verbatim; empty for every other call.
+/// @param charged What the calling surface already counted, handed to the gate
+///        unchanged so the rows it read are not charged a second time.
+AcceptedEngineInput AcceptEngineInput(model::GenerateOptions options,
+                                      const std::vector<model::TestCase>& existing,
+                                      model::ChargedText charged);
 
 }  // namespace core
 }  // namespace coverwise

@@ -17,6 +17,7 @@
 
 #include "core/generator.h"
 #include "model/constraint_ast.h"
+#include "model/constraint_parser.h"
 #include "model/generate_options.h"
 #include "model/limits.h"
 #include "util/string_util.h"
@@ -128,6 +129,31 @@ TEST(ConstraintAtomCostTest, LikeConstructionDoesNotScaleWithPatternLength) {
   // construction, and no pattern length moves it.
   EXPECT_LT(long_ms, short_ms * 5.0)
       << "short pattern: " << short_ms << " ms, long pattern: " << long_ms << " ms";
+}
+
+TEST(ConstraintAtomCostTest, ParamComparisonsShareKeysHoweverManyTermsAnExpressionHas) {
+  // Five constraints over two 16384-value parameters, built the way the engine
+  // builds a model's constraint list: one parse per expression.
+  const std::vector<coverwise::model::Parameter> params = {
+      {"p0", MakeValues(coverwise::model::kMaxValuesPerParameter, 8), {}},
+      {"p1", MakeValues(coverwise::model::kMaxValuesPerParameter, 8), {}},
+  };
+  const auto build = [&](size_t terms) {
+    std::string expression = "p0 = p1";
+    for (size_t i = 1; i < terms; ++i) expression += " OR p0 = p1";
+    for (int i = 0; i < 5; ++i) {
+      const auto result = coverwise::model::ParseConstraint(expression, params);
+      EXPECT_TRUE(result.error.ok()) << result.error.message;
+    }
+  };
+
+  auto [few_ms, many_ms] = FastestMsEach(5, [&] { build(1); }, [&] { build(500); });
+
+  // One key table per parameter makes the term count nearly free, so the ratio
+  // sits near 1. Building a table per term costs about 500x, and the bound
+  // leaves room above anything contention produces.
+  EXPECT_LT(many_ms, few_ms * 5.0)
+      << "one term: " << few_ms << " ms, 500 terms: " << many_ms << " ms";
 }
 
 TEST(ConstraintAtomCostTest, PrecomputedLikeMatchesAgreeWithTheGlobMatcher) {

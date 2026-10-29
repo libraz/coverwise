@@ -2,6 +2,7 @@
 
 import { type ConstraintNode, ConstraintResult } from '../model/constraint-ast.js';
 import { ErrorCode, type ErrorInfo, okError, surfaceErrorText } from '../model/error.js';
+import { MAX_TESTS } from '../model/limits.js';
 import { type Parameter, validateParameters } from '../model/parameter.js';
 import {
   type GenerateResult,
@@ -234,7 +235,7 @@ function validatePositiveTest(
       // and printing that sentinel tells the caller nothing about which part of
       // what they submitted no longer fits.
       const supplied = test.unresolved?.[pi];
-      if (supplied) {
+      if (supplied !== undefined) {
         return `value '${supplied}' is not declared by parameter ${params[pi].name}`;
       }
       if (vi === UNASSIGNED) {
@@ -360,6 +361,17 @@ export function validateCoverage(
     return report;
   }
 
+  // The row bound every surface applies to a tests array, checked before any
+  // row is looked at.
+  if (tests.length > MAX_TESTS) {
+    report.error = {
+      code: ErrorCode.InvalidInput,
+      message: `Test count ${tests.length} exceeds maximum of ${MAX_TESTS}`,
+      detail: '',
+    };
+    return report;
+  }
+
   report.error = validateSatisfiableModel(params, constraints);
   if (report.error.code !== ErrorCode.Ok) {
     return report;
@@ -467,6 +479,7 @@ export function validateCoverage(
           assignment[combo[i]] = UNASSIGNED;
         }
         if (tupleBudget.exceeded) {
+          report.omittedUncovered = report.uncoveredCount - report.uncovered.length;
           report.error = {
             code: ErrorCode.ConstraintError,
             message: 'Constraint search budget exceeded',

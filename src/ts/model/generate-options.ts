@@ -17,7 +17,7 @@ import {
   MAX_STRING_BYTES,
   MAX_TESTS,
 } from './limits.js';
-import { Parameter, resolveValueName, UNASSIGNED, validateParameters } from './parameter.js';
+import { Parameter, UNASSIGNED, ValueResolver, validateParameters } from './parameter.js';
 import type { TestCase } from './test-case.js';
 import { utf8ByteLength } from './utf8.js';
 
@@ -136,29 +136,57 @@ function invalid(message: string, detail = ''): ErrorInfo {
 }
 
 /**
+ * Caller text a surface read itself, and whether it read any.
+ *
+ * Its two spellings are two accounting regimes, and which one a call site names
+ * decides what the gate still has to charge. {@link NO_CHARGED_TEXT} says no
+ * reader counted anything, so the gate charges every kind including row values.
+ * A reader's total says it counted the caller's text, row values included: the
+ * gate then charges the model's own strings and leaves the rows alone, because
+ * charging them again would cost a caller twice for text they wrote once.
+ * Mirrors model::ChargedText in the C++ core.
+ */
+export interface ChargedText {
+  /** UTF-8 bytes already spent before the gate walks the options. */
+  readonly bytes: number;
+  /** Whether a reader already counted the caller's row values. */
+  readonly rowsCounted: boolean;
+}
+
+/** No reader counted anything; the gate charges the whole input. */
+export const NO_CHARGED_TEXT: ChargedText = { bytes: 0, rowsCounted: false };
+
+/**
  * Charge the model's own strings against the documented byte budgets.
  *
  * Both the per-string and the aggregate bound are documented input limits, so
  * they belong to the acceptance contract rather than to any one surface's
  * reader. Mirrors ValidateStringBudget in the C++ model layer.
  *
- * The walk covers every kind of the charged set, row values included. This
- * entry is the one no reader stands in front of — a caller reaching the engine
- * directly hands over a `GenerateOptions` and nothing upstream has counted
- * anything — which is the regime the C++ gate is in when it is given
- * `ChargedText::None()`. A row enters the engine as value indices, so the only
- * row text here is that of a position which did not resolve, kept so the
- * diagnostics can quote it back; leaving it uncharged would put this path
- * outside the published budget entirely.
+ * With {@link NO_CHARGED_TEXT} the walk covers every kind of the charged set,
+ * row values included: a caller reaching the engine directly hands over a
+ * `GenerateOptions` and nothing upstream has counted anything. A row enters the
+ * engine as value indices, so the only row text here is that of a position which
+ * did not resolve, kept so the diagnostics can quote it back; leaving it
+ * uncharged would put this path outside the published budget entirely.
  *
  * The package entry points charge the caller's rows themselves before the
- * engine is reached. That is not a second charge against the same allowance:
- * their total is a separate accumulator judged against the same limit, and the
- * strings this walk sees are a subset of the ones they saw, so this check
- * cannot refuse an input they let through.
+ * engine is reached and hand that total over as `charged`, so the call is
+ * judged against one total: the rows they counted plus the model's own strings
+ * here. Numeric and boolean parameter values are charged as the text the engine
+ * renders for them, which is the text this walk sees.
  */
-function validateStringBudget(options: GenerateOptions, params: Parameter[]): ErrorInfo {
-  let aggregate = 0;
+function validateStringBudget(
+  options: GenerateOptions,
+  params: Parameter[],
+  charged: ChargedText,
+): ErrorInfo {
+  let aggregate = charged.bytes;
+  // A caller's own total can exhaust the budget on its own, and the verdict must
+  // not depend on there being something left to walk.
+  if (aggregate > MAX_AGGREGATE_STRING_BYTES) {
+    return invalid(aggregateBudgetExceeded());
+  }
   const account = (value: string, context: () => string): ErrorInfo => {
     const bytes = utf8ByteLength(value);
     if (bytes > MAX_STRING_BYTES) {
@@ -231,12 +259,15 @@ function validateStringBudget(options: GenerateOptions, params: Parameter[]): Er
       }
     }
   }
-  for (let row = 0; row < options.seeds.length; ++row) {
+  for (let row = 0; row < options.seeds.length && !charged.rowsCounted; ++row) {
     const unresolved = options.seeds[row].unresolved;
     if (!unresolved) {
       continue;
     }
     for (const text of unresolved) {
+      if (text === undefined) {
+        continue;
+      }
       const error = account(text, () => chargedStringContext.rowValue('seeds', row));
       if (error.code !== ErrorCode.Ok) {
         return error;
@@ -427,9 +458,12 @@ export function expandBoundaries(
  * expansion is about to supply is refused here, and accepted by every entry
  * point.
  */
-export function validateGenerateOptions(options: GenerateOptions): ErrorInfo {
+export function validateGenerateOptions(
+  options: GenerateOptions,
+  charged: ChargedText = NO_CHARGED_TEXT,
+): ErrorInfo {
   const params = optionsParameters(options);
-  const budgetError = validateStringBudget(options, params);
+  const budgetError = validateStringBudget(options, params, charged);
   if (budgetError.code !== ErrorCode.Ok) {
     return budgetError;
   }
@@ -513,9 +547,10 @@ export function validateGenerateOptions(options: GenerateOptions): ErrorInfo {
     // value is caught here rather than resolved by whichever key the surface's
     // map happened to hand over first.
     const claimedBy = new Map<number, string>();
+    const resolver = new ValueResolver(param);
     for (const valueName of Object.keys(valueWeights).sort(compareUtf8)) {
       const weight = valueWeights[valueName];
-      const valueIndex = resolveValueName(param, valueName);
+      const valueIndex = resolver.resolve(valueName);
       if (valueIndex === UNASSIGNED) {
         return invalid(`Unknown value in weights: ${paramName}=${valueName}`);
       }
@@ -616,7 +651,10 @@ export interface AcceptedOptions {
  * validateGenerateOptions are not separately meaningful as an acceptance
  * answer, and wherever they live this belongs beside them.
  */
-export function acceptOptions(options: GenerateOptions): AcceptedOptions {
+export function acceptOptions(
+  options: GenerateOptions,
+  charged: ChargedText = NO_CHARGED_TEXT,
+): AcceptedOptions {
   const declared = optionsParameters(options);
   const expansion = expandBoundaries(declared, options.boundaryConfigs);
   if (expansion.error.code !== ErrorCode.Ok) {
@@ -627,7 +665,7 @@ export function acceptOptions(options: GenerateOptions): AcceptedOptions {
     parameters: expansion.params.map(toParameterSpec),
     boundaryConfigs: {},
   };
-  const validationError = validateGenerateOptions(accepted);
+  const validationError = validateGenerateOptions(accepted, charged);
   if (validationError.code !== ErrorCode.Ok) {
     return { options, params: declared, error: validationError };
   }

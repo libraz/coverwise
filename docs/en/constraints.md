@@ -32,7 +32,9 @@ IF language = "C++" THEN build_system != 'make (BSD)'
 IF release = "1.0 (beta)" THEN channel = preview
 ```
 
-Inside a quoted string, `\"` escapes the quote character and `\\` escapes a backslash. A quoted token is always a literal value: it is never read as a keyword and never as a parameter name, so a value spelled `AND`, or one that collides with a parameter name, is unambiguous once quoted.
+Inside a quoted string, `\"` escapes the quote character and `\\` escapes a backslash. On the right-hand side of an operator, a quoted token is always a literal value: it is never read as a keyword and never as a parameter reference, so a value spelled `AND`, or one that collides with a parameter name, is unambiguous once quoted. On the left-hand side, a quoted token is a parameter name, which is how a parameter whose name needs quoting is written: `"build type" = release`.
+
+When the right-hand side of `=` or `!=` is a bare token, the parser reads it as a value of the left parameter first, and only if it is not one as the name of another parameter (a parameter-to-parameter comparison). A token that is both a value of the left parameter and a parameter name is therefore a value; quote nothing extra to get that, and compare against the other parameter only when the token is not also one of the left parameter's values.
 
 The JavaScript builder quotes automatically — `when('filesystem').eq('HFS+')` emits `filesystem = "HFS+"` — so quoting is a concern only for hand-written constraint strings.
 
@@ -71,7 +73,7 @@ IF (os = Windows OR os = Linux) AND device = desktop THEN browser != Safari
 
 ### Comparing numbers
 
-The relational operators read both operands as numbers.
+The relational operators `<`, `<=`, `>` and `>=` read both operands as numbers.
 
 ```
 IF age >= 18 THEN plan != child
@@ -80,7 +82,7 @@ IF count > 100 THEN mode = batch
 IF priority <= 3 THEN queue = high
 ```
 
-Supported operators: `=`, `!=`, `<`, `<=`, `>`, `>=`.
+`=` and `!=` are not numeric: they compare the rendered value text, so `IF count = 100` matches the value spelled `100`, not any value that is numerically equal to it.
 
 ### Matching a set of values with IN
 
@@ -101,7 +103,7 @@ IF version LIKE *.0.0 THEN is_major = true
 IF code LIKE v?.0 THEN generation = first
 ```
 
-`*` matches any sequence of characters, including the empty sequence; `?` matches exactly one character. Both count Unicode codepoints rather than bytes, and both keep their wildcard meaning inside a quoted pattern — there is no escape for a literal `*` or `?`, so a value that really contains one has to be compared with `=` instead. A pattern with no wildcard is an ordinary equality test.
+`*` matches any sequence of characters, including the empty sequence; `?` matches exactly one character. Both count Unicode codepoints rather than bytes, and both keep their wildcard meaning inside a quoted pattern — there is no escape for a literal `*` or `?`, so a value that really contains one has to be compared with `=` instead. A pattern with no wildcard resolves exactly like `=`: aliases and case are resolved, and an unknown value is a `CONSTRAINT_ERROR`.
 
 ### Comparing two parameters
 
@@ -205,7 +207,7 @@ Build constraints programmatically with the fluent API. Builder objects produce 
 
 Quoting is decided per method, because the position an operand lands in decides how the parser reads it. Nothing has to be escaped by hand; what the method decides is whether its operand is read as a value at all.
 
-- `eq()` and `ne()` always quote a string operand. A bare token there would be resolved as a parameter reference whenever a parameter bears that name, which would silently turn a value comparison into a parameter-to-parameter one.
+- `eq()` and `ne()` always quote a string operand. A bare token there is read as a value of the left parameter first and as a parameter name only when it is not one, so quoting is what keeps the operand a value in every case, including when it is not a value of the left parameter and a parameter happens to bear that name; unquoted, that would silently turn a value comparison into a parameter-to-parameter one.
 - `in()` and `like()` quote only when the value cannot survive as one bare token. `in('staging', 'prod')` emits `env IN {staging, prod}` and `like('chrome*')` emits `browser LIKE chrome*`; the `*` and `?` wildcards keep their meaning either way.
 - `gt()`, `gte()`, `lt()` and `lte()` take a number as the value to compare against. A **string** operand there is a parameter name, emitted bare, and it is refused outright when it cannot be written as one bare token — so `when('status').lt('ok')` compares `status` against a parameter called `ok` rather than against the value `ok`.
 
