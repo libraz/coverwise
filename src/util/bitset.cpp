@@ -37,7 +37,7 @@ uint32_t DynamicBitset::Count() const {
 void DynamicBitset::Reset() { std::fill(blocks_.begin(), blocks_.end(), 0); }
 
 uint32_t DynamicBitset::NumBlocks(uint32_t num_bits) {
-  return (num_bits + kBitsPerBlock - 1) / kBitsPerBlock;
+  return num_bits / kBitsPerBlock + (num_bits % kBitsPerBlock != 0);
 }
 
 }  // namespace util
