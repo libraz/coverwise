@@ -315,9 +315,17 @@ def _jsonable(value: Any) -> Any:
     )
 
 
+def _invalid_input(message: str) -> CoverwiseError:
+    """Build the error for a model rejected before the CLI is started."""
+
+    return CoverwiseError(_ERROR_CODES[_EXIT_INVALID_INPUT], message, _EXIT_INVALID_INPUT, "", None)
+
+
 def _dumps(payload: Any) -> str:
     """Serialize a payload for the CLI, rejecting non-JSON values up front.
 
+    A string the CLI could not receive as UTF-8 (an unpaired surrogate) is
+    rejected here as well, so it fails before any child process starts.
     ``allow_nan=False`` turns a non-finite float (``inf``, ``-inf``, ``nan``)
     into a :class:`ValueError`, which is reported as a :class:`CoverwiseError`
     so callers can catch every model rejection — subprocess-side or not —
@@ -328,15 +336,16 @@ def _dumps(payload: Any) -> str:
     """
 
     try:
-        return json.dumps(payload, ensure_ascii=False, allow_nan=False, default=_jsonable)
+        text = json.dumps(payload, ensure_ascii=False, allow_nan=False, default=_jsonable)
     except ValueError as exc:
-        raise CoverwiseError(
-            _ERROR_CODES[_EXIT_INVALID_INPUT],
-            f"model contains a value that is not finite: {exc}",
-            _EXIT_INVALID_INPUT,
-            "",
-            None,
+        raise _invalid_input(f"model contains a value that is not finite: {exc}") from exc
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise _invalid_input(
+            "model contains a string with an unpaired surrogate, which is not valid UTF-8"
         ) from exc
+    return text
 
 
 def _run_with_side_input(
@@ -399,7 +408,7 @@ def generate(model: Mapping[str, Any] | None = None, **fields: Any) -> dict[str,
 def analyze_coverage(
     parameters: Any,
     tests: Sequence[Mapping[str, Any]] | Mapping[str, Any],
-    strength: int = 2,
+    strength: int | None = 2,
     constraints: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Analyze the t-wise coverage of an existing test suite.
@@ -408,7 +417,7 @@ def analyze_coverage(
         parameters: The parameter definitions the suite is measured against.
         tests: The test cases to measure. Accepts a bare list of test cases or
             a ``generate`` result envelope.
-        strength: Interaction strength.
+        strength: Interaction strength; ``None`` means the default of 2.
         constraints: Constraint expressions; tuples with no valid completion are
             excluded from the coverage universe.
 
@@ -427,13 +436,16 @@ def analyze_coverage(
     params_payload: dict[str, Any] = {
         "parameters": _normalize_parameters(parameters),
     }
+    if strength is not None:
+        # Carried in the model document, as generate does, so one rule judges it.
+        params_payload["strength"] = strength
     if constraints is not None:
         # Handed over as written: what a caller's container means is decided in
         # one place, when the payload is serialized, so an unordered one is
         # refused here exactly as it is inside a parameter.
         params_payload["constraints"] = constraints
     return _run_with_side_input(
-        ["analyze", "--strength", str(strength), "--tests"],
+        ["analyze", "--tests"],
         tests,
         "the 'tests' argument",
         ["--params"],

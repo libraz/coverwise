@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -171,10 +174,24 @@ UNUSABLE_CAUSES = {
     "not executable": "a file without execute permission",
 }
 
+
+def _main_as_runtime_error() -> None:
+    """Run the console-script entry point, turning its launch-failure exit back
+    into the RuntimeError the library launchers raise, so all share one check."""
+
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        try:
+            coverwise.cli.main()
+        except SystemExit as exc:
+            assert exc.code == 127
+            raise RuntimeError(stderr.getvalue()) from None
+
+
 LAUNCHERS = {
     "native_binary": coverwise.native_binary,
     "run": lambda: coverwise.run(["--help"], capture_output=True),
-    "main": coverwise.cli.main,
+    "main": _main_as_runtime_error,
     "generate": lambda: coverwise.generate(parameters={"os": ["win", "mac"], "b": ["x", "y"]}),
 }
 
@@ -259,3 +276,17 @@ def test_a_bundled_executable_without_its_mode_bit_asks_for_a_platform_wheel(mon
 
     assert "a file without execute permission" in str(excinfo.value)
     assert "install a supported platform wheel" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("launcher", ["console_script", "module"])
+def test_a_launch_failure_exits_127_not_a_native_status(tmp_path, launcher) -> None:
+    command = [str(CONSOLE_SCRIPT)]
+    if launcher == "module":
+        command = [sys.executable, "-m", "coverwise"]
+    env = {**os.environ, "COVERWISE_BINARY": str(tmp_path / "absent")}
+
+    result = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 127
+    assert "COVERWISE_BINARY points at a missing file" in result.stderr
+    assert "Traceback" not in result.stderr

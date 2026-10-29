@@ -9,6 +9,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal, NoReturn, overload
 
+# Exit status of the launcher when the executable cannot be started, kept apart
+# from the 0-3 statuses that only the native executable reports.
+_EXIT_LAUNCH_FAILURE = 127
+
 _PLATFORM_WHEEL_HINT = (
     "; install a supported platform wheel from PyPI instead of an unpacked source tree"
 )
@@ -116,9 +120,13 @@ def run(args: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
 def main() -> NoReturn:
     """Replace this launcher process with the bundled native executable."""
 
-    binary = native_binary()
     try:
-        os.execv(binary, [str(binary), *sys.argv[1:]])
-    except OSError as exc:
-        raise _launch_failure(binary, exc) from exc
+        binary = native_binary()
+        try:
+            os.execv(binary, [str(binary), *sys.argv[1:]])
+        except OSError as exc:
+            raise _launch_failure(binary, exc) from exc
+    except RuntimeError as exc:
+        print(f"coverwise: {exc}", file=sys.stderr)
+        sys.exit(_EXIT_LAUNCH_FAILURE)
     raise AssertionError("os.execv returned unexpectedly")

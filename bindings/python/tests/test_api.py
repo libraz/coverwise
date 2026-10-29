@@ -122,13 +122,48 @@ def test_generate_merges_keyword_fields_over_the_model() -> None:
     assert result["coverage"] == 1.0
 
 
-def test_generate_honors_constraints() -> None:
-    result = coverwise.generate(MODEL, constraints=["IF os = mac THEN browser != chrome"])
+def test_generate_honors_constraints(recount_coverage) -> None:
+    model = {**MODEL, "constraints": ["IF os = mac THEN browser != chrome"]}
+    result = coverwise.generate(model)
 
-    assert result["coverage"] == 1.0
+    assert recount_coverage(model, result)["coverageRatio"] == 1.0
     assert all(
         not (test["os"] == "mac" and test["browser"] == "chrome") for test in result["tests"]
     )
+
+
+def test_generate_covers_every_triple_at_strength_three(recount_coverage) -> None:
+    model = {**MODEL, "strength": 3}
+    result = coverwise.generate(model)
+
+    report = recount_coverage(model, result)
+    assert report["coverageRatio"] == 1.0
+    assert report["uncovered"] == []
+
+
+def test_generate_covers_each_sub_model_at_its_own_strength(recount_coverage) -> None:
+    model = {
+        "parameters": {
+            "a": ["a0", "a1", "a2"],
+            "b": ["b0", "b1", "b2"],
+            "c": ["c0", "c1", "c2"],
+            "d": ["d0", "d1"],
+        },
+        "strength": 2,
+        "subModels": [{"parameters": ["a", "b", "c"], "strength": 3}],
+    }
+    result = coverwise.generate(model)
+
+    assert recount_coverage(model, result)["coverageRatio"] == 1.0
+    group = recount_coverage(model, result, names=["a", "b", "c"], strength=3)
+    assert group["coverageRatio"] == 1.0
+
+
+def test_generate_with_weights_still_covers_every_pair(recount_coverage) -> None:
+    model = {**MODEL, "weights": {"os": {"win": 5, "mac": 1}}}
+    result = coverwise.generate(model)
+
+    assert recount_coverage(model, result)["coverageRatio"] == 1.0
 
 
 def test_generate_is_deterministic_for_a_fixed_seed() -> None:
@@ -138,11 +173,13 @@ def test_generate_is_deterministic_for_a_fixed_seed() -> None:
     assert first["tests"] == second["tests"]
 
 
-def test_generate_returns_an_incomplete_suite_instead_of_raising() -> None:
+def test_generate_returns_an_incomplete_suite_instead_of_raising(recount_coverage) -> None:
     result = coverwise.generate(MODEL, maxTests=2)
 
     assert len(result["tests"]) == 2
-    assert result["coverage"] < 1.0
+    report = recount_coverage(MODEL, result)
+    assert report["coverageRatio"] < 1.0
+    assert report["coverageRatio"] == pytest.approx(result["coverage"])
     assert result["uncovered"]
 
 
@@ -591,14 +628,30 @@ def test_a_suite_far_past_a_megabyte_of_json_is_measured() -> None:
     assert report["invalidTests"] == []
 
 
-def test_extend_tests_keeps_existing_tests_first() -> None:
+def test_extend_tests_keeps_existing_tests_first(recount_coverage) -> None:
     existing = [{"os": "win", "browser": "chrome", "theme": "light"}]
 
     result = coverwise.extend_tests(existing, MODEL)
 
-    assert result["tests"][0] == existing[0]
+    assert result["tests"][: len(existing)] == existing
     assert len(result["tests"]) > 1
-    assert result["coverage"] == 1.0
+    assert recount_coverage(MODEL, result)["coverageRatio"] == 1.0
+
+
+def test_extend_tests_completes_a_constrained_model(recount_coverage) -> None:
+    model = {**MODEL, "constraints": ["IF os = mac THEN browser != chrome"]}
+    existing = [
+        {"os": "mac", "browser": "safari", "theme": "dark"},
+        {"os": "win", "browser": "chrome", "theme": "light"},
+    ]
+
+    result = coverwise.extend_tests(existing, model)
+
+    assert result["tests"][: len(existing)] == existing
+    assert all(
+        not (test["os"] == "mac" and test["browser"] == "chrome") for test in result["tests"]
+    )
+    assert recount_coverage(model, result)["coverageRatio"] == 1.0
 
 
 def test_a_failed_extend_leaves_no_temporary_file_behind(monkeypatch) -> None:
@@ -709,3 +762,187 @@ def test_a_truncated_negative_suite_reports_the_tuples_it_omitted() -> None:
     assert negative["omittedTuples"] > 0
     assert negative["coveredTuples"] + negative["omittedTuples"] == negative["totalTuples"]
     assert negative["coverageRatio"] == negative["coveredTuples"] / negative["totalTuples"]
+
+
+SURROGATE_MODELS = {
+    "value": lambda: {"os": ["win", "\ud800"], "browser": ["chrome", "safari"]},
+    "name": lambda: {"os\udc00": ["win", "mac"], "browser": ["chrome", "safari"]},
+}
+
+
+@pytest.mark.parametrize("where", sorted(SURROGATE_MODELS))
+@pytest.mark.parametrize("entry", ["generate", "estimate_model", "extend_tests", "analyze"])
+def test_a_lone_surrogate_is_rejected_before_the_subprocess_starts(
+    monkeypatch, entry, where
+) -> None:
+    def unreachable(*args, **kwargs):
+        raise AssertionError("the native binary must not run for a lone surrogate")
+
+    monkeypatch.setattr(coverwise.cli.subprocess, "run", unreachable)
+    parameters = SURROGATE_MODELS[where]()
+    calls = {
+        "generate": lambda: coverwise.generate(parameters=parameters),
+        "estimate_model": lambda: coverwise.estimate_model(parameters=parameters),
+        "extend_tests": lambda: coverwise.extend_tests([], parameters=parameters),
+        "analyze": lambda: coverwise.analyze_coverage(parameters, []),
+    }
+
+    with pytest.raises(coverwise.CoverwiseError) as excinfo:
+        calls[entry]()
+
+    assert excinfo.value.code == "INVALID_INPUT"
+    assert excinfo.value.exit_code == 3
+    assert "surrogate" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("entry", ["tests", "existing"])
+def test_a_lone_surrogate_in_a_side_input_is_rejected_and_its_file_removed(
+    monkeypatch, entry
+) -> None:
+    created: list[str] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording_mkstemp(*args, **kwargs):
+        handle, path = real_mkstemp(*args, **kwargs)
+        created.append(path)
+        return handle, path
+
+    def unreachable(*args, **kwargs):
+        raise AssertionError("the native binary must not run for a lone surrogate")
+
+    monkeypatch.setattr(coverwise.api.tempfile, "mkstemp", recording_mkstemp)
+    monkeypatch.setattr(coverwise.cli.subprocess, "run", unreachable)
+    rows = [{"os": "\ud800", "browser": "chrome", "theme": "light"}]
+
+    with pytest.raises(coverwise.CoverwiseError) as excinfo:
+        if entry == "tests":
+            coverwise.analyze_coverage(MODEL["parameters"], rows)
+        else:
+            coverwise.extend_tests(rows, MODEL)
+
+    assert excinfo.value.code == "INVALID_INPUT"
+    assert excinfo.value.exit_code == 3
+    assert created
+    assert not any(os.path.exists(path) for path in created)
+
+
+@pytest.mark.parametrize("strength", [2, 2.0, "2", None, 0, 1.5, "x"])
+def test_analyze_coverage_and_generate_agree_on_every_strength(strength) -> None:
+    parameters = {"os": ["win", "mac"], "browser": ["chrome", "safari"]}
+    rows = coverwise.generate(parameters=parameters)["tests"]
+
+    verdicts = []
+    for call in (
+        lambda: coverwise.generate(parameters=parameters, strength=strength),
+        lambda: coverwise.analyze_coverage(parameters, rows, strength=strength),
+    ):
+        try:
+            call()
+            verdicts.append("accepted")
+        except coverwise.CoverwiseError as exc:
+            verdicts.append(exc.code)
+
+    assert verdicts[0] == verdicts[1]
+
+
+BUDGET_MESSAGE = "Constraint search budget exceeded"
+UNSOLVABLE_DETAIL = "The constraint model is too complex to solve within the search budget"
+
+
+def pigeonhole_model():
+    """Eleven parameters that must all differ while holding ten values each."""
+
+    holes = [f"h{i}" for i in range(10)]
+    pigeons = range(1, 12)
+    return {
+        "parameters": [{"name": f"P{i}", "values": holes} for i in pigeons],
+        "constraints": [
+            f"P{left} != P{right}" for left in pigeons for right in pigeons if left < right
+        ],
+        "strength": 2,
+        "seed": 42,
+    }
+
+
+BUDGET_ENTRIES = {
+    "generate": lambda model: coverwise.generate(model),
+    "extend_tests": lambda model: coverwise.extend_tests([], model),
+    "analyze_coverage": lambda model: coverwise.analyze_coverage(
+        model["parameters"], [], 2, model["constraints"]
+    ),
+}
+
+
+@pytest.mark.parametrize("entry", sorted(BUDGET_ENTRIES))
+def test_an_exhausted_constraint_search_budget_is_refused_like_the_other_surfaces(entry) -> None:
+    """The code and the message-with-detail match what WASM and pure report."""
+
+    with pytest.raises(coverwise.CoverwiseError) as excinfo:
+        BUDGET_ENTRIES[entry](pigeonhole_model())
+
+    assert excinfo.value.code == "CONSTRAINT_ERROR"
+    assert excinfo.value.exit_code == 1
+    assert str(excinfo.value) == f"{BUDGET_MESSAGE}: {UNSOLVABLE_DETAIL}"
+
+
+def test_negative_tests_hold_one_invalid_value_and_match_a_single_fault_enumeration() -> None:
+    """Negative rows are judged, and negative coverage recounted, outside the engine."""
+
+    invalid = {"A": "bad_a", "B": "bad_b"}
+    valid = {
+        "A": ["a0", "a1"],
+        "B": ["b0", "b1"],
+        "C": ["c0", "c1"],
+        "D": ["d0", "d1"],
+    }
+    parameters = [
+        {
+            "name": name,
+            "values": [
+                *values,
+                *([{"value": invalid[name], "invalid": True}] if name in invalid else []),
+            ],
+        }
+        for name, values in valid.items()
+    ]
+    constraints = ["D != d1", "IF B = b0 THEN C != c0"]
+
+    def satisfies(row):
+        return row["D"] != "d1" and not (row["B"] == "b0" and row["C"] == "c0")
+
+    result = coverwise.generate(parameters=parameters, constraints=constraints, seed=42)
+
+    names = list(valid)
+    negative_rows = result["negativeTests"]
+    assert negative_rows
+    for row in negative_rows:
+        assert sum(row[name] == invalid.get(name) for name in names) == 1
+        assert satisfies(row)
+
+    # A single-fault pair fixes one invalid value and one valid value elsewhere,
+    # and counts only when some all-valid completion satisfies the constraints.
+    feasible = set()
+    for left, right in itertools.combinations(names, 2):
+        for left_value, right_value in itertools.product(
+            [*valid[left], *([invalid[left]] if left in invalid else [])],
+            [*valid[right], *([invalid[right]] if right in invalid else [])],
+        ):
+            faults = (left_value == invalid.get(left)) + (right_value == invalid.get(right))
+            if faults != 1:
+                continue
+            others = [n for n in names if n not in (left, right)]
+            for completion in itertools.product(*(valid[n] for n in others)):
+                row = {left: left_value, right: right_value, **dict(zip(others, completion))}
+                if satisfies(row):
+                    feasible.add((left, left_value, right, right_value))
+                    break
+    emitted = {
+        (left, row[left], right, row[right])
+        for row in negative_rows
+        for left, right in itertools.combinations(names, 2)
+    }
+
+    negative = result["negativeCoverage"]
+    assert negative["totalTuples"] == len(feasible)
+    assert negative["coveredTuples"] == len(feasible & emitted)
+    assert negative["omittedTuples"] == len(feasible - emitted)

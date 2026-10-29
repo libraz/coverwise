@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import keyword
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .api import _build_model, generate
@@ -45,6 +45,46 @@ def _argument_names(parameters: Sequence[Mapping[str, Any]]) -> list[str]:
             f"identifiers and must not be Python keywords; rename {invalid}"
         )
     return names
+
+
+def _decoder(parameter: Mapping[str, Any]) -> Callable[[str], Any]:
+    """Build the map from a rendered cell back to the value the caller declared.
+
+    The CLI renders every value as text (``3``, ``true``), so a test would
+    otherwise receive strings for the numbers and booleans it declared. Cells
+    are matched by declared value rather than guessed from their text; one
+    that matches no declared value (an alias, or a value a boundary range
+    expanded to) is converted by the boundary type, or passed through as is.
+    """
+
+    strings: dict[str, Any] = {}
+    numbers: dict[float, Any] = {}
+    for declared in parameter.get("values", []):
+        value = declared["value"] if isinstance(declared, Mapping) else declared
+        if isinstance(value, bool):
+            strings["true" if value else "false"] = value
+        elif isinstance(value, (int, float)):
+            numbers[float(value)] = value
+        else:
+            strings[str(value)] = value
+    boundary_type = parameter.get("type")
+
+    def decode(cell: str) -> Any:
+        if cell in strings:
+            return strings[cell]
+        try:
+            number = float(cell)
+        except ValueError:
+            return cell
+        if number in numbers:
+            return numbers[number]
+        if boundary_type == "integer":
+            return int(number)
+        if boundary_type == "float":
+            return number
+        return cell
+
+    return decode
 
 
 def parametrize(
@@ -102,11 +142,17 @@ def parametrize(
     if include_negative:
         cases.extend(result["negativeTests"])
 
+    decoders = {
+        name: _decoder(parameter)
+        for name, parameter in zip(names, model["parameters"], strict=True)
+    }
+    arguments = [{name: decoders[name](case[name]) for name in names} for case in cases]
+
     # pytest only unpacks a tuple per case when several argnames are given, so a
     # single-parameter model must pass bare values.
     if len(names) == 1:
-        values: list[Any] = [case[names[0]] for case in cases]
+        values: list[Any] = [argument[names[0]] for argument in arguments]
     else:
-        values = [tuple(case[name] for name in names) for case in cases]
+        values = [tuple(argument[name] for name in names) for argument in arguments]
     ids = ["-".join(f"{name}={case[name]}" for name in names) for case in cases]
     return pytest.mark.parametrize(",".join(names), values, ids=ids)

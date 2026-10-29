@@ -88,3 +88,55 @@ def test_soft_keywords_are_usable_parameter_names() -> None:
     mark = coverwise.parametrize({"type": ["a", "b"], "match": ["x", "y"]})
 
     assert mark.mark.args[0] == "type,match"
+
+
+def test_declared_python_types_reach_the_test() -> None:
+    """Every argument equals, in type and value, a value the caller declared."""
+
+    model = {
+        "retries": [0, 3],
+        "debug": [True, False],
+        "ratio": [0.5, 1.5],
+        "name": ["a", "b"],
+    }
+    mark = coverwise.parametrize(model)
+    names = mark.mark.args[0].split(",")
+    cases = [dict(zip(names, row, strict=True)) for row in mark.mark.args[1]]
+
+    assert cases
+    for case in cases:
+        for name, value in case.items():
+            assert any(type(value) is type(d) and value == d for d in model[name]), (name, value)
+    assert {case["retries"] for case in cases} == {0, 3}
+    assert {case["debug"] for case in cases} == {True, False}
+
+
+def test_value_objects_and_negative_cases_keep_their_declared_type() -> None:
+    model = {
+        "level": [1, 2, {"value": -1, "invalid": True}],
+        "flag": [True, {"value": False}],
+    }
+    mark = coverwise.parametrize(model, include_negative=True)
+
+    levels = {row[0] for row in mark.mark.args[1]}
+    assert levels == {1, 2, -1}
+    assert all(type(level) is int for level in levels)
+    assert all(type(row[1]) is bool for row in mark.mark.args[1])
+
+
+def test_boundary_parameters_receive_numbers() -> None:
+    mark = coverwise.parametrize(
+        [
+            {"name": "size", "values": [], "type": "integer", "range": [1, 10]},
+            {"name": "ratio", "values": [], "type": "float", "range": [0, 1], "step": 0.5},
+        ]
+    )
+
+    assert all(type(row[0]) is int for row in mark.mark.args[1])
+    assert all(type(row[1]) is float for row in mark.mark.args[1])
+
+
+def test_case_ids_are_unchanged_by_value_conversion() -> None:
+    mark = coverwise.parametrize({"retries": [3], "debug": [True]})
+
+    assert mark.mark.kwargs["ids"] == ["retries=3-debug=true"]
