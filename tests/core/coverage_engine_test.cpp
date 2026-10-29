@@ -535,6 +535,31 @@ TEST(CoverageEngineTest, CompletionOrderIsStableForModelWithInvalidValues) {
   EXPECT_TRUE(engine.IsComplete());
 }
 
+TEST(CoverageEngineTest, FirstUncoveredReusesLookupStorageAndDecodesSubsets) {
+  std::vector<Parameter> params = {
+      {"A", {"0", "1"}, {}},
+      {"B", {"0", "1", "2"}, {}},
+      {"C", {"0", "1", "2", "3"}, {}},
+  };
+  const std::vector<uint32_t> subset = {0, 2};
+  auto [engine, err] = CoverageEngine::Create(params, subset, 2);
+  ASSERT_TRUE(err.ok());
+  engine.AddTestCase(TestCase{{0, 0, 0}});
+
+  CoverageEngine::UncoveredAssignment uncovered;
+  ASSERT_TRUE(engine.FirstUncovered(uncovered));
+  EXPECT_EQ(uncovered.index, 1u);
+  EXPECT_EQ(uncovered.assignment, (std::vector<uint32_t>{0, coverwise::model::kUnassigned, 1}));
+
+  AllocationCounter allocations;
+  for (int i = 0; i < 1000; ++i) {
+    ASSERT_TRUE(engine.FirstUncovered(uncovered));
+  }
+  EXPECT_EQ(allocations.Stop(), 0u);
+  EXPECT_EQ(uncovered.index, 1u);
+  EXPECT_EQ(uncovered.assignment, (std::vector<uint32_t>{0, coverwise::model::kUnassigned, 1}));
+}
+
 TEST(CoverageEngineTest, FirstUncoveredRewindsAfterResetCoverage) {
   // The scan may only skip a prefix while coverage bits are monotonically set.
   // ResetCoverage() clears them, so the next scan must start over from the very

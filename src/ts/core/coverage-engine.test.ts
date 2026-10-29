@@ -596,6 +596,21 @@ describe('CoverageEngine', () => {
       expect(engine.isComplete).toBe(true);
     });
 
+    it('decodes mixed-radix assignments for a parameter subset', () => {
+      const params = [
+        new Parameter('a', ['0', '1']),
+        new Parameter('b', ['0', '1', '2']),
+        new Parameter('c', ['0', '1', '2', '3']),
+      ];
+      const engine = CoverageEngine.createFromSubset(params, [0, 2], 2).engine;
+      engine.addTestCase({ values: [0, 0, 0] });
+
+      expect(engine.firstUncovered()).toEqual({
+        index: 1,
+        assignment: [0, UNASSIGNED, 1],
+      });
+    });
+
     it('rewinds after resetCoverage()', () => {
       // The scan may only skip a prefix while coverage bits are monotonically
       // set. resetCoverage() clears them, so the next scan must start over from

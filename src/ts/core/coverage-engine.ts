@@ -562,16 +562,13 @@ export class CoverageEngine {
   /// excludeTuple() calls therefore stays linear in tuples plus calls.
   firstUncovered(): { index: number; assignment: number[] } | null {
     const start = this.scanPosition();
-    const combo: number[] = new Array(this.strength_);
-    const radixes: number[] = new Array(this.strength_);
 
     while (this.scanCi_ < this.numCombinations_) {
-      const cbase = this.scanCi_ * this.strength_;
+      const base = this.scanCi_ * this.strength_;
       let product = 1;
       for (let j = 0; j < this.strength_; ++j) {
-        combo[j] = this.paramCombinations_[cbase + j];
-        radixes[j] = this.params_[combo[j]].size;
-        product *= radixes[j];
+        const paramIndex = this.paramCombinations_[base + j];
+        product *= this.params_[paramIndex].size;
       }
 
       while (this.scanVi_ < product) {
@@ -581,10 +578,11 @@ export class CoverageEngine {
           continue;
         }
         const assignment = new Array<number>(this.params_.length).fill(UNASSIGNED);
-        let remainder = this.scanVi_;
-        for (let j = this.strength_ - 1; j >= 0; --j) {
-          assignment[combo[j]] = remainder % radixes[j];
-          remainder = Math.floor(remainder / radixes[j]);
+        for (let j = 0; j < this.strength_; ++j) {
+          const paramIndex = this.paramCombinations_[base + j];
+          const radix = this.params_[paramIndex].size;
+          const multiplier = this.comboMultipliers_[base + j];
+          assignment[paramIndex] = Math.floor(this.scanVi_ / multiplier) % radix;
         }
         // Every index the cursor advanced past was tested and found covered; the
         // tuple the cursor stops on accounts for the one remaining bit test.

@@ -416,15 +416,13 @@ bool CoverageEngine::NeedsTuple(const uint32_t* params, const uint32_t* value_in
 
 bool CoverageEngine::FirstUncovered(UncoveredAssignment& out) const {
   const uint32_t start = ScanPosition();
-  std::vector<uint32_t> radixes(strength_);
-  std::vector<uint32_t> value_indices(strength_);
 
   while (scan_ci_ < num_combinations_) {
     const uint32_t* combo = Combo(scan_ci_);
+    const uint32_t* mults = Mults(scan_ci_);
     uint32_t product = 1;
     for (uint32_t j = 0; j < strength_; ++j) {
-      radixes[j] = Parameters()[combo[j]].size();
-      product *= radixes[j];
+      product *= Parameters()[combo[j]].size();
     }
 
     while (scan_vi_ < product) {
@@ -433,11 +431,12 @@ bool CoverageEngine::FirstUncovered(UncoveredAssignment& out) const {
         ++scan_vi_;
         continue;
       }
-      util::DecodeMixedRadix(scan_vi_, radixes, value_indices);
       out.index = global_index;
       out.assignment.assign(Parameters().size(), model::kUnassigned);
       for (uint32_t j = 0; j < strength_; ++j) {
-        out.assignment[combo[j]] = value_indices[j];
+        const uint32_t param_index = combo[j];
+        const uint32_t radix = Parameters()[param_index].size();
+        out.assignment[param_index] = (scan_vi_ / mults[j]) % radix;
       }
       // Every index the cursor advanced past was tested and found covered; the
       // tuple the cursor stops on accounts for the one remaining bit test.
