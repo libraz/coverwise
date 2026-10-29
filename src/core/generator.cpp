@@ -25,7 +25,6 @@ namespace core {
 using model::ExtendMode;
 using model::GenerateOptions;
 using model::ModelStats;
-using model::SubModel;
 using model::WeightConfig;
 
 namespace {
