@@ -289,8 +289,9 @@ export function toInternalOptions(
 
   // A seed is asserted to be a real test case for this model, so a value outside
   // the domain is an error rather than an unassigned position.
-  const resolvers = valueResolvers(params);
-  const seeds = (input.seeds ?? []).map((tc) => toInternalTestCase(tc, params, false, resolvers));
+  const seedRows = input.seeds ?? [];
+  const resolvers = seedRows.length === 0 ? [] : valueResolvers(params);
+  const seeds = seedRows.map((tc) => toInternalTestCase(tc, params, false, resolvers));
 
   // Boundary expansion is already applied in toInternalParams, so `params` is
   // the final value space. boundaryConfigs is intentionally left empty (no

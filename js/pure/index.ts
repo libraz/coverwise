@@ -172,7 +172,7 @@ export function analyzeCoverage(
       validateConstraints(constraints, budget);
       const s = validateStrength(strength, pureScalarError);
       const params = toInternalParams(parameters);
-      const resolvers = valueResolvers(params);
+      const resolvers = tests.length === 0 ? [] : valueResolvers(params);
       return {
         s,
         params,
@@ -232,7 +232,7 @@ export function extendTests(existing: TestCase[], input: ExtendInput): GenerateR
       validateInput(input, budget);
       validateExtendMode(input.mode);
       const params = toInternalParams(input.parameters);
-      const resolvers = valueResolvers(params);
+      const resolvers = existing.length === 0 ? [] : valueResolvers(params);
       return {
         params,
         opts: toInternalOptions(input, params),
