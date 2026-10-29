@@ -19,7 +19,7 @@
 
 - **カバレッジ計測** — 任意のスイートの t-wise カバレッジを測り、網羅されていない組み合わせをすべて挙げます。[既存スイートを監査する](https://github.com/libraz/coverwise/blob/main/docs/ja/use-cases/audit-an-existing-suite.md)
 - **差分の追加** — 不足を埋める行だけを追記し、既存の行は内容も順序も変えません。[不足を少しずつ埋める](https://github.com/libraz/coverwise/blob/main/docs/ja/use-cases/close-the-gaps-incrementally.md)
-- **ペアワイズと t-wise の生成** — 強度 2 以上のカバリング配列を貪欲法で作り、行数はおおむね理論下限の 1.5〜2.5 倍です。[パフォーマンス](https://github.com/libraz/coverwise/blob/main/docs/ja/performance.md)
+- **ペアワイズと t-wise の生成** — 強度 2 以上のカバリング配列を貪欲法で作り、行数は公開している構成で理論下限の 1.3〜3.7 倍です。[パフォーマンス](https://github.com/libraz/coverwise/blob/main/docs/ja/performance.md)
 - **制約** — `IF/THEN/ELSE`、`IMPLIES`、`AND/OR/NOT`、比較演算、`IN`、`LIKE` を書けます。制約に反する行は生成されません。[制約構文](https://github.com/libraz/coverwise/blob/main/docs/ja/constraints.md)
 - **異常系テスト** — `invalid` を付けた値から、無効値を 1 つだけ含む異常系テストを作ります。[異常系テスト](https://github.com/libraz/coverwise/blob/main/docs/ja/examples.md#異常系テスト)
 - **混合強度** — サブモデルで、重要なパラメータのグループだけ強度を上げます。[重要なグループだけ強度を上げる](https://github.com/libraz/coverwise/blob/main/docs/ja/examples.md#重要なグループだけ強度を上げる)

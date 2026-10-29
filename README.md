@@ -19,7 +19,7 @@
 
 - **Coverage analysis** — measures any suite's t-wise coverage and names every uncovered combination. [Audit an existing suite](https://github.com/libraz/coverwise/blob/main/docs/en/use-cases/audit-an-existing-suite.md)
 - **Incremental extension** — appends only the rows that close the gaps, leaving the existing rows unchanged and in order. [Close the gaps incrementally](https://github.com/libraz/coverwise/blob/main/docs/en/use-cases/close-the-gaps-incrementally.md)
-- **Pairwise and t-wise generation** — covering suites at strength 2 and above, greedy, typically 1.5 to 2.5 times the theoretical minimum. [Performance](https://github.com/libraz/coverwise/blob/main/docs/en/performance.md)
+- **Pairwise and t-wise generation** — covering suites at strength 2 and above, greedy, between 1.3 and 3.7 times the theoretical minimum across the published configurations. [Performance](https://github.com/libraz/coverwise/blob/main/docs/en/performance.md)
 - **Constraints** — `IF/THEN/ELSE`, `IMPLIES`, `AND/OR/NOT`, comparisons, `IN` and `LIKE`; a row that violates one is never generated. [Constraint syntax](https://github.com/libraz/coverwise/blob/main/docs/en/constraints.md)
 - **Negative testing** — values marked `invalid` become single-fault negative tests. [Negative testing](https://github.com/libraz/coverwise/blob/main/docs/en/examples.md#negative-testing)
 - **Mixed strength** — sub-models raise the strength over a critical group of parameters. [Mixed strength](https://github.com/libraz/coverwise/blob/main/docs/en/examples.md#mixed-strength-for-a-critical-group)
