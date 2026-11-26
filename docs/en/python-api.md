@@ -12,7 +12,7 @@ The JavaScript API returns the same fields with the same names and the same valu
 pip install coverwise
 ```
 
-The package requires Python 3.10 or newer, and it declares that floor as `requires-python`, so an older interpreter is refused by pip rather than at import time. There are no runtime Python dependencies.
+The package requires Python 3.11 or newer, and it declares that floor as `requires-python`, so an older interpreter is refused by pip rather than at import time. There are no runtime Python dependencies.
 
 Wheels are platform-specific, because the package carries a prebuilt executable rather than portable Python code:
 

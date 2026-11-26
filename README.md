@@ -35,7 +35,7 @@ npm install @libraz/coverwise   # JavaScript / TypeScript: WebAssembly, plus a p
 pip install coverwise            # Python, with the native coverwise CLI
 ```
 
-The npm package needs Node.js 18 or later and is ESM only; it installs no executable. Python wheels need Python 3.10 or later and are built for Linux x86_64 and aarch64 (glibc 2.28 or newer) and for macOS 14 or later on Apple Silicon. The C++ library builds from source with CMake. See [Getting started](https://github.com/libraz/coverwise/blob/main/docs/en/getting-started.md#installation) for every surface and for the Linux x64 CLI archives on GitHub Releases.
+The npm package needs Node.js 18 or later and is ESM only; it installs no executable. Python wheels need Python 3.11 or later and are built for Linux x86_64 and aarch64 (glibc 2.28 or newer) and for macOS 14 or later on Apple Silicon. The C++ library builds from source with CMake. See [Getting started](https://github.com/libraz/coverwise/blob/main/docs/en/getting-started.md#installation) for every surface and for the Linux x64 CLI archives on GitHub Releases.
 
 ## Quick start
 

@@ -18,7 +18,7 @@ coverwise は 1 つのエンジンを 5 つのサーフェスから提供しま�
 | ピュア TypeScript（npm のサブパス） | 同じパッケージの `@libraz/coverwise/pure` | Node.js 18 以上またはブラウザ、ESM | WASM が使えない、禁じられている、あるいは処理量に見合わない手間がかかる場合 |
 | ネイティブ C++ | ソースからビルドしてインストールし `find_package` | 浮動小数点 `std::to_chars` を備えた C++17 ツールチェイン | エンジンを C++ のプログラムやテストハーネスへ組み込む場合 |
 | コマンドライン | PyPI パッケージに同梱、またはソースからビルド | バイナリ以外に必要なものはなし | スクリプトや CI で使う場合、バインディングのない言語から呼ぶ場合 |
-| Python | `pip install coverwise` | Python 3.10 以上 | pytest を書く場合、外部プロセス呼び出しで済ませていた Python コードの場合 |
+| Python | `pip install coverwise` | Python 3.11 以上 | pytest を書く場合、外部プロセス呼び出しで済ませていた Python コードの場合 |
 
 ## WASM、npm の既定
 
@@ -97,7 +97,7 @@ result = coverwise.generate(
 )
 ```
 
-必要なのは Python 3.10 以上です。wheel は Linux 向けが manylinux_2_28、つまり glibc 2.28 以上、macOS 向けが 14 以上の Apple Silicon で公開されています。ラッパーが JSON でバイナリを駆動する都合上、呼び出しは毎回プロセス境界をまたぎます。フィクスチャで 1 度だけスイートを生成する使い方では気になりませんが、密なループの中では知っておく価値があります。パッケージにはモデルをそのまま `parametrize` マーカーへ変える pytest ヘルパーも含まれています。[Python API](python-api.md)を参照してください。
+必要なのは Python 3.11 以上です。wheel は Linux 向けが manylinux_2_28、つまり glibc 2.28 以上、macOS 向けが 14 以上の Apple Silicon で公開されています。ラッパーが JSON でバイナリを駆動する都合上、呼び出しは毎回プロセス境界をまたぎます。フィクスチャで 1 度だけスイートを生成する使い方では気になりませんが、密なループの中では知っておく価値があります。パッケージにはモデルをそのまま `parametrize` マーカーへ変える pytest ヘルパーも含まれています。[Python API](python-api.md)を参照してください。
 
 ## 次に読むもの
 

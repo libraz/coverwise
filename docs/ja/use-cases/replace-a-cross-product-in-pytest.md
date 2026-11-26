@@ -12,7 +12,7 @@ pytest を必要とするのはパッケージのうち `parametrize` だけで�
 pip install coverwise[pytest]
 ```
 
-Python 3.10 以上が必要です。pytest を import できない状態で `coverwise.parametrize` を呼ぶと、pytest が不足していることを示す `RuntimeError` が送出されます。パッケージの他の部分は pytest なしで動作します。
+Python 3.11 以上が必要です。pytest を import できない状態で `coverwise.parametrize` を呼ぶと、pytest が不足していることを示す `RuntimeError` が送出されます。パッケージの他の部分は pytest なしで動作します。
 
 ## いまの全組み合わせ
 

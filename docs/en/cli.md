@@ -6,7 +6,7 @@ Any input path may be `-`, which reads that JSON from standard input. Standard i
 
 ## Installing the executable
 
-The PyPI package carries the native executable together with a thin Python wrapper. It needs Python 3.10 or newer, and on Linux glibc 2.28 or newer, because the wheels are built as `manylinux_2_28`:
+The PyPI package carries the native executable together with a thin Python wrapper. It needs Python 3.11 or newer, and on Linux glibc 2.28 or newer, because the wheels are built as `manylinux_2_28`:
 
 ```bash
 pip install coverwise

@@ -81,7 +81,7 @@ IF os = Windows THEN browser != Safari
 | Node.js | `npm install @libraz/coverwise` | Node.js 18 以上、ESM のみ |
 | ブラウザ | ESM インポート | WebAssembly モジュールはエントリポイントが読み込みます |
 | ピュア TypeScript | `@libraz/coverwise/pure` サブパス | WebAssembly を読み込めない実行環境向けの、同一 API |
-| Python | `pip install coverwise` | Python 3.10 以上。Linux ホイールは glibc 2.28 以上、macOS ホイールは 14 以降の Apple Silicon |
+| Python | `pip install coverwise` | Python 3.11 以上。Linux ホイールは glibc 2.28 以上、macOS ホイールは 14 以降の Apple Silicon |
 | ネイティブ C++ | CMake、静的ライブラリ | C++17 |
 | コマンドライン | `pip install coverwise`、リリースアーカイブ、ソースビルド | JSON 入力、JSON 出力 |
 

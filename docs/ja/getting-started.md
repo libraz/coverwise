@@ -54,7 +54,7 @@ cmake --install build --prefix ./install
 ## 実行環境の前提
 
 - **JavaScript 系サーフェス** — Node.js 18 以上、かつ ESM のみです。パッケージは `"type": "module"` を宣言しており、以下の例はすべてトップレベル `await` を使うため、CommonJS のファイルでは構文解析に失敗します。CommonJS のプロジェクトでは `.mjs` ファイルを使うか、自分の `package.json` に `"type": "module"` を設定してください。
-- **Python** — Python 3.10 以上です。Linux ホイールは manylinux_2_28 でビルドしているため glibc 2.28 以上が必要で、macOS ホイールは macOS 14 以降の Apple Silicon 向けです。
+- **Python** — Python 3.11 以上です。Linux ホイールは manylinux_2_28 でビルドしているため glibc 2.28 以上が必要で、macOS ホイールは macOS 14 以降の Apple Silicon 向けです。
 - **C++** — 浮動小数点の `std::to_chars` が使える C++17 コンパイラ、すなわち GCC 11 以上、Clang 10 以上、AppleClang 14 以上です。
 
 ## 最初のスイート

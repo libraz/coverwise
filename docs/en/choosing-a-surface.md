@@ -18,7 +18,7 @@ What differs is the boundary. The C++ library takes structures and returns struc
 | Pure TypeScript (npm subpath) | Same package, `@libraz/coverwise/pure` | Node.js 18 or newer, or a browser; ESM | WASM is unavailable, blocked, or more setup than the workload is worth |
 | Native C++ | Build from source, install, `find_package` | A C++17 toolchain with floating-point `std::to_chars` | Embedding the engine in a C++ program or a test harness |
 | Command line | Ships inside the PyPI package, or build from source | Nothing beyond the binary itself | Scripting, working in CI, or driving coverwise from a language with no binding |
-| Python | `pip install coverwise` | Python 3.10 or newer | Writing pytest, or any Python that would otherwise shell out |
+| Python | `pip install coverwise` | Python 3.11 or newer | Writing pytest, or any Python that would otherwise shell out |
 
 ## WASM, the npm default
 
@@ -97,7 +97,7 @@ result = coverwise.generate(
 )
 ```
 
-It needs Python 3.10 or newer. Wheels are published for Linux against manylinux_2_28, so glibc 2.28 or newer, and for macOS 14 and newer on Apple Silicon. Because the wrapper drives the binary over JSON, every call crosses a process boundary; that is unnoticeable for a suite generated once in a fixture and worth knowing about in a tight loop. The package also carries a pytest helper that turns a model into a `parametrize` marker directly. See the [Python API](python-api.md).
+It needs Python 3.11 or newer. Wheels are published for Linux against manylinux_2_28, so glibc 2.28 or newer, and for macOS 14 and newer on Apple Silicon. Because the wrapper drives the binary over JSON, every call crosses a process boundary; that is unnoticeable for a suite generated once in a fixture and worth knowing about in a tight loop. The package also carries a pytest helper that turns a model into a `parametrize` marker directly. See the [Python API](python-api.md).
 
 ## Where to go next
 

@@ -54,7 +54,7 @@ Commands, JSON schemas and exit codes are in the [CLI reference](cli.md).
 ## Runtime prerequisites
 
 - **JavaScript surfaces**: Node.js 18 or newer, and ESM only. The package sets `"type": "module"` and every example below uses top-level `await`, which a CommonJS file cannot parse. In a CommonJS project, use a `.mjs` file or set `"type": "module"` in your own `package.json`.
-- **Python**: Python 3.10 or newer. Linux wheels are built for manylinux_2_28, so they need glibc 2.28 or newer; macOS wheels are for macOS 14 and later on Apple Silicon.
+- **Python**: Python 3.11 or newer. Linux wheels are built for manylinux_2_28, so they need glibc 2.28 or newer; macOS wheels are for macOS 14 and later on Apple Silicon.
 - **C++**: a C++17 compiler with floating-point `std::to_chars` — GCC 11+, Clang 10+, or AppleClang 14+.
 
 ## A first suite

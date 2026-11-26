@@ -6,7 +6,7 @@
 
 ## 実行ファイルのインストール
 
-PyPI パッケージにはネイティブの実行ファイルと、それを駆動する薄い Python ラッパーが入っています。Python 3.10 以上が必要で、Linux では wheel が `manylinux_2_28` としてビルドされているため glibc 2.28 以上が必要です。
+PyPI パッケージにはネイティブの実行ファイルと、それを駆動する薄い Python ラッパーが入っています。Python 3.11 以上が必要で、Linux では wheel が `manylinux_2_28` としてビルドされているため glibc 2.28 以上が必要です。
 
 ```bash
 pip install coverwise

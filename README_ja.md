@@ -35,7 +35,7 @@ npm install @libraz/coverwise   # JavaScript / TypeScript: WebAssembly, plus a p
 pip install coverwise            # Python, with the native coverwise CLI
 ```
 
-npm パッケージは Node.js 18 以降が必要で、ESM 専用です。実行ファイルはインストールしません。Python の wheel は Python 3.10 以降が必要で、Linux x86_64 / aarch64（glibc 2.28 以降）と、Apple Silicon の macOS 14 以降向けにビルドしています。C++ ライブラリは CMake でソースからビルドします。各サーフェスの導入方法と、GitHub Releases にある Linux x64 版 CLI のアーカイブについては[はじめかた](https://github.com/libraz/coverwise/blob/main/docs/ja/getting-started.md#インストール)を参照してください。
+npm パッケージは Node.js 18 以降が必要で、ESM 専用です。実行ファイルはインストールしません。Python の wheel は Python 3.11 以降が必要で、Linux x86_64 / aarch64（glibc 2.28 以降）と、Apple Silicon の macOS 14 以降向けにビルドしています。C++ ライブラリは CMake でソースからビルドします。各サーフェスの導入方法と、GitHub Releases にある Linux x64 版 CLI のアーカイブについては[はじめかた](https://github.com/libraz/coverwise/blob/main/docs/ja/getting-started.md#インストール)を参照してください。
 
 ## クイックスタート
 

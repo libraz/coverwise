@@ -12,7 +12,7 @@ The vocabulary this page assumes — covering array, strength, pair — is taugh
 pip install coverwise[pytest]
 ```
 
-Python 3.10 or newer. Calling `coverwise.parametrize` without pytest importable raises `RuntimeError` naming pytest as the missing piece; the rest of the package works without it.
+Python 3.11 or newer. Calling `coverwise.parametrize` without pytest importable raises `RuntimeError` naming pytest as the missing piece; the rest of the package works without it.
 
 ## The cross-product now
 

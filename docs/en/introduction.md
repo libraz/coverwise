@@ -81,7 +81,7 @@ A **tuple** is one specific combination of values, one from each of t parameters
 | Node.js | `npm install @libraz/coverwise` | Node.js 18 or newer, ESM only |
 | Browser | ESM import | The WebAssembly module is loaded by the entry point |
 | Pure TypeScript | `@libraz/coverwise/pure` subpath | Same API with no WebAssembly, for runtimes that cannot load it |
-| Python | `pip install coverwise` | Python 3.10 or newer; Linux wheels need glibc 2.28 or newer, macOS wheels are 14+ Apple Silicon |
+| Python | `pip install coverwise` | Python 3.11 or newer; Linux wheels need glibc 2.28 or newer, macOS wheels are 14+ Apple Silicon |
 | Native C++ | CMake, static library | C++17 |
 | Command line | `pip install coverwise`, a release archive, or a source build | JSON in, JSON out |
 
