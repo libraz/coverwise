@@ -3,6 +3,7 @@
 
 #include "util/bitset.h"
 
+#include <algorithm>
 #include <cassert>
 
 namespace coverwise {
