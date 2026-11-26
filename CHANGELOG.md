@@ -9,6 +9,15 @@ Generation is deterministic: the same model and seed produce the same suite.
 Entries below call out the releases where that output changed, so a pinned
 version can be upgraded knowingly.
 
+## [1.6.4] - 2026-11-26
+
+Generated suites are identical to 1.6.3 for every model and seed.
+
+### Removed
+
+- The Python package requires Python 3.11 or later. Python 3.10 reached end of
+  life in October 2026; pip on a 3.10 interpreter keeps resolving to 1.6.3.
+
 ## [1.6.3] - 2026-10-30
 
 **Suites for models with a `type` + `range` boundary parameter differ from
@@ -402,6 +411,7 @@ First release.
   mirroring the C++ architecture.
 - Bilingual documentation and the publish workflow.
 
+[1.6.4]: https://github.com/libraz/coverwise/releases/tag/v1.6.4
 [1.6.3]: https://github.com/libraz/coverwise/releases/tag/v1.6.3
 [1.6.2]: https://github.com/libraz/coverwise/releases/tag/v1.6.2
 [1.6.1]: https://github.com/libraz/coverwise/releases/tag/v1.6.1
