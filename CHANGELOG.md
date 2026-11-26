@@ -18,6 +18,11 @@ Generated suites are identical to 1.6.3 for every model and seed.
 - The Python package requires Python 3.11 or later. Python 3.10 reached end of
   life in October 2026; pip on a 3.10 interpreter keeps resolving to 1.6.3.
 
+### Fixed
+
+- The C++ library builds against standard libraries that no longer include
+  `<algorithm>` transitively, such as the libc++ shipped with Emscripten 7.
+
 ## [1.6.3] - 2026-10-30
 
 **Suites for models with a `type` + `range` boundary parameter differ from
